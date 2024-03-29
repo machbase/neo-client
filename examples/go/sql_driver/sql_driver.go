@@ -43,7 +43,7 @@ func main() {
 	// INSERT with Exec
 	tag := "tag01"
 	var result sql.Result
-	result, err = db.Exec("INSERT INTO EXAMPLE (name, time, value) VALUES(?, ?, ?)", tag, time.Now(), 1.234)
+	result, err = db.Exec("INSERT INTO EXAMPLE(name, time, value) VALUES(?, ?, ?)", tag, time.Now(), 1.234)
 	if err != nil {
 		panic(err)
 	}

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/machbase/neo-client/machrpc"
-	"github.com/machbase/neo-engine/spi"
 	"google.golang.org/grpc"
 )
 
@@ -231,9 +230,9 @@ func (ms *MockServer) Columns(ctx context.Context, rows *machrpc.RowsHandle) (*m
 	switch rows.Handle {
 	case "query1#1":
 		ret.Columns = []*machrpc.Column{
-			{Name: "name", Type: spi.ColumnTypeString(spi.VarcharColumnType), Size: 40, Length: 0},
-			{Name: "time", Type: spi.ColumnTypeString(spi.DatetimeColumnType), Size: 8, Length: 0},
-			{Name: "value", Type: spi.ColumnTypeString(spi.Float64ColumnType), Size: 8, Length: 0},
+			{Name: "name", Type: machrpc.ColumnTypeString(machrpc.VarcharColumnType), Size: 40, Length: 0},
+			{Name: "time", Type: machrpc.ColumnTypeString(machrpc.DatetimeColumnType), Size: 8, Length: 0},
+			{Name: "value", Type: machrpc.ColumnTypeString(machrpc.Float64ColumnType), Size: 8, Length: 0},
 		}
 	default:
 		ret.Success, ret.Reason = false, "unknown test case"

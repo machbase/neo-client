@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/machbase/neo-client/machrpc"
-	"github.com/machbase/neo-engine/spi"
 )
 
 func init() {
@@ -36,12 +35,14 @@ type DataSource struct {
 }
 
 func (conf *DataSource) newClient() (*machrpc.Client, error) {
-	opts := []machrpc.Option{
-		machrpc.WithServer(conf.ServerAddr),
-		machrpc.WithCertificate(conf.ClientKey, conf.ClientCert, conf.ServerCert),
-		machrpc.WithQueryTimeout(0),
-	}
-	return machrpc.NewClient(opts...)
+	return machrpc.NewClient(&machrpc.Config{
+		ServerAddr: conf.ServerAddr,
+		Tls: &machrpc.TlsConfig{
+			ClientCert: conf.ClientCert,
+			ClientKey:  conf.ClientKey,
+			ServerCert: conf.ServerCert,
+		},
+	})
 }
 
 type NeoDriver struct {
@@ -176,7 +177,7 @@ type NeoConn struct {
 	driver.ConnPrepareContext
 
 	name string
-	conn spi.Conn
+	conn *machrpc.Conn
 }
 
 func (c *NeoConn) Close() error {
@@ -254,7 +255,7 @@ type NeoStmt struct {
 	driver.StmtQueryContext
 
 	ctx     context.Context
-	conn    spi.Conn
+	conn    *machrpc.Conn
 	sqlText string
 }
 
@@ -315,7 +316,7 @@ func (stmt *NeoStmt) QueryContext(ctx context.Context, args []driver.NamedValue)
 }
 
 type NeoResult struct {
-	row spi.Row
+	row *machrpc.Row
 }
 
 func (r *NeoResult) LastInsertId() (int64, error) {
@@ -330,19 +331,15 @@ func (r *NeoResult) RowsAffected() (int64, error) {
 }
 
 type NeoRows struct {
-	rows spi.Rows
-	cols spi.Columns
+	rows     *machrpc.Rows
+	colNames []string
 }
 
 func (r *NeoRows) Columns() []string {
-	if r.cols == nil {
-		r.cols, _ = r.rows.Columns()
+	if r.colNames == nil {
+		r.colNames, _, _ = r.rows.Columns()
 	}
-	c := make([]string, len(r.cols))
-	for i := range r.cols {
-		c[i] = r.cols[i].Name
-	}
-	return c
+	return r.colNames
 }
 
 func (r *NeoRows) Close() error {

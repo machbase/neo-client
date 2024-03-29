@@ -10,11 +10,23 @@ import (
 	"sync"
 	"time"
 
-	"github.com/machbase/neo-engine/spi"
 	"github.com/pkg/errors"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
+
+type Config struct {
+	ServerAddr    string
+	Tls           *TlsConfig
+	QueryTimeout  time.Duration
+	Appendtimeout time.Duration
+}
+
+type TlsConfig struct {
+	ClientCert string
+	ClientKey  string
+	ServerCert string
+}
 
 // Client is a convenient data type represents client side of machbase-neo.
 //
@@ -37,17 +49,23 @@ type Client struct {
 }
 
 // NewClient creates new instance of Client.
-func NewClient(opts ...Option) (*Client, error) {
-	client := &Client{
-		queryTimeout:  0,
-		appendTimeout: 3 * time.Second,
+func NewClient(cfg *Config) (*Client, error) {
+	if cfg == nil {
+		return nil, errors.New("nil config")
 	}
-	for _, o := range opts {
-		o(client)
+	client := &Client{
+		serverAddr:    cfg.ServerAddr,
+		queryTimeout:  cfg.QueryTimeout,
+		appendTimeout: cfg.Appendtimeout,
 	}
 
 	if client.serverAddr == "" {
 		return nil, errors.New("server address is not specified")
+	}
+	if cfg.Tls != nil {
+		client.certPath = cfg.Tls.ClientCert
+		client.keyPath = cfg.Tls.ClientKey
+		client.serverCert = cfg.Tls.ServerCert
 	}
 
 	var conn grpc.ClientConnInterface
@@ -136,9 +154,18 @@ func (client *Client) queryContext() (context.Context, context.CancelFunc) {
 	return ctx, cancel
 }
 
+type ConnectOption func(*Conn)
+
+func WithPassword(username string, password string) ConnectOption {
+	return func(conn *Conn) {
+		conn.dbUser = username
+		conn.dbPassword = password
+	}
+}
+
 // Connect make a connection to the server
-func (client *Client) Connect(ctx context.Context, opts ...spi.ConnectOption) (spi.Conn, error) {
-	ret := &ClientConn{client: client}
+func (client *Client) Connect(ctx context.Context, opts ...ConnectOption) (*Conn, error) {
+	ret := &Conn{client: client}
 	for _, o := range opts {
 		o(ret)
 	}
@@ -146,6 +173,9 @@ func (client *Client) Connect(ctx context.Context, opts ...spi.ConnectOption) (s
 	req := &ConnRequest{
 		User:     ret.dbUser,
 		Password: ret.dbPassword,
+	}
+	if req.User == "" {
+		return nil, errors.New("no user specified, use WithPassword() option")
 	}
 	rsp, err := client.cli.Conn(ctx, req)
 	if err != nil {
@@ -160,7 +190,7 @@ func (client *Client) Connect(ctx context.Context, opts ...spi.ConnectOption) (s
 	return ret, nil
 }
 
-type ClientConn struct {
+type Conn struct {
 	ctx    context.Context
 	client *Client
 
@@ -171,9 +201,7 @@ type ClientConn struct {
 	closeOnce sync.Once
 }
 
-var _ spi.Conn = &ClientConn{}
-
-func (conn *ClientConn) Close() error {
+func (conn *Conn) Close() error {
 	var err error
 	conn.closeOnce.Do(func() {
 		req := &ConnCloseRequest{Conn: conn.handle}
@@ -182,7 +210,7 @@ func (conn *ClientConn) Close() error {
 	return err
 }
 
-func (conn *ClientConn) Ping() (time.Duration, error) {
+func (conn *Conn) Ping() (time.Duration, error) {
 	tick := time.Now()
 	req := &PingRequest{Conn: conn.handle, Token: tick.UnixNano()}
 	rsp, err := conn.client.cli.Ping(conn.ctx, req)
@@ -196,7 +224,7 @@ func (conn *ClientConn) Ping() (time.Duration, error) {
 }
 
 // Explain retrieve execution plan of the given SQL statement.
-func (conn *ClientConn) Explain(ctx context.Context, sqlText string, full bool) (string, error) {
+func (conn *Conn) Explain(ctx context.Context, sqlText string, full bool) (string, error) {
 	req := &ExplainRequest{Conn: conn.handle, Sql: sqlText, Full: full}
 	rsp, err := conn.client.cli.Explain(ctx, req)
 	if err != nil {
@@ -210,37 +238,37 @@ func (conn *ClientConn) Explain(ctx context.Context, sqlText string, full bool) 
 
 // Exec executes SQL statements that does not return result
 // like 'ALTER', 'CREATE TABLE', 'DROP TABLE', ...
-func (conn *ClientConn) Exec(ctx context.Context, sqlText string, params ...any) spi.Result {
+func (conn *Conn) Exec(ctx context.Context, sqlText string, params ...any) *Result {
 	pbparams, err := ConvertAnyToPb(params)
 	if err != nil {
-		return &ExecResult{err: err}
+		return &Result{err: err}
 	}
 	req := &ExecRequest{Conn: conn.handle, Sql: sqlText, Params: pbparams}
 	rsp, err := conn.client.cli.Exec(ctx, req)
 	if err != nil {
-		return &ExecResult{err: err}
+		return &Result{err: err}
 	}
 	if !rsp.Success {
-		return &ExecResult{err: errors.New(rsp.Reason), message: rsp.Reason}
+		return &Result{err: errors.New(rsp.Reason), message: rsp.Reason}
 	}
-	return &ExecResult{message: rsp.Reason, rowsAffected: rsp.RowsAffected}
+	return &Result{message: rsp.Reason, rowsAffected: rsp.RowsAffected}
 }
 
-type ExecResult struct {
+type Result struct {
 	err          error
 	rowsAffected int64
 	message      string
 }
 
-func (r *ExecResult) Err() error {
+func (r *Result) Err() error {
 	return r.err
 }
 
-func (r *ExecResult) RowsAffected() int64 {
+func (r *Result) RowsAffected() int64 {
 	return r.rowsAffected
 }
 
-func (r *ExecResult) Message() string {
+func (r *Result) Message() string {
 	return r.message
 }
 
@@ -257,7 +285,7 @@ func (r *ExecResult) Message() string {
 //		panic(err)
 //	}
 //	defer rows.Close()
-func (conn *ClientConn) Query(ctx context.Context, sqlText string, params ...any) (spi.Rows, error) {
+func (conn *Conn) Query(ctx context.Context, sqlText string, params ...any) (*Rows, error) {
 	pbparams, err := ConvertAnyToPb(params)
 	if err != nil {
 		return nil, err
@@ -319,33 +347,26 @@ func (rows *Rows) RowsAffected() int64 {
 }
 
 // Columns returns list of column info that consists of result of query statement.
-func (rows *Rows) Columns() (spi.Columns, error) {
+func (rows *Rows) Columns() ([]string, []string, error) {
 	rsp, err := rows.client.cli.Columns(rows.ctx, rows.handle)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if rsp.Success {
-		return toSpiColumns(rsp.Columns), nil
+		names := make([]string, len(rsp.Columns))
+		types := make([]string, len(rsp.Columns))
+		for i, c := range rsp.Columns {
+			names[i] = c.Name
+			types[i] = c.Type
+		}
+		return names, types, nil
 	} else {
 		if len(rsp.Reason) > 0 {
-			return nil, errors.New(rsp.Reason)
+			return nil, nil, errors.New(rsp.Reason)
 		} else {
-			return nil, fmt.Errorf("fail to get columns info")
+			return nil, nil, fmt.Errorf("fail to get columns info")
 		}
 	}
-}
-
-func toSpiColumns(cols []*Column) spi.Columns {
-	rt := make([]*spi.Column, len(cols))
-	for i, c := range cols {
-		rt[i] = &spi.Column{
-			Name:   c.Name,
-			Type:   c.Type,
-			Size:   int(c.Size),
-			Length: int(c.Length),
-		}
-	}
-	return rt
 }
 
 // Next returns true if there are at least one more record that can be fetchable
@@ -401,7 +422,7 @@ func (rows *Rows) Scan(cols ...any) error {
 //	var cnt int
 //	row := client.QueryRow(ctx, "select count(*) from my_table where name = ?", "my_name")
 //	row.Scan(&cnt)
-func (conn *ClientConn) QueryRow(ctx context.Context, sqlText string, params ...any) spi.Row {
+func (conn *Conn) QueryRow(ctx context.Context, sqlText string, params ...any) *Row {
 	pbparams, err := ConvertAnyToPb(params)
 	if err != nil {
 		return &Row{success: false, err: err}
@@ -528,13 +549,15 @@ func scan(src []any, dst []any) error {
 	return nil
 }
 
+type AppenderOption func(*Appender)
+
 // Appender creates a new Appender for the given table.
 // Appender should be closed otherwise it may cause server side resource leak.
 //
 //	app, _ := client.Appender(ctx, "MYTABLE")
 //	defer app.Close()
 //	app.Append("name", time.Now(), 3.14)
-func (conn *ClientConn) Appender(ctx context.Context, tableName string, opts ...spi.AppenderOption) (spi.Appender, error) {
+func (conn *Conn) Appender(ctx context.Context, tableName string, opts ...AppenderOption) (*Appender, error) {
 
 	ap := &Appender{
 		ctx:             ctx,
@@ -567,7 +590,7 @@ func (conn *ClientConn) Appender(ctx context.Context, tableName string, opts ...
 	ap.client = conn.client
 	ap.appendClient = appendClient
 	ap.tableName = openRsp.TableName
-	ap.tableType = spi.TableType(openRsp.TableType)
+	ap.tableType = TableType(openRsp.TableType)
 	ap.handle = openRsp.Handle
 
 	ap.bufferTicker = time.NewTicker(time.Second)
@@ -580,19 +603,15 @@ func (conn *ClientConn) Appender(ctx context.Context, tableName string, opts ...
 	return ap, nil
 }
 
-func AppenderTimeformat(timeformat string) spi.AppenderOption {
-	return func(a spi.Appender) {
-		if apd, ok := a.(*Appender); ok {
-			apd.timeformat = timeformat
-		}
+func AppenderTimeformat(timeformat string) AppenderOption {
+	return func(a *Appender) {
+		a.timeformat = timeformat
 	}
 }
 
-func AppenderBufferThreshold(threshold int) spi.AppenderOption {
-	return func(a spi.Appender) {
-		if apd, ok := a.(*Appender); ok {
-			apd.bufferThreshold = threshold
-		}
+func AppenderBufferThreshold(threshold int) AppenderOption {
+	return func(a *Appender) {
+		a.bufferThreshold = threshold
 	}
 }
 
@@ -601,7 +620,7 @@ type Appender struct {
 	client       *Client
 	appendClient Machbase_AppendClient
 	tableName    string
-	tableType    spi.TableType
+	tableType    TableType
 	handle       *AppenderHandle
 	timeformat   string
 
@@ -638,7 +657,7 @@ func (appender *Appender) TableName() string {
 	return appender.tableName
 }
 
-func (appender *Appender) TableType() spi.TableType {
+func (appender *Appender) TableType() TableType {
 	return appender.tableType
 }
 
@@ -660,9 +679,8 @@ func (appender *Appender) Append(cols ...any) error {
 	return err
 }
 
-func (appender *Appender) Columns() (spi.Columns, error) {
-	// TODO implements
-	return nil, nil
+func (appender *Appender) Columns() ([]string, []string, error) {
+	return nil, nil, errors.New("rpc appender doesn't implment Columns()")
 }
 
 // force flush if rec is nil

@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/machbase/neo-client/machrpc"
-	"github.com/machbase/neo-engine/spi"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,19 +24,18 @@ func TestMain(m *testing.M) {
 
 func newClient(t *testing.T) *machrpc.Client {
 	t.Helper()
-	opts := []machrpc.Option{
-		machrpc.WithServer(MockServerAddr),
-		machrpc.WithQueryTimeout(3 * time.Second),
-		machrpc.WithAppendTimeout(3 * time.Second),
-	}
-	cli, err := machrpc.NewClient(opts...)
+	cli, err := machrpc.NewClient(&machrpc.Config{
+		ServerAddr:    MockServerAddr,
+		QueryTimeout:  3 * time.Second,
+		Appendtimeout: 3 * time.Second,
+	})
 	if err != nil {
 		t.Fatalf("new client: %s", err.Error())
 	}
 	return cli
 }
 
-func newConn(t *testing.T) spi.Conn {
+func newConn(t *testing.T) *machrpc.Conn {
 	t.Helper()
 	cli := newClient(t)
 	conn, err := cli.Connect(context.TODO(), machrpc.WithPassword("sys", "manager"))
@@ -47,10 +45,7 @@ func newConn(t *testing.T) spi.Conn {
 }
 
 func TestAuth(t *testing.T) {
-	opts := []machrpc.Option{
-		machrpc.WithServer(MockServerAddr),
-	}
-	cli, err := machrpc.NewClient(opts...)
+	cli, err := machrpc.NewClient(&machrpc.Config{ServerAddr: MockServerAddr})
 	if err != nil {
 		t.Fatalf("new client: %s", err.Error())
 	}
@@ -71,16 +66,13 @@ func TestNewClient(t *testing.T) {
 	var err error
 
 	// no server address
-	cli, err = machrpc.NewClient()
+	cli, err = machrpc.NewClient(&machrpc.Config{})
 	require.NotNil(t, err, "no error without server addr, want error")
 	require.Nil(t, cli, "new client should fail")
 	require.Equal(t, "server address is not specified", err.Error())
 
 	// success creating client
-	opts := []machrpc.Option{
-		machrpc.WithServer(MockServerAddr),
-	}
-	cli, err = machrpc.NewClient(opts...)
+	cli, err = machrpc.NewClient(&machrpc.Config{ServerAddr: MockServerAddr})
 	if err != nil {
 		t.Fatalf("new client: %s", err.Error())
 	}
@@ -90,7 +82,7 @@ func TestNewClient(t *testing.T) {
 	// empty username, password
 	conn, err := cli.Connect(ctx)
 	require.NotNil(t, err)
-	require.Equal(t, "invalid username or password", err.Error())
+	require.Equal(t, "no user specified, use WithPassword() option", err.Error())
 	require.Nil(t, conn)
 
 	// wrong password
@@ -131,17 +123,13 @@ type Pinger interface {
 }
 
 func TestPing(t *testing.T) {
-	conn := newConn(t)
-	pinger, ok := conn.(Pinger)
-	if !ok {
-		t.Fatalf("Connection is not implments spi.Pinger")
-	}
+	pinger := newConn(t)
 	dur, err := pinger.Ping()
 	require.Nil(t, err)
 	if dur == 0 {
 		t.Fatal("ping failure")
 	}
-	conn.Close()
+	pinger.Close()
 }
 
 type Explainer interface {
@@ -150,12 +138,8 @@ type Explainer interface {
 }
 
 func TestExplainTest(t *testing.T) {
-	conn := newConn(t)
-	defer conn.Close()
-	exp, ok := conn.(Explainer)
-	if !ok {
-		t.Fatal("client is not implements spi.Explainer")
-	}
+	exp := newConn(t)
+	defer exp.Close()
 	result, err := exp.Explain(context.TODO(), "select * from dummy", true)
 	if err != nil {
 		t.Fatalf("Explain error: %s", err.Error())
@@ -204,11 +188,12 @@ func TestQuery(t *testing.T) {
 	require.Equal(t, int64(0), rows.RowsAffected())
 	require.Equal(t, "success", rows.Message())
 
-	columns, err := rows.Columns()
+	names, types, err := rows.Columns()
 	if err != nil {
 		t.Fatalf("columns error, %s", err.Error())
 	}
-	require.Equal(t, 3, len(columns))
+	require.Equal(t, 3, len(names))
+	require.Equal(t, 3, len(types))
 
 	var name string
 	var ts time.Time
