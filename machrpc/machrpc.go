@@ -145,6 +145,17 @@ func (client *Client) ServerSessions(reqStatz, reqSessions bool) (*Statz, []*Ses
 	return rsp.Statz, rsp.Sessions, nil
 }
 
+func (client *Client) ServerKillSession(sessionId string) (bool, error) {
+	ctx, cancelFunc := client.queryContext()
+	defer cancelFunc()
+	req := &KillSessionRequest{Id: sessionId}
+	rsp, err := client.cli.KillSession(ctx, req)
+	if err != nil {
+		return false, err
+	}
+	return rsp.Success, nil
+}
+
 func (client *Client) queryContext() (context.Context, context.CancelFunc) {
 	ctx := metadata.NewOutgoingContext(context.Background(), metadata.New(map[string]string{"client": "machrpc"}))
 	cancel := func() {}

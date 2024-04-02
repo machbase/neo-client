@@ -35,6 +35,7 @@ const (
 	Machbase_GetServerInfo_FullMethodName   = "/machrpc.Machbase/GetServerInfo"
 	Machbase_GetServicePorts_FullMethodName = "/machrpc.Machbase/GetServicePorts"
 	Machbase_Sessions_FullMethodName        = "/machrpc.Machbase/Sessions"
+	Machbase_KillSession_FullMethodName     = "/machrpc.Machbase/KillSession"
 )
 
 // MachbaseClient is the client API for Machbase service.
@@ -57,6 +58,7 @@ type MachbaseClient interface {
 	GetServerInfo(ctx context.Context, in *ServerInfoRequest, opts ...grpc.CallOption) (*ServerInfo, error)
 	GetServicePorts(ctx context.Context, in *ServicePortsRequest, opts ...grpc.CallOption) (*ServicePorts, error)
 	Sessions(ctx context.Context, in *SessionsRequest, opts ...grpc.CallOption) (*SessionsResponse, error)
+	KillSession(ctx context.Context, in *KillSessionRequest, opts ...grpc.CallOption) (*KillSessionResponse, error)
 }
 
 type machbaseClient struct {
@@ -236,6 +238,15 @@ func (c *machbaseClient) Sessions(ctx context.Context, in *SessionsRequest, opts
 	return out, nil
 }
 
+func (c *machbaseClient) KillSession(ctx context.Context, in *KillSessionRequest, opts ...grpc.CallOption) (*KillSessionResponse, error) {
+	out := new(KillSessionResponse)
+	err := c.cc.Invoke(ctx, Machbase_KillSession_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // MachbaseServer is the server API for Machbase service.
 // All implementations must embed UnimplementedMachbaseServer
 // for forward compatibility
@@ -256,6 +267,7 @@ type MachbaseServer interface {
 	GetServerInfo(context.Context, *ServerInfoRequest) (*ServerInfo, error)
 	GetServicePorts(context.Context, *ServicePortsRequest) (*ServicePorts, error)
 	Sessions(context.Context, *SessionsRequest) (*SessionsResponse, error)
+	KillSession(context.Context, *KillSessionRequest) (*KillSessionResponse, error)
 	mustEmbedUnimplementedMachbaseServer()
 }
 
@@ -310,6 +322,9 @@ func (UnimplementedMachbaseServer) GetServicePorts(context.Context, *ServicePort
 }
 func (UnimplementedMachbaseServer) Sessions(context.Context, *SessionsRequest) (*SessionsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Sessions not implemented")
+}
+func (UnimplementedMachbaseServer) KillSession(context.Context, *KillSessionRequest) (*KillSessionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method KillSession not implemented")
 }
 func (UnimplementedMachbaseServer) mustEmbedUnimplementedMachbaseServer() {}
 
@@ -620,6 +635,24 @@ func _Machbase_Sessions_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Machbase_KillSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(KillSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MachbaseServer).KillSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Machbase_KillSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MachbaseServer).KillSession(ctx, req.(*KillSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Machbase_ServiceDesc is the grpc.ServiceDesc for Machbase service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -686,6 +719,10 @@ var Machbase_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Sessions",
 			Handler:    _Machbase_Sessions_Handler,
+		},
+		{
+			MethodName: "KillSession",
+			Handler:    _Machbase_KillSession_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
