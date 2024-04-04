@@ -46,7 +46,16 @@ func main() {
 	}
 	defer conn.Close()
 
-	sqlText := `drop table example`
+	// Create table
+	sqlText := `create tag table if not exists DATA (name varchar(40) primary key, time datetime basetime, value double)`
+	if result := conn.Exec(ctx, sqlText); result.Err() != nil {
+		panic(result.Err())
+	} else {
+		fmt.Println(result.Message())
+	}
+
+	// Drop table
+	sqlText = `drop table DATA`
 	if result := conn.Exec(ctx, sqlText); result.Err() != nil {
 		panic(result.Err())
 	} else {

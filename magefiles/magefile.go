@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	_ "github.com/magefile/mage/mage"
@@ -81,6 +82,54 @@ func Protoc() error {
 			fmt.Sprintf("--go_out=./%s", mod), "--go_opt=paths=source_relative",
 			fmt.Sprintf("--go-grpc_out=./%s", mod), "--go-grpc_opt=paths=source_relative",
 		)
+	}
+	return nil
+}
+
+func Examples() error {
+	return Example("")
+}
+
+func Example(name string) error {
+	excludes := map[string]bool{
+		"grpc_wave":       true,
+		"http_wave":       true,
+		"mqtt_client":     true,
+		"mqtt_subscriber": true,
+	}
+	examplesGoPath := `examples/go`
+	if name == "" {
+		entries, err := os.ReadDir(examplesGoPath)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if _, ok := excludes[name]; ok {
+				continue
+			}
+			path := filepath.Join(examplesGoPath, name, name+".go")
+			if err := runGoExample(path); err != nil {
+				fmt.Println("ERROR", path)
+				fmt.Println(err.Error())
+			}
+		}
+	} else {
+		path := filepath.Join(examplesGoPath, name, name+".go")
+		if err := runGoExample(path); err != nil {
+			fmt.Println("ERROR", path)
+			fmt.Println(err.Error())
+		}
+	}
+	return nil
+}
+
+func runGoExample(path string) error {
+	fmt.Println("--------")
+	fmt.Println("EXAMPLE:", path)
+	env := map[string]string{}
+	if err := sh.RunWith(env, "go", "run", path); err != nil {
+		return err
 	}
 	return nil
 }
