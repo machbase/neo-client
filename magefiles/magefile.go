@@ -94,7 +94,6 @@ func Example(name string) error {
 	excludes := map[string]bool{
 		"grpc_wave":       true,
 		"http_wave":       true,
-		"mqtt_client":     true,
 		"mqtt_subscriber": true,
 	}
 	examplesGoPath := `examples/go`

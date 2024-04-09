@@ -53,6 +53,7 @@ func main() {
 
 	// insert
 	jsonStr = `{
+			"reply": "db/reply",
 			"data": {
 				"columns":["name", "time", "value"],
 				"rows": [
@@ -67,29 +68,26 @@ func main() {
 	wg.Add(1)
 	client.Publish("db/write/TAGDATA", 1, false, []byte(jsonStr))
 	wg.Wait()
-	/*
 
+	// append
+	for i := 0; i < 100; i++ {
+		// both forms are available
+		// 1) append a single record: `[ columns... ]`
+		// 2) append multiple records: `[ [columns...], [columns...] ]`
+		jsonStr = fmt.Sprintf(`[ "my-car", %d, %.1f, "{\"speed\":\"%.1fkmh\",\"lat\":37.38906,\"lon\":127.12182}" ]`,
+			time.Now().UnixNano(),
+			float32(80+i),
+			float32(80+i))
+		client.Publish("db/append/TAGDATA", 1, false, []byte(jsonStr))
+	}
 
-		// append
-		for i := 0; i < 100; i++ {
-			// both forms are available
-			// 1) append a single record: `[ columns... ]`
-			// 2) append multiple records: `[ [columns...], [columns...] ]`
-			jsonStr = fmt.Sprintf(`[ "my-car", %d, %.1f, "{\"speed\":\"%.1fkmh\",\"lat\":37.38906,\"lon\":127.12182}" ]`,
-				time.Now().UnixNano(),
-				float32(80+i),
-				float32(80+i))
-			client.Publish("db/append/TAGDATA", 1, false, []byte(jsonStr))
-		}
+	// select
+	jsonStr = `{ "q":"select count(*) from TAGDATA" }`
+	wg.Add(1)
+	client.Publish("db/query", 1, false, []byte(jsonStr))
+	wg.Wait()
 
-		// select
-		jsonStr = `{ "q":"select * from TAGDATA" }`
-		wg.Add(1)
-		client.Publish("db/query", 1, false, []byte(jsonStr))
-		wg.Wait()
-
-		client.Unsubscribe("db/reply/#")
-	*/
+	client.Unsubscribe("db/reply/#")
 	// disconnect mqtt connection
 	client.Disconnect(100)
 }
