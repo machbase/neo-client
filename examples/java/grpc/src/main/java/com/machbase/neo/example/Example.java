@@ -19,13 +19,49 @@ import com.google.protobuf.Int32Value;
 import com.google.protobuf.StringValue;
 import com.google.protobuf.Timestamp;
 
+import java.io.InputStream;
+import java.io.ByteArrayInputStream;
+import java.io.FileInputStream;
+import java.security.KeyStore;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.KeyManager;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import io.grpc.Grpc;
-import io.grpc.InsecureChannelCredentials;
-import io.grpc.ManagedChannel;;
+import io.grpc.ChannelCredentials;
+import io.grpc.TlsChannelCredentials;
+import io.grpc.ManagedChannel;
 
 public class Example {
     public static void main(String[] args) throws Exception {
-        ManagedChannel channel = Grpc.newChannelBuilder("127.0.0.1:5655", InsecureChannelCredentials.create()).build();
+        String homeDir = System.getProperty("user.home");
+        Path serverCert = Paths.get(homeDir, ".config", "machbase", "cert", "machbase_cert.pem");
+        // Path clientKey =  Paths.get(homeDir, ".config", "machbase", "cert", "machbase_key.pem");
+        // Path clientCert = Paths.get(homeDir, ".config", "machbase", "cert", "machbase_cert.pem");
+        Path clientKey =  Paths.get(homeDir, ".config", "machbase", "cert", "cli-rsa_key.pem");
+        Path clientCert = Paths.get(homeDir, ".config", "machbase", "cert", "cli-rsa_cert.pem");
+
+        // keytool -importkeystore -srckeystore certificate.p12 -srcstoretype pkcs12 -destkeystore cert.jks
+        System.out.println(serverCert.toFile().toPath());
+        System.out.println(clientKey.toFile().toPath());
+        System.out.println(clientCert.toFile().toPath());
+
+        // InputStream stream = new FileInputStream(clientCert.toFile());
+        // KeyStore keyStore = KeyStore.getInstance("PKCS12");
+        // keyStore.load(stream, null);
+
+        // KeyManagerFactory kmf = KeyManagerFactory.getInstance(
+        //     KeyManagerFactory.getDefaultAlgorithm());
+        // kmf.init(keyStore, null);
+        // KeyManager[] keyManagers = kmf.getKeyManagers();
+
+        ChannelCredentials creds = TlsChannelCredentials.newBuilder()
+            .trustManager(serverCert.toFile())
+            .keyManager(clientCert.toFile(), clientKey.toFile())
+            .build();
+        ManagedChannel channel = Grpc.newChannelBuilderForAddress("127.0.0.1", 5655, creds)
+            .overrideAuthority("neo.machbase.com")
+            .build();
         MachbaseBlockingStub stub = MachbaseGrpc.newBlockingStub(channel);
 
         QueryRequest.Builder builder = Machrpc.QueryRequest.newBuilder();
