@@ -292,11 +292,17 @@ func (stmt *NeoStmt) ExecContext(ctx context.Context, args []driver.NamedValue) 
 }
 
 func (stmt *NeoStmt) Query(args []driver.Value) (driver.Rows, error) {
+	var ctx context.Context
+	if stmt.ctx != nil {
+		ctx = stmt.ctx
+	} else {
+		ctx = context.TODO()
+	}
 	vals := make([]any, len(args))
 	for i := range args {
 		vals[i] = args[i]
 	}
-	rows, err := stmt.conn.Query(context.TODO(), stmt.sqlText, vals...)
+	rows, err := stmt.conn.Query(ctx, stmt.sqlText, vals...)
 	if err != nil {
 		return nil, err
 	}
