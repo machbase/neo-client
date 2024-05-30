@@ -94,11 +94,6 @@ class MachbaseStub(object):
                 request_serializer=machrpc__pb2.SessionsRequest.SerializeToString,
                 response_deserializer=machrpc__pb2.SessionsResponse.FromString,
                 )
-        self.KillSession = channel.unary_unary(
-                '/machrpc.Machbase/KillSession',
-                request_serializer=machrpc__pb2.KillSessionRequest.SerializeToString,
-                response_deserializer=machrpc__pb2.KillSessionResponse.FromString,
-                )
 
 
 class MachbaseServicer(object):
@@ -200,12 +195,6 @@ class MachbaseServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def KillSession(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
 
 def add_MachbaseServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -288,11 +277,6 @@ def add_MachbaseServicer_to_server(servicer, server):
                     servicer.Sessions,
                     request_deserializer=machrpc__pb2.SessionsRequest.FromString,
                     response_serializer=machrpc__pb2.SessionsResponse.SerializeToString,
-            ),
-            'KillSession': grpc.unary_unary_rpc_method_handler(
-                    servicer.KillSession,
-                    request_deserializer=machrpc__pb2.KillSessionRequest.FromString,
-                    response_serializer=machrpc__pb2.KillSessionResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -573,22 +557,5 @@ class Machbase(object):
         return grpc.experimental.unary_unary(request, target, '/machrpc.Machbase/Sessions',
             machrpc__pb2.SessionsRequest.SerializeToString,
             machrpc__pb2.SessionsResponse.FromString,
-            options, channel_credentials,
-            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
-
-    @staticmethod
-    def KillSession(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(request, target, '/machrpc.Machbase/KillSession',
-            machrpc__pb2.KillSessionRequest.SerializeToString,
-            machrpc__pb2.KillSessionResponse.FromString,
             options, channel_credentials,
             insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
