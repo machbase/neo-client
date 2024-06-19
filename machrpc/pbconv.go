@@ -72,6 +72,8 @@ func ConvertAnyToPb(params []any) ([]*anypb.Any, error) {
 			pbparams[i], err = anypb.New(wrapperspb.String(*v))
 		case string:
 			pbparams[i], err = anypb.New(wrapperspb.String(v))
+		case *[]byte:
+			pbparams[i], err = anypb.New(wrapperspb.Bytes(*v))
 		case []byte:
 			pbparams[i], err = anypb.New(wrapperspb.Bytes(v))
 		case *net.IP:
