@@ -297,6 +297,7 @@ message Session {
 
 message KillSessionRequest {
     string id       = 1;
+    bool   force    = 2;
 }
 
 message KillSessionResponse {

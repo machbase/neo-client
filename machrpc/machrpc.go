@@ -145,10 +145,10 @@ func (client *Client) ServerSessions(reqStatz, reqSessions bool) (*Statz, []*Ses
 	return rsp.Statz, rsp.Sessions, nil
 }
 
-func (client *Client) ServerKillSession(sessionId string) (bool, error) {
+func (client *Client) ServerKillSession(sessionId string, force bool) (bool, error) {
 	ctx, cancelFunc := client.queryContext()
 	defer cancelFunc()
-	req := &KillSessionRequest{Id: sessionId}
+	req := &KillSessionRequest{Id: sessionId, Force: force}
 	rsp, err := client.cli.KillSession(ctx, req)
 	if err != nil {
 		return false, err
