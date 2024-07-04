@@ -33,31 +33,35 @@ type OutletReg struct {
 }
 
 func RegisterInlet(name string, reg *InletReg) {
-	inletRegistry[name] = reg
-}
-
-func RegisterInletWith(name string, factory InletFactory, argDefault any, argDesc string) {
 	regLock.Lock()
 	defer regLock.Unlock()
-	inletRegistry[name] = &InletReg{
-		Name:       name,
-		Factory:    factory,
-		ArgDefault: argDefault,
-		ArgDesc:    argDesc,
-	}
+	inletRegistry[name] = reg
 	inletNames = append(inletNames, name)
 }
 
-func RegisterOutletWith(name string, factory OutletFactory, argDefault any, argDesc string) {
-	regLock.Lock()
-	defer regLock.Unlock()
-	outletRegistry[name] = &OutletReg{
+func RegisterInletWith(name string, factory InletFactory, argDefault any, argDesc string) {
+	RegisterInlet(name, &InletReg{
 		Name:       name,
 		Factory:    factory,
 		ArgDefault: argDefault,
 		ArgDesc:    argDesc,
-	}
+	})
+}
+
+func RegisterOutlet(name string, reg *OutletReg) {
+	regLock.Lock()
+	defer regLock.Unlock()
+	outletRegistry[name] = reg
 	outletNames = append(outletNames, name)
+}
+
+func RegisterOutletWith(name string, factory OutletFactory, argDefault any, argDesc string) {
+	RegisterOutlet(name, &OutletReg{
+		Name:       name,
+		Factory:    factory,
+		ArgDefault: argDefault,
+		ArgDesc:    argDesc,
+	})
 }
 
 func NewInlet(name string, args ...string) report.Inlet {
