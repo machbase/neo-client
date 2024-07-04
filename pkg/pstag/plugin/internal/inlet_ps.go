@@ -3,6 +3,7 @@ package internal
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/machbase/neo-client/pkg/pstag/report"
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -53,7 +54,8 @@ func MemInput() ([]*report.Record, error) {
 	return ret, nil
 }
 
-func DiskInput(mountpoints []string) func() ([]*report.Record, error) {
+func DiskInput(args []string) func() ([]*report.Record, error) {
+	mountpoints := strings.Split(args[0], ",")
 	return func() ([]*report.Record, error) {
 		stat, err := disk.Partitions(false)
 		if err != nil {
@@ -122,7 +124,8 @@ func DiskInput(mountpoints []string) func() ([]*report.Record, error) {
 	}
 }
 
-func DiskioInput(devPatterns []string) func() ([]*report.Record, error) {
+func DiskioInput(args []string) func() ([]*report.Record, error) {
+	devPatterns := strings.Split(args[0], ",")
 	return func() ([]*report.Record, error) {
 		stat, err := disk.IOCounters()
 		if err != nil {
@@ -159,7 +162,8 @@ func DiskioInput(devPatterns []string) func() ([]*report.Record, error) {
 	}
 }
 
-func NetInput(nicPatterns []string) func() ([]*report.Record, error) {
+func NetInput(args []string) func() ([]*report.Record, error) {
+	nicPatterns := strings.Split(args[0], ",")
 	return func() ([]*report.Record, error) {
 		stat, err := net.IOCounters(true)
 		if err != nil {
@@ -216,7 +220,8 @@ func NetInput(nicPatterns []string) func() ([]*report.Record, error) {
 	}
 }
 
-func ProtoInput(protos []string) func() ([]*report.Record, error) {
+func ProtoInput(args []string) func() ([]*report.Record, error) {
+	protos := strings.Split(args[0], ",")
 	return func() ([]*report.Record, error) {
 		stat, err := net.ProtoCounters(protos)
 		if err != nil {
