@@ -152,8 +152,6 @@ func init() {
 		"--in-sensor             Report sensors (temperature, fan speed, etc.)")
 	RegisterInletWith("in-host", NewInletFunc(internal.HostInput), false,
 		"--in-host               Report host information")
-	RegisterInletWith("in-nats", internal.NewNatsInlet, "",
-		"--in-nats <addr>        Report NATS server information (e.g. http://localhost:8080/statz)")
 	// ouputs
 	RegisterOutletWith("out-file", internal.NewFileOutlet, "",
 		"--out-file <path>       Report output to the file")

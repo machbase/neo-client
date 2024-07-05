@@ -3,6 +3,7 @@ package internal
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/machbase/neo-client/pkg/pstag/report"
@@ -98,27 +99,31 @@ func DiskInput(args []string) func() ([]*report.Record, error) {
 					Value:     usage.UsedPercent,
 					Precision: 1,
 				},
-				&report.Record{
-					Name:      fmt.Sprintf("disk.%s.inodes_total", v.Mountpoint),
-					Value:     float64(usage.InodesTotal),
-					Precision: 0,
-				},
-				&report.Record{
-					Name:      fmt.Sprintf("disk.%s.inodes_free", v.Mountpoint),
-					Value:     float64(usage.InodesFree),
-					Precision: 0,
-				},
-				&report.Record{
-					Name:      fmt.Sprintf("disk.%s.inodes_used", v.Mountpoint),
-					Value:     float64(usage.InodesUsed),
-					Precision: 0,
-				},
-				&report.Record{
-					Name:      fmt.Sprintf("disk.%s.inodes_used_percent", v.Mountpoint),
-					Value:     usage.InodesUsedPercent,
-					Precision: 1,
-				},
 			)
+			if runtime.GOOS != "windows" {
+				ret = append(ret,
+					&report.Record{
+						Name:      fmt.Sprintf("disk.%s.inodes_total", v.Mountpoint),
+						Value:     float64(usage.InodesTotal),
+						Precision: 0,
+					},
+					&report.Record{
+						Name:      fmt.Sprintf("disk.%s.inodes_free", v.Mountpoint),
+						Value:     float64(usage.InodesFree),
+						Precision: 0,
+					},
+					&report.Record{
+						Name:      fmt.Sprintf("disk.%s.inodes_used", v.Mountpoint),
+						Value:     float64(usage.InodesUsed),
+						Precision: 0,
+					},
+					&report.Record{
+						Name:      fmt.Sprintf("disk.%s.inodes_used_percent", v.Mountpoint),
+						Value:     usage.InodesUsedPercent,
+						Precision: 1,
+					},
+				)
+			}
 		}
 		return ret, nil
 	}
