@@ -39,14 +39,15 @@ func (in *InputHandler) Start(interval time.Duration, tagPrefix string) error {
 				recs, err := in.inlet.Handle()
 				if err != nil {
 					slog.Error("failed to get input", "error", err.Error())
-					continue
 				}
-				if tagPrefix != "" {
-					for _, r := range recs {
-						r.Name = tagPrefix + r.Name
+				if len(recs) > 0 {
+					if tagPrefix != "" {
+						for _, r := range recs {
+							r.Name = tagPrefix + r.Name
+						}
 					}
+					in.ch <- &report.Report{Ts: ts, Records: recs}
 				}
-				in.ch <- &report.Report{Ts: ts, Records: recs}
 			case <-in.closeCh:
 				break loop
 			}
