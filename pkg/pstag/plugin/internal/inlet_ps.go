@@ -157,8 +157,18 @@ func DiskioInput(args []string) func() ([]*report.Record, error) {
 					Precision: 0,
 				},
 				&report.Record{
+					Name:      fmt.Sprintf("diskio.%s.read_time", v.Name),
+					Value:     float64(v.ReadTime),
+					Precision: 0,
+				},
+				&report.Record{
 					Name:      fmt.Sprintf("diskio.%s.write_bytes", v.Name),
 					Value:     float64(v.WriteBytes),
+					Precision: 0,
+				},
+				&report.Record{
+					Name:      fmt.Sprintf("diskio.%s.write_time", v.Name),
+					Value:     float64(v.WriteTime),
 					Precision: 0,
 				},
 			)
