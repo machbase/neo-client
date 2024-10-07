@@ -122,7 +122,7 @@ public class Example {
                     return Double.toString(v.getValue());
                 }
                 default:
-                    return "unsupproted " + any.getTypeUrl();
+                    return "unsupported " + any.getTypeUrl();
             }
         } catch (Exception e) {
             return "error " + e.getMessage();
