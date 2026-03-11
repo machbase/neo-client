@@ -184,7 +184,6 @@ go run ./_example/append.go -s 127.0.0.1:5656 -u sys -p manager
 ## Common Connection Options
 
 - `api.WithPassword(user, password)`: connect with explicit credentials
-- `api.WithTrustUser(user)`: connect using a trusted user stored in the database handle
 - `api.WithFetchRows(n)`: override the default fetch batch size for a connection
 - `api.WithStatementCache(mode)`: control query statement reuse
 - `api.WithIOMetrics(true)`: enable I/O metrics collection on the connection
@@ -197,5 +196,5 @@ go run ./_example/append.go -s 127.0.0.1:5656 -u sys -p manager
 
 ## See Also
 
-- `_example/query.go`
-- `_example/append.go`
+- [_example/query.go](./_example/query.go)
+- [_example/append.go](./_example/append.go)
