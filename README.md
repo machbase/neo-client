@@ -5,10 +5,11 @@
 It provides:
 
 - `machgo`: the main client package used by applications
+- `machbase`: the standard `database/sql` driver package
 - `api`: shared interfaces, options, and helper types
 - `machnet`: lower-level protocol and transport implementation used by `machgo`
 
-The examples in this module show how to connect to a Machbase Neo server, execute queries, and append time-series records.
+The examples in this module show how to connect to a Machbase Neo server, execute queries, append time-series records, and use the standard `database/sql` API.
 
 ## Requirements
 
@@ -33,6 +34,10 @@ Use this package for normal application code. It exposes the database handle, co
 ### `api`
 
 This package contains interfaces such as `Database`, `Conn`, `Rows`, and `Appender`, plus options like `api.WithPassword`, `api.WithFetchRows`, and `api.WithStatementCache`.
+
+### `machbase`
+
+This package provides a standard Go `database/sql` driver on top of the native TCP client. Use it when you want to integrate Machbase Neo with libraries or application code that already expect the standard `database/sql` interfaces.
 
 ### `machnet`
 
@@ -165,9 +170,65 @@ func main() {
 }
 ```
 
+### Use the Standard `database/sql` Driver
+
+If your application already uses `database/sql`, import `github.com/machbase/neo-client/machbase` for driver registration and connect with `sql.Open`.
+
+```go
+package main
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+
+	_ "github.com/machbase/neo-client/machbase"
+)
+
+func main() {
+	dsn := "server=tcp://sys:manager@127.0.0.1:5656;fetch_rows=777;statement_cache=off;io_metrics=true"
+
+	db, err := sql.Open("machbase", dsn)
+	if err != nil {
+		panic(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	rows, err := db.QueryContext(ctx, `SELECT * FROM M$SYS_TABLES ORDER BY NAME`)
+	if err != nil {
+		panic(err)
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("Columns:", cols)
+	for rows.Next() {
+		// scan values here
+	}
+	if err := rows.Err(); err != nil {
+		panic(err)
+	}
+}
+```
+
+Supported DSN keys for the standard driver include:
+
+- `server`: server address such as `tcp://sys:manager@127.0.0.1:5656`
+- `host`, `port`, `user`, `password`: explicit connection fields
+- `fetch_rows`: fetch batch size
+- `statement_cache`: `auto`, `on`, or `off`
+- `io_metrics`: `true` or `false`
+- `alternative_servers`: alternative server list such as `127.0.0.2:5656`
+
+The standard driver follows `database/sql` pooling through `sql.DB`. Explicit transaction statements are not supported by Machbase Neo, so `Begin` and `BeginTx` return an error. `LastInsertId` is also not supported.
+
 ## Running the Included Examples
 
-Two runnable examples are included under `_example/`.
+Four runnable examples are included under `_example/`.
 
 Run the query example:
 
@@ -179,6 +240,18 @@ Run the append example:
 
 ```sh
 go run ./_example/append.go -s 127.0.0.1:5656 -u sys -p manager
+```
+
+Run the standard driver query example:
+
+```sh
+go run ./_example/driver_query.go -s 127.0.0.1:5656 -u sys -p manager
+```
+
+Run the standard driver insert example:
+
+```sh
+go run ./_example/driver_insert.go -s 127.0.0.1:5656 -u sys -p manager
 ```
 
 ## Common Connection Options
@@ -193,8 +266,12 @@ go run ./_example/append.go -s 127.0.0.1:5656 -u sys -p manager
 - Always close `Rows`, `Stmt`, `Appender`, and `Conn` objects after use.
 - `Appender.Close()` returns success and failure counts for the append session.
 - For regular application usage, prefer `machgo` over importing `machnet` directly.
+- Use `machbase` when you need compatibility with `database/sql` and its connection pooling.
+- The standard driver does not support explicit transactions or `LastInsertId`.
 
 ## See Also
 
 - [_example/query.go](./_example/query.go)
 - [_example/append.go](./_example/append.go)
+- [_example/driver_query.go](./_example/driver_query.go)
+- [_example/driver_insert.go](./_example/driver_insert.go)
