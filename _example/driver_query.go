@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	_ "github.com/machbase/neo-client/machbase"
+	_ "github.com/machbase/neo-client"
 )
 
 var server = "127.0.0.1:5656"

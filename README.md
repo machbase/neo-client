@@ -172,7 +172,7 @@ func main() {
 
 ### Use the Standard `database/sql` Driver
 
-If your application already uses `database/sql`, import `github.com/machbase/neo-client/machbase` for driver registration and connect with `sql.Open`.
+If your application already uses `database/sql`, import `github.com/machbase/neo-client` for driver registration and connect with `sql.Open`.
 
 ```go
 package main
@@ -182,7 +182,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	_ "github.com/machbase/neo-client/machbase"
+	_ "github.com/machbase/neo-client"
 )
 
 func main() {
