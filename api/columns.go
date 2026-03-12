@@ -89,11 +89,11 @@ func (cols Columns) String() string {
 	if len(cols) == 0 {
 		return "[]"
 	}
-	strs := make([]string, len(cols))
+	list := make([]string, len(cols))
 	for i, col := range cols {
-		strs[i] = col.String()
+		list[i] = col.String()
 	}
-	return fmt.Sprintf("[%s]", strings.Join(strs, ", "))
+	return fmt.Sprintf("[%s]", strings.Join(list, ", "))
 }
 
 func (cols Columns) Names() []string {

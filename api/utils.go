@@ -424,14 +424,14 @@ func ParseTime(strVal string, format string, location *time.Location) (time.Time
 }
 
 func GetTimeformat(f string) string {
-	if m, ok := _timeformats[strings.ToUpper(f)]; ok {
+	if m, ok := _predefinedFormats[strings.ToUpper(f)]; ok {
 		return m
 	}
 	return f
 }
 
 // Refer: https://gosamples.dev/date-time-format-cheatsheet/
-var _timeformats = map[string]string{
+var _predefinedFormats = map[string]string{
 	"-":           "2006-01-02 15:04:05.999",
 	"DEFAULT":     "2006-01-02 15:04:05.999",
 	"DEFAULT_MS":  "2006-01-02 15:04:05.999",
