@@ -2,6 +2,8 @@ package api
 
 import (
 	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"runtime/debug"
@@ -174,8 +176,8 @@ func (typ DataType) Apply(value any, timeformat string, tz *time.Location) (any,
 		}
 	case DataTypeByte:
 		return ToInt8(value)
-	// case DataTypeBinary:
-	// 	return util.ParseBinary(v)
+	case DataTypeBinary:
+		return parseBinary(value)
 	// case DB_COLUMN_TYPE_CLOB:
 	// 	return util.ParseString(v)
 	// case DB_COLUMN_TYPE_BLOB:
@@ -184,6 +186,26 @@ func (typ DataType) Apply(value any, timeformat string, tz *time.Location) (any,
 	// 	return util.ParseBinary(v)
 	default:
 		return nil, fmt.Errorf("unsupported column type; %s", typ)
+	}
+}
+
+func parseBinary(v any) ([]byte, error) {
+	switch v := v.(type) {
+	case string:
+		if strings.HasPrefix(v, "0x") || strings.HasPrefix(v, "0X") {
+			return hex.DecodeString(v[2:])
+		} else {
+			// v is a base64 encoded string
+			base64Data, err := base64.StdEncoding.DecodeString(v)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decode base64 string: %w", err)
+			}
+			return base64Data, nil
+		}
+	case []byte:
+		return v, nil
+	default:
+		return nil, fmt.Errorf("%T is not convertible to binary", v)
 	}
 }
 
