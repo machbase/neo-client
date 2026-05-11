@@ -386,11 +386,18 @@ func (c *NativeConn) connectProtocol() error {
 }
 
 func parseStmtResponse(body []byte, sql string, fallbackCols []ColumnMeta) (*StmtExecResult, error) {
+	return parseStmtResponseWithStmtTypeFallback(body, sql, fallbackCols, true)
+}
+
+func parseStmtResponseWithStmtTypeFallback(body []byte, sql string, fallbackCols []ColumnMeta, useStmtTypeFallback bool) (*StmtExecResult, error) {
 	units, err := collectUnits(body)
 	if err != nil {
 		return nil, err
 	}
-	ret := &StmtExecResult{stmtType: inferStmtType(sql)}
+	ret := &StmtExecResult{}
+	if useStmtTypeFallback {
+		ret.stmtType = inferStmtType(sql)
+	}
 
 	if m, ok := firstUnit(units, cmiRMessageID); ok {
 		ret.message = string(m.data)
@@ -580,15 +587,12 @@ func (c *NativeConn) executePrepared(stmtID uint32, sql string, params []BoundPa
 	if err != nil {
 		return nil, err
 	}
-	ret, err := parseStmtResponse(body, sql, preparedCols)
+	ret, err := parseStmtResponseWithStmtTypeFallback(body, sql, preparedCols, false)
 	if err != nil {
 		return nil, err
 	}
 	if ret.lastResult && ret.rowCount == 0 && len(ret.columns) > 0 {
 		ret.rowCount = int64(len(ret.rows))
-	}
-	if ret.stmtType == 0 {
-		ret.stmtType = inferStmtType(sql)
 	}
 	return ret, nil
 }

@@ -303,7 +303,9 @@ func (stmt *StmtHandle) Execute() error {
 	if err != nil {
 		return err
 	}
-	stmt.stmtType = res.stmtType
+	if res.stmtType != 0 {
+		stmt.stmtType = res.stmtType
+	}
 	stmt.rowCount = res.rowCount
 	if len(res.columns) > 0 {
 		stmt.columns = res.columns

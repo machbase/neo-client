@@ -1341,6 +1341,9 @@ func (r *Rows) Message() string {
 		}
 		return "executed."
 	} else if r.stmtType >= 256 && r.stmtType <= 511 {
+		if msg := r.stmtType.SuccessfulMessage(); msg != "" {
+			return msg
+		}
 		if msg, ok := r.definedMessage(); ok {
 			return msg
 		}
