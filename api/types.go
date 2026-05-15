@@ -313,6 +313,7 @@ const (
 	TableTypeLookup   TableType = 4
 	TableTypeKeyValue TableType = 5
 	TableTypeTag      TableType = 6
+	TableTypeView     TableType = 7
 )
 
 func (typ TableType) String() string {
@@ -348,6 +349,8 @@ func (typ TableType) ShortString() string {
 		return "KeyValue"
 	case TableTypeTag:
 		return "Tag"
+	case TableTypeView:
+		return "View"
 	default:
 		return fmt.Sprintf("UndefinedTable-%d", typ)
 	}
