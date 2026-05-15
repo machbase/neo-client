@@ -74,6 +74,10 @@ func (typ DataType) Apply(value any, timeformat string, tz *time.Location) (any,
 		switch v := value.(type) {
 		case string:
 			return ParseTime(v, timeformat, tz)
+		case time.Time:
+			return v, nil
+		case *time.Time:
+			return *v, nil
 		default:
 			ts, err := ToInt64(v)
 			if err != nil {
