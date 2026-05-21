@@ -103,12 +103,12 @@ func (env *EnvHandle) Connect(connStr string) (*ConnHandle, error) {
 	if env == nil {
 		return nil, makeClientErr("invalid environment")
 	}
-	host, port, user, pass, alts, fetchRows, trackIOBytes, err := parseConnString(connStr)
+	host, port, user, pass, authMode, authKeyFile, authSigScheme, alts, fetchRows, trackIOBytes, err := parseConnString(connStr)
 	if err != nil {
 		env.lastErr.setErr(err)
 		return nil, err
 	}
-	nc, err := dialNative(host, port, user, pass, alts, fetchRows, trackIOBytes)
+	nc, err := dialNative(host, port, user, pass, authMode, authKeyFile, authSigScheme, alts, fetchRows, trackIOBytes)
 	if err != nil {
 		env.lastErr.setErr(err)
 		return nil, err

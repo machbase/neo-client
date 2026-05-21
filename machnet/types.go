@@ -39,17 +39,22 @@ const (
 )
 
 const (
-	cmiCVersionID  = 0x00000001
-	cmiCClientID   = 0x00000002
-	cmiCDatabaseID = 0x00000004
-	cmiCEndianID   = 0x00000005
-	cmiCUserID     = 0x00000006
-	cmiCPasswordID = 0x00000007
-	cmiCTimeoutID  = 0x00000008
-	cmiCSIDID      = 0x00000040
-	cmiCSHCID      = 0x00000041
-	cmiCIPID       = 0x00000042
-	cmiCTimezoneID = 0x00000070
+	cmiCVersionID       = 0x00000001
+	cmiCClientID        = 0x00000002
+	cmiCDatabaseID      = 0x00000004
+	cmiCEndianID        = 0x00000005
+	cmiCUserID          = 0x00000006
+	cmiCPasswordID      = 0x00000007
+	cmiCTimeoutID       = 0x00000008
+	cmiCAuthModeID      = 0x0000000A
+	cmiCAuthNonceID     = 0x0000000C
+	cmiCAuthValidMsID   = 0x0000000D
+	cmiCAuthSignatureID = 0x0000000E
+	cmiCSIDID           = 0x00000040
+	cmiCSHCID           = 0x00000041
+	cmiCIPID            = 0x00000042
+	cmiCAuthSigSchemeID = 0x00000043
+	cmiCTimezoneID      = 0x00000070
 
 	cmiRResultID   = 0x00000010
 	cmiRMessageID  = 0x00000011
@@ -499,7 +504,7 @@ func parseBoolOption(v string) (bool, error) {
 	}
 }
 
-func parseConnString(connStr string) (host string, port int, user string, pass string, alt []net.TCPAddr, fetchRows int64, trackIOBytes bool, err error) {
+func parseConnString(connStr string) (host string, port int, user string, pass string, authMode string, authKeyFile string, authSigScheme string, alt []net.TCPAddr, fetchRows int64, trackIOBytes bool, err error) {
 	m := map[string]string{}
 	for _, entry := range strings.Split(connStr, ";") {
 		entry = strings.TrimSpace(entry)
@@ -522,25 +527,28 @@ func parseConnString(connStr string) (host string, port int, user string, pass s
 	if p := strings.TrimSpace(m["PORT_NO"]); p != "" {
 		_, scanErr := fmt.Sscanf(p, "%d", &port)
 		if scanErr != nil {
-			return "", 0, "", "", nil, 0, false, fmt.Errorf("invalid PORT_NO: %w", scanErr)
+			return "", 0, "", "", "", "", "", nil, 0, false, fmt.Errorf("invalid PORT_NO: %w", scanErr)
 		}
 	}
 	user = m["UID"]
 	pass = m["PWD"]
+	authMode = m["AUTH_MODE"]
+	authKeyFile = m["AUTH_KEY_FILE"]
+	authSigScheme = m["AUTH_SIG_SCHEME"]
 	fetchRows = defaultFetchRows
 	if rowsStr := strings.TrimSpace(m["FETCH_ROWS"]); rowsStr != "" {
 		if _, scanErr := fmt.Sscanf(rowsStr, "%d", &fetchRows); scanErr != nil {
-			return "", 0, "", "", nil, 0, false, fmt.Errorf("invalid FETCH_ROWS: %w", scanErr)
+			return "", 0, "", "", "", "", "", nil, 0, false, fmt.Errorf("invalid FETCH_ROWS: %w", scanErr)
 		}
 		if fetchRows <= 0 {
-			return "", 0, "", "", nil, 0, false, fmt.Errorf("invalid FETCH_ROWS: %d", fetchRows)
+			return "", 0, "", "", "", "", "", nil, 0, false, fmt.Errorf("invalid FETCH_ROWS: %d", fetchRows)
 		}
 	}
 
 	if opt := strings.TrimSpace(m["IO_METRICS"]); opt != "" {
 		trackIOBytes, err = parseBoolOption(opt)
 		if err != nil {
-			return "", 0, "", "", nil, 0, false, fmt.Errorf("invalid IO_METRICS: %w", err)
+			return "", 0, "", "", "", "", "", nil, 0, false, fmt.Errorf("invalid IO_METRICS: %w", err)
 		}
 	}
 
@@ -561,7 +569,7 @@ func parseConnString(connStr string) (host string, port int, user string, pass s
 			alt = append(alt, net.TCPAddr{IP: net.ParseIP(strings.TrimSpace(h)), Port: p})
 		}
 	}
-	return host, port, user, pass, alt, fetchRows, trackIOBytes, nil
+	return host, port, user, pass, authMode, authKeyFile, authSigScheme, alt, fetchRows, trackIOBytes, nil
 }
 
 func inferStmtType(sql string) StmtType {

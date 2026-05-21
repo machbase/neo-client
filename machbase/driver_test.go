@@ -36,6 +36,29 @@ func TestParseDSNKeyValue(t *testing.T) {
 	}
 }
 
+func TestParseDSNAuthKey(t *testing.T) {
+	cfg, err := ParseDSN("server=127.0.0.1:5656;user=sys;auth_mode=challenge;auth_key_file=/tmp/machbase_key.pem;auth_sig_scheme=rsa_pss")
+	if err != nil {
+		t.Fatalf("ParseDSN() error = %v", err)
+	}
+	if cfg.AuthMode != "challenge" {
+		t.Fatalf("unexpected auth_mode: %q", cfg.AuthMode)
+	}
+	if cfg.AuthKeyFile != "/tmp/machbase_key.pem" {
+		t.Fatalf("unexpected auth_key_file: %q", cfg.AuthKeyFile)
+	}
+	if cfg.AuthSigScheme != "rsa_pss" {
+		t.Fatalf("unexpected auth_sig_scheme: %q", cfg.AuthSigScheme)
+	}
+}
+
+func TestConfigValidateChallengeRequiresKeyFile(t *testing.T) {
+	cfg := Config{Host: "127.0.0.1", Port: 5656, User: "sys", AuthMode: "CHALLENGE"}
+	if err := cfg.validate(); err == nil {
+		t.Fatalf("expected validate() error")
+	}
+}
+
 func TestDriverOpenConnectorMergesDefaults(t *testing.T) {
 	drv := &Driver{Host: "127.0.0.1", Port: 5656, User: "sys", Password: "manager", StatementCache: api.StatementCacheOn}
 	connector, err := drv.OpenConnector("fetch_rows=500")

@@ -23,12 +23,25 @@ type ConnectOptionTrustUser struct {
 
 func (ConnectOptionTrustUser) connectOption() {}
 
+type ConnectOptionAuthKey struct {
+	User          string
+	KeyFile       string
+	AuthMode      string
+	AuthSigScheme string
+}
+
+func (ConnectOptionAuthKey) connectOption() {}
+
 func WithPassword(user string, password string) ConnectOption {
 	return &ConnectOptionPassword{User: user, Password: password}
 }
 
 func WithTrustUser(user string) ConnectOption {
 	return &ConnectOptionTrustUser{User: user}
+}
+
+func WithAuthKey(user string, keyFile string) ConnectOption {
+	return &ConnectOptionAuthKey{User: user, KeyFile: keyFile, AuthMode: "CHALLENGE", AuthSigScheme: ""}
 }
 
 type StatementCacheMode int

@@ -35,6 +35,9 @@ type Config struct {
 	Port            int
 	User            string
 	Password        string
+	AuthMode        string
+	AuthKeyFile     string
+	AuthSigScheme   string
 	AlternativeHost string
 	AlternativePort int
 	FetchRows       int64
@@ -58,8 +61,12 @@ func (cfg Config) validate() error {
 	if cfg.User == "" {
 		return errors.New("machbase dsn requires user")
 	}
-	if cfg.Password == "" {
+	authMode := strings.ToUpper(strings.TrimSpace(cfg.AuthMode))
+	if cfg.Password == "" && (authMode == "" || authMode == "PASSWORD") {
 		return errors.New("machbase dsn requires password")
+	}
+	if authMode == "CHALLENGE" && strings.TrimSpace(cfg.AuthKeyFile) == "" {
+		return errors.New("machbase dsn requires auth_key_file for auth_mode=CHALLENGE")
 	}
 	if cfg.Port <= 0 {
 		return fmt.Errorf("machbase dsn has invalid port %d", cfg.Port)
@@ -76,6 +83,9 @@ func (cfg Config) machgoConfig() *machgo.Config {
 		MaxOpenConn:     -1,
 		StatementCache:  cfg.StatementCache,
 		FetchRows:       cfg.FetchRows,
+		AuthMode:        cfg.AuthMode,
+		AuthKeyFile:     cfg.AuthKeyFile,
+		AuthSigScheme:   cfg.AuthSigScheme,
 	}
 }
 
@@ -84,6 +94,9 @@ type Driver struct {
 	Port            int
 	User            string
 	Password        string
+	AuthMode        string
+	AuthKeyFile     string
+	AuthSigScheme   string
 	AlternativeHost string
 	AlternativePort int
 	FetchRows       int64
@@ -104,6 +117,9 @@ func (drv *Driver) baseConfig() Config {
 		Port:            drv.Port,
 		User:            drv.User,
 		Password:        drv.Password,
+		AuthMode:        drv.AuthMode,
+		AuthKeyFile:     drv.AuthKeyFile,
+		AuthSigScheme:   drv.AuthSigScheme,
 		AlternativeHost: drv.AlternativeHost,
 		AlternativePort: drv.AlternativePort,
 		FetchRows:       drv.FetchRows,
@@ -148,12 +164,17 @@ func (cn *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	if cn == nil || cn.db == nil {
 		return nil, driver.ErrBadConn
 	}
-	conn, err := cn.db.Connect(ctx,
-		api.WithPassword(cn.cfg.User, cn.cfg.Password),
+	opts := []api.ConnectOption{
 		api.WithStatementCache(cn.cfg.StatementCache),
 		api.WithFetchRows(cn.cfg.FetchRows),
 		api.WithIOMetrics(cn.cfg.IOMetrics),
-	)
+	}
+	if strings.TrimSpace(cn.cfg.AuthKeyFile) != "" || strings.EqualFold(strings.TrimSpace(cn.cfg.AuthMode), "CHALLENGE") {
+		opts = append(opts, api.WithAuthKey(cn.cfg.User, cn.cfg.AuthKeyFile))
+	} else {
+		opts = append(opts, api.WithPassword(cn.cfg.User, cn.cfg.Password))
+	}
+	conn, err := cn.db.Connect(ctx, opts...)
 	if err != nil {
 		return nil, normalizeError(err)
 	}
@@ -576,6 +597,12 @@ func parseKeyValueDSN(dsn string) (Config, error) {
 			cfg.User = value
 		case "password", "pwd":
 			cfg.Password = value
+		case "auth_mode":
+			cfg.AuthMode = value
+		case "auth_key_file":
+			cfg.AuthKeyFile = value
+		case "auth_sig_scheme":
+			cfg.AuthSigScheme = value
 		case "fetch_rows", "fetchrows":
 			rows, err := strconv.ParseInt(value, 10, 64)
 			if err != nil {
@@ -709,6 +736,15 @@ func mergeConfig(base Config, override Config) Config {
 	}
 	if override.Password != "" {
 		base.Password = override.Password
+	}
+	if override.AuthMode != "" {
+		base.AuthMode = override.AuthMode
+	}
+	if override.AuthKeyFile != "" {
+		base.AuthKeyFile = override.AuthKeyFile
+	}
+	if override.AuthSigScheme != "" {
+		base.AuthSigScheme = override.AuthSigScheme
 	}
 	if override.AlternativeHost != "" {
 		base.AlternativeHost = override.AlternativeHost

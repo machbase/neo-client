@@ -56,6 +56,10 @@ type Config struct {
 
 	TrustUsers map[string]string
 
+	AuthMode      string
+	AuthKeyFile   string
+	AuthSigScheme string
+
 	// unused
 	ConType int
 }
@@ -76,6 +80,9 @@ type Database struct {
 
 	statementCache api.StatementCacheMode
 	fetchRows      int64
+	authMode       string
+	authKeyFile    string
+	authSigScheme  string
 }
 
 var _ api.Database = (*Database)(nil)
@@ -96,6 +103,9 @@ func NewDatabase(conf *Config) (*Database, error) {
 		trustUsers:      map[string]string{},
 		statementCache:  conf.StatementCache,
 		fetchRows:       conf.FetchRows,
+		authMode:        conf.AuthMode,
+		authKeyFile:     conf.AuthKeyFile,
+		authSigScheme:   conf.AuthSigScheme,
 	}
 	if ret.fetchRows <= 0 {
 		ret.fetchRows = defaultFetchRows
@@ -236,7 +246,7 @@ func (db *Database) UserAuth(ctx context.Context, user, password string) (bool, 
 	return true, "", err
 }
 
-func (db *Database) connectionString(user string, password string, fetchRows int64, ioMetrics bool) string {
+func (db *Database) connectionString(user string, password string, fetchRows int64, ioMetrics bool, authMode string, authKeyFile string, authSigScheme string) string {
 	entries := []string{
 		fmt.Sprintf("SERVER=%s", db.host),
 		fmt.Sprintf("PORT_NO=%d", db.port),
@@ -247,6 +257,15 @@ func (db *Database) connectionString(user string, password string, fetchRows int
 	}
 	if ioMetrics {
 		entries = append(entries, "IO_METRICS=1")
+	}
+	if strings.TrimSpace(authMode) != "" {
+		entries = append(entries, fmt.Sprintf("AUTH_MODE=%s", authMode))
+	}
+	if strings.TrimSpace(authKeyFile) != "" {
+		entries = append(entries, fmt.Sprintf("AUTH_KEY_FILE=%s", authKeyFile))
+	}
+	if strings.TrimSpace(authSigScheme) != "" {
+		entries = append(entries, fmt.Sprintf("AUTH_SIG_SCHEME=%s", authSigScheme))
 	}
 	if db.alternativeHost != "" && db.alternativePort != 0 {
 		entries = append(entries,
@@ -261,6 +280,9 @@ func (db *Database) Connect(ctx context.Context, opts ...api.ConnectOption) (api
 	var stmtReuse = db.statementCache
 	var fetchRows = db.fetchRows
 	var enabledIOMetrics bool = false
+	var authMode = db.authMode
+	var authKeyFile = db.authKeyFile
+	var authSigScheme = db.authSigScheme
 
 	for _, opt := range opts {
 		switch o := opt.(type) {
@@ -281,6 +303,11 @@ func (db *Database) Connect(ctx context.Context, opts ...api.ConnectOption) (api
 			fetchRows = o.Rows
 		case *api.ConnectOptionIOMetrics:
 			enabledIOMetrics = o.Enabled
+		case *api.ConnectOptionAuthKey:
+			user = o.User
+			authMode = o.AuthMode
+			authKeyFile = o.KeyFile
+			authSigScheme = o.AuthSigScheme
 		default:
 			return nil, fmt.Errorf("unknown option type-%T", o)
 		}
@@ -303,7 +330,7 @@ func (db *Database) Connect(ctx context.Context, opts ...api.ConnectOption) (api
 		}
 	}()
 	var handle *machnet.ConnHandle
-	if c, err := db.handle.Connect(db.connectionString(user, password, fetchRows, enabledIOMetrics)); err != nil {
+	if c, err := db.handle.Connect(db.connectionString(user, password, fetchRows, enabledIOMetrics, authMode, authKeyFile, authSigScheme)); err != nil {
 		return nil, db.ErrorOf(err)
 	} else {
 		handle = c
