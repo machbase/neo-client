@@ -52,7 +52,7 @@ func main() {
 	defer db.Close()
 
 	ctx := context.Background()
-	conn, err := db.Connect(ctx, api.WithAuthKey(user, keyFile))
+	conn, err := db.Connect(ctx, api.WithAuthKeyFile(user, keyFile))
 	if err != nil {
 		panic(err)
 	}

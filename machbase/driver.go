@@ -170,7 +170,7 @@ func (cn *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 		api.WithIOMetrics(cn.cfg.IOMetrics),
 	}
 	if strings.TrimSpace(cn.cfg.AuthKeyFile) != "" || strings.EqualFold(strings.TrimSpace(cn.cfg.AuthMode), "CHALLENGE") {
-		opts = append(opts, api.WithAuthKey(cn.cfg.User, cn.cfg.AuthKeyFile))
+		opts = append(opts, api.WithAuthKeyFile(cn.cfg.User, cn.cfg.AuthKeyFile))
 	} else {
 		opts = append(opts, api.WithPassword(cn.cfg.User, cn.cfg.Password))
 	}

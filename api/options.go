@@ -40,7 +40,7 @@ func WithTrustUser(user string) ConnectOption {
 	return &ConnectOptionTrustUser{User: user}
 }
 
-func WithAuthKey(user string, keyFile string) ConnectOption {
+func WithAuthKeyFile(user string, keyFile string) ConnectOption {
 	return &ConnectOptionAuthKey{User: user, KeyFile: keyFile, AuthMode: "CHALLENGE", AuthSigScheme: ""}
 }
 
