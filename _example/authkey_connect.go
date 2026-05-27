@@ -25,10 +25,12 @@ func main() {
 	server := "127.0.0.1:5656"
 	user := "sys"
 	keyFile := "./machbase_authkey_p256_private.pem"
+	proxyUser := ""
 
 	flag.StringVar(&server, "s", server, "server address")
 	flag.StringVar(&user, "u", user, "user")
 	flag.StringVar(&keyFile, "k", keyFile, "private key file path")
+	flag.StringVar(&proxyUser, "as", proxyUser, "proxy user, connect as other user (this option only works when login user is sys)")
 	flag.Parse()
 
 	host, portStr, err := net.SplitHostPort(server)
@@ -51,8 +53,12 @@ func main() {
 	}
 	defer db.Close()
 
+	opts := []api.ConnectOption{api.WithAuthKeyFile(user, keyFile)}
+	if proxyUser != "" {
+		opts = append(opts, api.WithProxyUser(proxyUser))
+	}
 	ctx := context.Background()
-	conn, err := db.Connect(ctx, api.WithAuthKeyFile(user, keyFile))
+	conn, err := db.Connect(ctx, opts...)
 	if err != nil {
 		panic(err)
 	}

@@ -44,6 +44,16 @@ func WithAuthKeyFile(user string, keyFile string) ConnectOption {
 	return &ConnectOptionAuthKey{User: user, KeyFile: keyFile, AuthMode: "CHALLENGE", AuthSigScheme: ""}
 }
 
+func WithProxyUser(proxyUser string) ConnectOption {
+	return &ConnectOptionProxyUser{ProxyUser: proxyUser}
+}
+
+type ConnectOptionProxyUser struct {
+	ProxyUser string
+}
+
+func (ConnectOptionProxyUser) connectOption() {}
+
 type StatementCacheMode int
 
 const (

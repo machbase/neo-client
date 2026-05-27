@@ -35,6 +35,7 @@ type Config struct {
 	Port            int
 	User            string
 	Password        string
+	ProxyUser       string
 	AuthMode        string
 	AuthKeyFile     string
 	AuthSigScheme   string
@@ -594,7 +595,11 @@ func parseKeyValueDSN(dsn string) (Config, error) {
 			}
 			cfg.Port = port
 		case "user", "uid":
-			cfg.User = value
+			username, proxyed := api.ParseUserName(value)
+			cfg.User = username.Login
+			if proxyed && username.Proxy != "" {
+				cfg.ProxyUser = username.Proxy
+			}
 		case "password", "pwd":
 			cfg.Password = value
 		case "auth_mode":
@@ -681,6 +686,51 @@ func applyServerValue(cfg *Config, value string) error {
 			}
 			if pass, ok := u.User.Password(); ok {
 				cfg.Password = pass
+			}
+		}
+		for key, values := range u.Query() {
+			switch strings.ToLower(key) {
+			case "as":
+				if len(values) > 0 {
+					cfg.ProxyUser = values[0]
+				}
+			case "auth_mode":
+				cfg.AuthMode = values[0]
+			case "auth_key_file":
+				cfg.AuthKeyFile = values[0]
+			case "auth_sig_scheme":
+				cfg.AuthSigScheme = values[0]
+			case "fetch_rows", "fetchrows":
+				rows, err := strconv.ParseInt(values[0], 10, 64)
+				if err != nil {
+					return fmt.Errorf("invalid fetch_rows %q", values[0])
+				}
+				cfg.FetchRows = rows
+			case "statement_cache", "statementcache":
+				mode, err := parseStatementCacheMode(values[0])
+				if err != nil {
+					return err
+				}
+				cfg.StatementCache = mode
+				cfg.statementCacheSet = true
+			case "io_metrics", "iometrics":
+				enabled, err := strconv.ParseBool(values[0])
+				if err != nil {
+					return fmt.Errorf("invalid io_metrics %q", values[0])
+				}
+				cfg.IOMetrics = enabled
+			case "alternative_servers":
+				if err := applyAlternativeServers(cfg, values[0]); err != nil {
+					return err
+				}
+			case "alternative_host":
+				cfg.AlternativeHost = values[0]
+			case "alternative_port":
+				port, err := strconv.Atoi(values[0])
+				if err != nil {
+					return fmt.Errorf("invalid alternative_port %q", values[0])
+				}
+				cfg.AlternativePort = port
 			}
 		}
 		return nil

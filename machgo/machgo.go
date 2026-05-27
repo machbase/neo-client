@@ -283,6 +283,7 @@ func (db *Database) Connect(ctx context.Context, opts ...api.ConnectOption) (api
 	var authMode = db.authMode
 	var authKeyFile = db.authKeyFile
 	var authSigScheme = db.authSigScheme
+	var proxyUser string
 
 	for _, opt := range opts {
 		switch o := opt.(type) {
@@ -308,9 +309,15 @@ func (db *Database) Connect(ctx context.Context, opts ...api.ConnectOption) (api
 			authMode = o.AuthMode
 			authKeyFile = o.KeyFile
 			authSigScheme = o.AuthSigScheme
+		case *api.ConnectOptionProxyUser:
+			proxyUser = o.ProxyUser
 		default:
 			return nil, fmt.Errorf("unknown option type-%T", o)
 		}
+	}
+
+	if strings.EqualFold(user, "sys") && proxyUser != "" {
+		user = fmt.Sprintf("SYS AS %s", strings.ToUpper(proxyUser))
 	}
 
 	returnChan := db.maxConnsChan
