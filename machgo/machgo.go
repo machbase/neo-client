@@ -2,6 +2,7 @@ package machgo
 
 import (
 	"context"
+	"crypto"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -54,12 +55,6 @@ type Config struct {
 	// If the value is not specified or less than or equal to 0, the defaultFetchRows is used.
 	FetchRows int64
 
-	TrustUsers map[string]string
-
-	AuthMode      string
-	AuthKeyFile   string
-	AuthSigScheme string
-
 	// unused
 	ConType int
 }
@@ -72,17 +67,11 @@ type Database struct {
 	alternativeHost string
 	alternativePort int
 
-	trustUsersMutex sync.RWMutex
-	trustUsers      map[string]string
-
 	maxConnsMutex sync.RWMutex
 	maxConnsChan  chan struct{}
 
 	statementCache api.StatementCacheMode
 	fetchRows      int64
-	authMode       string
-	authKeyFile    string
-	authSigScheme  string
 }
 
 var _ api.Database = (*Database)(nil)
@@ -100,18 +89,11 @@ func NewDatabase(conf *Config) (*Database, error) {
 		alternativeHost: conf.AlternativeHost,
 		alternativePort: conf.AlternativePort,
 		handle:          handle,
-		trustUsers:      map[string]string{},
 		statementCache:  conf.StatementCache,
 		fetchRows:       conf.FetchRows,
-		authMode:        conf.AuthMode,
-		authKeyFile:     conf.AuthKeyFile,
-		authSigScheme:   conf.AuthSigScheme,
 	}
 	if ret.fetchRows <= 0 {
 		ret.fetchRows = defaultFetchRows
-	}
-	for u, p := range conf.TrustUsers {
-		ret.trustUsers[strings.ToUpper(u)] = p
 	}
 
 	if conf.MaxOpenConnFactor <= 0 {
@@ -202,39 +184,16 @@ func (db *Database) SetMaxOpenConns(desiredMaxOpenConns int) {
 
 func (db *Database) Ping(ctx context.Context) (time.Duration, error) {
 	tick := time.Now()
-	db.trustUsersMutex.RLock()
-	var user, pass string
-	for u, p := range db.trustUsers {
-		user = u
-		pass = p
-		break
-	}
-	db.trustUsersMutex.RUnlock()
-	if user == "" {
-		return 0, errors.New("ping requires at least one trust user")
-	}
-	conn, err := db.Connect(ctx, api.WithPassword(user, pass))
-	if err != nil {
-		return time.Since(tick), err
-	}
-	if err := conn.Close(); err != nil {
-		return time.Since(tick), err
+	if conn, err := db.Connect(ctx, api.WithPassword("sys", "manager")); err != nil {
+		if !strings.Contains(err.Error(), "Invalid username/password") {
+			return time.Since(tick), err
+		}
+	} else {
+		if err := conn.Close(); err != nil {
+			return time.Since(tick), err
+		}
 	}
 	return time.Since(tick), nil
-}
-
-func (db *Database) SetTrustUser(user, password string) error {
-	db.trustUsersMutex.Lock()
-	defer db.trustUsersMutex.Unlock()
-	db.trustUsers[strings.ToUpper(user)] = password
-	return nil
-}
-
-func (db *Database) getTrustUser(user string) (string, bool) {
-	db.trustUsersMutex.RLock()
-	defer db.trustUsersMutex.RUnlock()
-	pass, ok := db.trustUsers[strings.ToUpper(user)]
-	return pass, ok
 }
 
 func (db *Database) UserAuth(ctx context.Context, user, password string) (bool, string, error) {
@@ -246,7 +205,7 @@ func (db *Database) UserAuth(ctx context.Context, user, password string) (bool, 
 	return true, "", err
 }
 
-func (db *Database) connectionString(user string, password string, fetchRows int64, ioMetrics bool, authMode string, authKeyFile string, authSigScheme string) string {
+func (db *Database) connectionString(user string, password string, fetchRows int64, ioMetrics bool, authMode string) string {
 	entries := []string{
 		fmt.Sprintf("SERVER=%s", db.host),
 		fmt.Sprintf("PORT_NO=%d", db.port),
@@ -261,12 +220,6 @@ func (db *Database) connectionString(user string, password string, fetchRows int
 	if strings.TrimSpace(authMode) != "" {
 		entries = append(entries, fmt.Sprintf("AUTH_MODE=%s", authMode))
 	}
-	if strings.TrimSpace(authKeyFile) != "" {
-		entries = append(entries, fmt.Sprintf("AUTH_KEY_FILE=%s", authKeyFile))
-	}
-	if strings.TrimSpace(authSigScheme) != "" {
-		entries = append(entries, fmt.Sprintf("AUTH_SIG_SCHEME=%s", authSigScheme))
-	}
 	if db.alternativeHost != "" && db.alternativePort != 0 {
 		entries = append(entries,
 			fmt.Sprintf("ALTERNATIVE_SERVERS=%s:%d",
@@ -280,9 +233,8 @@ func (db *Database) Connect(ctx context.Context, opts ...api.ConnectOption) (api
 	var stmtReuse = db.statementCache
 	var fetchRows = db.fetchRows
 	var enabledIOMetrics bool = false
-	var authMode = db.authMode
-	var authKeyFile = db.authKeyFile
-	var authSigScheme = db.authSigScheme
+	var authMode string
+	var authKey crypto.PrivateKey = nil
 	var proxyUser string
 
 	for _, opt := range opts {
@@ -290,14 +242,7 @@ func (db *Database) Connect(ctx context.Context, opts ...api.ConnectOption) (api
 		case *api.ConnectOptionPassword:
 			user = o.User
 			password = o.Password
-		case *api.ConnectOptionTrustUser:
-			if pass, ok := db.getTrustUser(o.User); ok {
-				user = strings.ToUpper(o.User)
-				password = pass
-			}
-			if user == "" {
-				return nil, errors.New("trust user not found")
-			}
+			authMode = "PASSWORD"
 		case *api.ConnectOptionStatementCache:
 			stmtReuse = o.Mode
 		case *api.ConnectOptionFetchRows:
@@ -307,8 +252,7 @@ func (db *Database) Connect(ctx context.Context, opts ...api.ConnectOption) (api
 		case *api.ConnectOptionAuthKey:
 			user = o.User
 			authMode = o.AuthMode
-			authKeyFile = o.KeyFile
-			authSigScheme = o.AuthSigScheme
+			authKey = o.Key
 		case *api.ConnectOptionProxyUser:
 			proxyUser = o.ProxyUser
 		default:
@@ -316,7 +260,9 @@ func (db *Database) Connect(ctx context.Context, opts ...api.ConnectOption) (api
 		}
 	}
 
-	if strings.EqualFold(user, "sys") && proxyUser != "" {
+	if strings.EqualFold(user, "sys") && proxyUser != "" && !strings.EqualFold(proxyUser, "sys") {
+		// "SYS AS PROXY_USER" format is required for proxy user authentication,
+		// and the proxy user cannot be "SYS" ('sys as sys' is 'sys').
 		user = fmt.Sprintf("SYS AS %s", strings.ToUpper(proxyUser))
 	}
 
@@ -337,13 +283,11 @@ func (db *Database) Connect(ctx context.Context, opts ...api.ConnectOption) (api
 		}
 	}()
 	var handle *machnet.ConnHandle
-	if c, err := db.handle.Connect(db.connectionString(user, password, fetchRows, enabledIOMetrics, authMode, authKeyFile, authSigScheme)); err != nil {
+	if c, err := db.handle.Connect(db.connectionString(user, password, fetchRows, enabledIOMetrics, authMode), authKey); err != nil {
 		return nil, db.ErrorOf(err)
 	} else {
 		handle = c
 	}
-
-	db.SetTrustUser(user, password)
 
 	ret := &Conn{
 		db:                     db,

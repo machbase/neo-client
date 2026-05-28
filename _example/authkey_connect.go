@@ -53,7 +53,11 @@ func main() {
 	}
 	defer db.Close()
 
-	opts := []api.ConnectOption{api.WithAuthKeyFile(user, keyFile)}
+	key, err := machgo.LoadPrivateKeyFromFile(keyFile)
+	if err != nil {
+		panic(err)
+	}
+	opts := []api.ConnectOption{api.WithAuthKey(user, key)}
 	if proxyUser != "" {
 		opts = append(opts, api.WithProxyUser(proxyUser))
 	}

@@ -7,16 +7,6 @@ import (
 	"time"
 )
 
-var defaultDatabase Database
-
-func SetDefault(db Database) {
-	defaultDatabase = db
-}
-
-func Default() Database {
-	return defaultDatabase
-}
-
 type Database interface {
 	// Connect creates a new connection to the database.
 	Connect(ctx context.Context, options ...ConnectOption) (Conn, error)

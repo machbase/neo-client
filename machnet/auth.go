@@ -54,14 +54,13 @@ func canonicalizeAuthSigScheme(scheme string) (string, error) {
 	return "", errors.New("AUTH_SIG_SCHEME must be ECDSA, RSA_PKCS1_V15, or RSA_PSS")
 }
 
-func finalizeAuthConnectOptions(mode string, keyFile string, sigScheme string) (string, string, error) {
+func finalizeAuthConnectOptions(mode string, key crypto.PrivateKey, sigScheme string) (string, string, error) {
 	canonMode, err := canonicalizeAuthMode(mode)
 	if err != nil {
 		return "", "", err
 	}
-	keyFile = strings.TrimSpace(keyFile)
 	if canonMode == "" {
-		if keyFile != "" {
+		if key != nil {
 			canonMode = authModeChallenge
 		} else {
 			canonMode = authModePassword
@@ -71,8 +70,8 @@ func finalizeAuthConnectOptions(mode string, keyFile string, sigScheme string) (
 	if canonMode == authModePassword {
 		return canonMode, "", nil
 	}
-	if keyFile == "" {
-		return "", "", errors.New("AUTH_KEY_FILE is required for AUTH_MODE=CHALLENGE")
+	if key == nil {
+		return "", "", errors.New("AUTH_KEY is required for AUTH_MODE=CHALLENGE")
 	}
 	canonScheme, err := canonicalizeAuthSigScheme(sigScheme)
 	if err != nil {
@@ -81,18 +80,14 @@ func finalizeAuthConnectOptions(mode string, keyFile string, sigScheme string) (
 	if canonScheme != "" {
 		return canonMode, canonScheme, nil
 	}
-	detected, err := detectAuthSigSchemeFromKeyFile(keyFile)
+	detected, err := detectAuthSigSchemeFromKey(key)
 	if err != nil {
 		return "", "", err
 	}
 	return canonMode, detected, nil
 }
 
-func detectAuthSigSchemeFromKeyFile(keyFile string) (string, error) {
-	key, err := loadPrivateKey(keyFile)
-	if err != nil {
-		return "", err
-	}
+func detectAuthSigSchemeFromKey(key crypto.PrivateKey) (string, error) {
 	if err := validateSupportedAuthKey(key); err != nil {
 		return "", err
 	}
@@ -111,6 +106,18 @@ func signAuthNonce(keyFile string, sigScheme string, nonce []byte) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
+	return signAuthNonceWithKey(key, keyFile, sigScheme, nonce)
+}
+
+func signAuthNoncePEM(privateKeyPEM []byte, sigScheme string, nonce []byte) ([]byte, error) {
+	key, err := loadPrivateKeyPEM(privateKeyPEM, "AUTH_KEY_PEM")
+	if err != nil {
+		return nil, err
+	}
+	return signAuthNonceWithKey(key, "AUTH_KEY_PEM", sigScheme, nonce)
+}
+
+func signAuthNonceWithKey(key crypto.PrivateKey, keySource string, sigScheme string, nonce []byte) ([]byte, error) {
 	if err := validateSupportedAuthKey(key); err != nil {
 		return nil, err
 	}
@@ -119,7 +126,7 @@ func signAuthNonce(keyFile string, sigScheme string, nonce []byte) ([]byte, erro
 		return nil, err
 	}
 	if scheme == "" {
-		scheme, err = detectAuthSigSchemeFromKeyFile(keyFile)
+		scheme, err = detectAuthSigSchemeFromKey(key)
 		if err != nil {
 			return nil, err
 		}
@@ -129,19 +136,19 @@ func signAuthNonce(keyFile string, sigScheme string, nonce []byte) ([]byte, erro
 	case authSigSchemeECDSA:
 		ecdsaKey, ok := key.(*ecdsa.PrivateKey)
 		if !ok {
-			return nil, errors.New("AUTH_KEY_FILE is not an EC private key")
+			return nil, fmt.Errorf("%s is not an EC private key", keySource)
 		}
 		return ecdsa.SignASN1(rand.Reader, ecdsaKey, h[:])
 	case authSigSchemeRSAPKCS1V15:
 		rsaKey, ok := key.(*rsa.PrivateKey)
 		if !ok {
-			return nil, errors.New("AUTH_KEY_FILE is not an RSA private key")
+			return nil, fmt.Errorf("%s is not an RSA private key", keySource)
 		}
 		return rsa.SignPKCS1v15(rand.Reader, rsaKey, crypto.SHA256, h[:])
 	case authSigSchemeRSAPSS:
 		rsaKey, ok := key.(*rsa.PrivateKey)
 		if !ok {
-			return nil, errors.New("AUTH_KEY_FILE is not an RSA private key")
+			return nil, fmt.Errorf("%s is not an RSA private key", keySource)
 		}
 		return rsa.SignPSS(rand.Reader, rsaKey, crypto.SHA256, h[:], &rsa.PSSOptions{Hash: crypto.SHA256, SaltLength: rsa.PSSSaltLengthEqualsHash})
 	default:
@@ -162,7 +169,7 @@ func validateSupportedAuthKey(key crypto.PrivateKey) error {
 		}
 		return nil
 	default:
-		return errors.New("AUTH_KEY_FILE must be ECDSA P-256 or RSA 2048 private key")
+		return errors.New("AUTH_KEY_FILE must be ECDSA P-256 or RSA 2048 private key:")
 	}
 }
 
@@ -171,31 +178,35 @@ func loadPrivateKey(keyFile string) (crypto.PrivateKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read AUTH_KEY_FILE<%s>", keyFile)
 	}
-	block, _ := pem.Decode(pemBytes)
+	return loadPrivateKeyPEM(pemBytes, fmt.Sprintf("AUTH_KEY_FILE<%s>", keyFile))
+}
+
+func loadPrivateKeyPEM(privateKeyPEM []byte, keyLabel string) (crypto.PrivateKey, error) {
+	block, _ := pem.Decode(privateKeyPEM)
 	if block == nil {
-		return nil, fmt.Errorf("invalid AUTH_KEY_FILE<%s>", keyFile)
+		return nil, fmt.Errorf("invalid %s", keyLabel)
 	}
 	switch block.Type {
 	case "PRIVATE KEY":
 		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 		if err != nil {
-			return nil, fmt.Errorf("invalid AUTH_KEY_FILE<%s>", keyFile)
+			return nil, fmt.Errorf("invalid %s", keyLabel)
 		}
 		return key, nil
 	case "RSA PRIVATE KEY":
 		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 		if err != nil {
-			return nil, fmt.Errorf("invalid AUTH_KEY_FILE<%s>", keyFile)
+			return nil, fmt.Errorf("invalid %s", keyLabel)
 		}
 		return key, nil
 	case "EC PRIVATE KEY":
 		key, err := x509.ParseECPrivateKey(block.Bytes)
 		if err != nil {
-			return nil, fmt.Errorf("invalid AUTH_KEY_FILE<%s>", keyFile)
+			return nil, fmt.Errorf("invalid %s", keyLabel)
 		}
 		return key, nil
 	default:
-		return nil, fmt.Errorf("invalid AUTH_KEY_FILE<%s>", keyFile)
+		return nil, fmt.Errorf("invalid %s", keyLabel)
 	}
 }
 
@@ -218,4 +229,37 @@ func readChallengeFields(units map[uint32][]MarshalUnit) ([]byte, uint32, error)
 	nonce := make([]byte, len(nonceUnit.data))
 	copy(nonce, nonceUnit.data)
 	return nonce, uint32(validMs), nil
+}
+
+func LoadPrivateKeyFromFile(keyFile string) (crypto.PrivateKey, error) {
+	privateKeyPEM, err := os.ReadFile(keyFile)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(privateKeyPEM)
+	if block == nil {
+		return nil, fmt.Errorf("invalid AUTH_KEY")
+	}
+	switch block.Type {
+	case "PRIVATE KEY":
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		return key, nil
+	case "RSA PRIVATE KEY":
+		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		return key, nil
+	case "EC PRIVATE KEY":
+		key, err := x509.ParseECPrivateKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		return key, nil
+	default:
+		return nil, fmt.Errorf("invalid auth key type %s", block.Type)
+	}
 }

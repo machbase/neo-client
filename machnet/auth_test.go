@@ -12,6 +12,15 @@ import (
 	"testing"
 )
 
+func readPrivateKeyPEM(t *testing.T, path string) []byte {
+	t.Helper()
+	pemBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", path, err)
+	}
+	return pemBytes
+}
+
 func writeRSAPrivateKeyPEM(t *testing.T, dir string) string {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -78,7 +87,7 @@ func writeRSA3072PrivateKeyPEM(t *testing.T, dir string) string {
 
 func TestFinalizeAuthConnectOptions(t *testing.T) {
 	t.Run("defaults to password", func(t *testing.T) {
-		mode, scheme, err := finalizeAuthConnectOptions("", "", "")
+		mode, scheme, err := finalizeAuthConnectOptions("", nil, "")
 		if err != nil {
 			t.Fatalf("finalizeAuthConnectOptions() error = %v", err)
 		}
@@ -88,7 +97,7 @@ func TestFinalizeAuthConnectOptions(t *testing.T) {
 	})
 
 	t.Run("challenge requires key file", func(t *testing.T) {
-		_, _, err := finalizeAuthConnectOptions("CHALLENGE", "", "")
+		_, _, err := finalizeAuthConnectOptions("CHALLENGE", nil, "")
 		if err == nil {
 			t.Fatalf("expected error")
 		}
@@ -97,7 +106,11 @@ func TestFinalizeAuthConnectOptions(t *testing.T) {
 	t.Run("auto challenge detects rsa scheme", func(t *testing.T) {
 		dir := t.TempDir()
 		keyFile := writeRSAPrivateKeyPEM(t, dir)
-		mode, scheme, err := finalizeAuthConnectOptions("", keyFile, "")
+		key, err := LoadPrivateKeyFromFile(keyFile)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error = %v", keyFile, err)
+		}
+		mode, scheme, err := finalizeAuthConnectOptions("", key, "")
 		if err != nil {
 			t.Fatalf("finalizeAuthConnectOptions() error = %v", err)
 		}
@@ -143,6 +156,19 @@ func TestSignAuthNonce(t *testing.T) {
 		sig, err := signAuthNonce(keyFile, authSigSchemeECDSA, nonce)
 		if err != nil {
 			t.Fatalf("signAuthNonce() error = %v", err)
+		}
+		if len(sig) == 0 {
+			t.Fatalf("empty signature")
+		}
+	})
+
+	t.Run("pem string input", func(t *testing.T) {
+		dir := t.TempDir()
+		keyFile := writeRSAPrivateKeyPEM(t, dir)
+		privateKeyPEM := readPrivateKeyPEM(t, keyFile)
+		sig, err := signAuthNoncePEM(privateKeyPEM, authSigSchemeRSAPKCS1V15, nonce)
+		if err != nil {
+			t.Fatalf("signAuthNoncePEM() error = %v", err)
 		}
 		if len(sig) == 0 {
 			t.Fatalf("empty signature")

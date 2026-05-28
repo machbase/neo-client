@@ -2,6 +2,7 @@ package machnet
 
 import (
 	"bufio"
+	"crypto"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -25,7 +26,7 @@ type NativeConn struct {
 	user          string
 	password      string
 	authMode      string
-	authKeyFile   string
+	authKey       crypto.PrivateKey
 	authSigScheme string
 	queryTimeout  time.Duration
 	fetchRows     int64
@@ -105,7 +106,7 @@ func countSQLPlaceholders(sql string) int {
 	return cnt
 }
 
-func dialNative(host string, port int, user string, password string, authMode string, authKeyFile string, authSigScheme string, alts []net.TCPAddr, fetchRows int64, trackIOBytes bool) (*NativeConn, error) {
+func dialNative(host string, port int, user string, password string, authMode string, key crypto.PrivateKey, authSigScheme string, alts []net.TCPAddr, fetchRows int64, trackIOBytes bool) (*NativeConn, error) {
 	if fetchRows <= 0 {
 		fetchRows = defaultFetchRows
 	}
@@ -146,7 +147,7 @@ func dialNative(host string, port int, user string, password string, authMode st
 			user:          user,
 			password:      password,
 			authMode:      authMode,
-			authKeyFile:   authKeyFile,
+			authKey:       key,
 			authSigScheme: authSigScheme,
 			queryTimeout:  defaultQueryTimeout,
 			fetchRows:     fetchRows,
@@ -342,7 +343,7 @@ func (c *NativeConn) sendPacketsOptional(packets [][]byte, expected byte, timeou
 }
 
 func (c *NativeConn) connectProtocol() error {
-	mode, sigScheme, err := finalizeAuthConnectOptions(c.authMode, c.authKeyFile, c.authSigScheme)
+	mode, sigScheme, err := finalizeAuthConnectOptions(c.authMode, c.authKey, c.authSigScheme)
 	if err != nil {
 		return err
 	}
@@ -395,7 +396,7 @@ func (c *NativeConn) connectProtocol() error {
 			return err
 		}
 		_ = validMs
-		signature, err := signAuthNonce(c.authKeyFile, sigScheme, nonce)
+		signature, err := signAuthNonceWithKey(c.authKey, "AUTH_KEY", sigScheme, nonce)
 		if err != nil {
 			return err
 		}

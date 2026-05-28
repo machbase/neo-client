@@ -84,9 +84,6 @@ func (cfg Config) machgoConfig() *machgo.Config {
 		MaxOpenConn:     -1,
 		StatementCache:  cfg.StatementCache,
 		FetchRows:       cfg.FetchRows,
-		AuthMode:        cfg.AuthMode,
-		AuthKeyFile:     cfg.AuthKeyFile,
-		AuthSigScheme:   cfg.AuthSigScheme,
 	}
 }
 
@@ -171,7 +168,11 @@ func (cn *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 		api.WithIOMetrics(cn.cfg.IOMetrics),
 	}
 	if strings.TrimSpace(cn.cfg.AuthKeyFile) != "" || strings.EqualFold(strings.TrimSpace(cn.cfg.AuthMode), "CHALLENGE") {
-		opts = append(opts, api.WithAuthKeyFile(cn.cfg.User, cn.cfg.AuthKeyFile))
+		key, err := machgo.LoadPrivateKeyFromFile(cn.cfg.AuthKeyFile)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, api.WithAuthKey(cn.cfg.User, key))
 	} else {
 		opts = append(opts, api.WithPassword(cn.cfg.User, cn.cfg.Password))
 	}

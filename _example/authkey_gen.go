@@ -15,53 +15,28 @@
 package main
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/x509"
-	"encoding/pem"
 	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
+
+	"github.com/machbase/neo-client/machgo"
 )
 
 func main() {
 	outDir := "./"
-	prefix := "machbase_authkey_p256"
+	prefix := machgo.DefaultAuthKeyPrefix
 
 	flag.StringVar(&outDir, "out", outDir, "output directory")
 	flag.StringVar(&prefix, "name", prefix, "output file name prefix")
 	flag.Parse()
 
-	if err := os.MkdirAll(outDir, 0o700); err != nil {
-		panic(err)
-	}
-
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	pair, err := machgo.GenerateAuthKeyPair()
 	if err != nil {
 		panic(err)
 	}
 
-	privDER, err := x509.MarshalECPrivateKey(priv)
+	privPath, pubPath, err := pair.WriteFiles(outDir, prefix)
 	if err != nil {
-		panic(err)
-	}
-	pubDER, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
-	if err != nil {
-		panic(err)
-	}
-
-	privPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privDER})
-	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
-
-	privPath := filepath.Join(outDir, prefix+"_private.pem")
-	pubPath := filepath.Join(outDir, prefix+"_public.pem")
-
-	if err := os.WriteFile(privPath, privPEM, 0o600); err != nil {
-		panic(err)
-	}
-	if err := os.WriteFile(pubPath, pubPEM, 0o644); err != nil {
 		panic(err)
 	}
 
