@@ -918,8 +918,69 @@ func (stmt *Stmt) bindParams(args ...any) error {
 	return nil
 }
 
+func formatResultMessage(err error, stmtType machnet.StmtType, rowCount int64) string {
+	if err != nil {
+		return err.Error()
+	}
+	switch stmtType {
+	case machnet.QPP_STMT_TYPE_CREATE_TABLE:
+		return "table created."
+	case machnet.QPP_STMT_TYPE_DROP_TABLE:
+		return "table dropped."
+	case machnet.QPC_STMT_TYPE_CREATE_ROLLUP:
+		return "rollup created."
+	case machnet.QPC_STMT_TYPE_DROP_ROLLUP:
+		return "rollup dropped."
+	case machnet.QPC_STMT_TYPE_CREATE_RETENTION:
+		return "retention created."
+	case machnet.QPC_STMT_TYPE_DROP_RETENTION:
+		return "retention dropped."
+	case machnet.QPP_STMT_TYPE_CREATE_INDEX:
+		return "index created."
+	case machnet.QPP_STMT_TYPE_DROP_INDEX:
+		return "index dropped."
+	case machnet.QPP_STMT_TYPE_ALTER_INDEX:
+		return "index altered."
+	case machnet.QPP_STMT_TYPE_CREATE_USER:
+		return "user created."
+	case machnet.QPP_STMT_TYPE_DROP_USER:
+		return "user dropped."
+	case machnet.QPP_STMT_TYPE_ALTER_USER:
+		return "user altered."
+	case machnet.QPP_STMT_TYPE_GRANT_USER:
+		return "user granted."
+	case machnet.QPP_STMT_TYPE_REVOKE_USER:
+		return "user revoked."
+	case machnet.QPP_STMT_TYPE_CREATE_VIEW:
+		return "view created."
+	case machnet.QPP_STMT_TYPE_DROP_VIEW:
+		return "view dropped."
+	}
+	rows := "no rows"
+	if rowCount == 1 {
+		rows = "a row"
+	} else if rowCount > 1 {
+		rows = api.FormatIntWithCommas(rowCount) + " rows"
+	}
+	if stmtType.IsSelect() {
+		return rows + " selected."
+	} else if stmtType.IsInsert() {
+		return rows + " inserted."
+	} else if stmtType.IsUpdate() {
+		return rows + " updated."
+	} else if stmtType.IsDelete() {
+		return rows + " deleted."
+	} else if stmtType.IsInsertSelect() {
+		return rows + " inserted from select."
+	} else if stmtType.IsAlterSystem() {
+		return "system altered."
+	} else if stmtType.IsDDL() {
+		return "ok."
+	}
+	return fmt.Sprintf("ok.(%d)", stmtType)
+}
+
 type Result struct {
-	message  string
 	err      error
 	rowCount int64
 	stmtType machnet.StmtType
@@ -928,7 +989,7 @@ type Result struct {
 var _ api.Result = (*Result)(nil)
 
 func (rs *Result) Message() string {
-	return rs.message
+	return formatResultMessage(rs.err, rs.stmtType, rs.rowCount)
 }
 
 func (rs *Result) Err() error {
@@ -1207,31 +1268,7 @@ func (r *Row) RowsAffected() int64 {
 }
 
 func (r *Row) Message() string {
-	if r.err != nil {
-		return r.err.Error()
-	}
-	rows := "no rows"
-	if r.rowCount == 1 {
-		rows = "a row"
-	} else if r.rowCount > 1 {
-		rows = api.FormatIntWithCommas(r.rowCount) + " rows"
-	}
-	if r.stmtType.IsSelect() {
-		return rows + " selected."
-	} else if r.stmtType.IsInsert() {
-		return rows + " inserted."
-	} else if r.stmtType.IsUpdate() {
-		return rows + " updated."
-	} else if r.stmtType.IsDelete() {
-		return rows + " deleted."
-	} else if r.stmtType.IsInsertSelect() {
-		return rows + " inserted from select."
-	} else if r.stmtType.IsAlterSystem() {
-		return "system altered."
-	} else if r.stmtType.IsDDL() {
-		return "ok."
-	}
-	return fmt.Sprintf("ok.(%d)", r.stmtType)
+	return formatResultMessage(r.err, r.stmtType, r.rowCount)
 }
 
 type Rows struct {
