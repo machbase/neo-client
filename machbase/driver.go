@@ -35,6 +35,10 @@ type Config struct {
 	Port            int
 	User            string
 	Password        string
+	ProxyUser       string
+	AuthMode        string
+	AuthKeyFile     string
+	AuthSigScheme   string
 	AlternativeHost string
 	AlternativePort int
 	FetchRows       int64
@@ -58,8 +62,12 @@ func (cfg Config) validate() error {
 	if cfg.User == "" {
 		return errors.New("machbase dsn requires user")
 	}
-	if cfg.Password == "" {
+	authMode := strings.ToUpper(strings.TrimSpace(cfg.AuthMode))
+	if cfg.Password == "" && (authMode == "" || authMode == "PASSWORD") {
 		return errors.New("machbase dsn requires password")
+	}
+	if authMode == "CHALLENGE" && strings.TrimSpace(cfg.AuthKeyFile) == "" {
+		return errors.New("machbase dsn requires auth_key_file for auth_mode=CHALLENGE")
 	}
 	if cfg.Port <= 0 {
 		return fmt.Errorf("machbase dsn has invalid port %d", cfg.Port)
@@ -84,6 +92,9 @@ type Driver struct {
 	Port            int
 	User            string
 	Password        string
+	AuthMode        string
+	AuthKeyFile     string
+	AuthSigScheme   string
 	AlternativeHost string
 	AlternativePort int
 	FetchRows       int64
@@ -104,6 +115,9 @@ func (drv *Driver) baseConfig() Config {
 		Port:            drv.Port,
 		User:            drv.User,
 		Password:        drv.Password,
+		AuthMode:        drv.AuthMode,
+		AuthKeyFile:     drv.AuthKeyFile,
+		AuthSigScheme:   drv.AuthSigScheme,
 		AlternativeHost: drv.AlternativeHost,
 		AlternativePort: drv.AlternativePort,
 		FetchRows:       drv.FetchRows,
@@ -148,12 +162,21 @@ func (cn *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	if cn == nil || cn.db == nil {
 		return nil, driver.ErrBadConn
 	}
-	conn, err := cn.db.Connect(ctx,
-		api.WithPassword(cn.cfg.User, cn.cfg.Password),
+	opts := []api.ConnectOption{
 		api.WithStatementCache(cn.cfg.StatementCache),
 		api.WithFetchRows(cn.cfg.FetchRows),
 		api.WithIOMetrics(cn.cfg.IOMetrics),
-	)
+	}
+	if strings.TrimSpace(cn.cfg.AuthKeyFile) != "" || strings.EqualFold(strings.TrimSpace(cn.cfg.AuthMode), "CHALLENGE") {
+		key, err := machgo.LoadPrivateKeyFromFile(cn.cfg.AuthKeyFile)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, api.WithAuthKey(cn.cfg.User, key))
+	} else {
+		opts = append(opts, api.WithPassword(cn.cfg.User, cn.cfg.Password))
+	}
+	conn, err := cn.db.Connect(ctx, opts...)
 	if err != nil {
 		return nil, normalizeError(err)
 	}
@@ -573,9 +596,19 @@ func parseKeyValueDSN(dsn string) (Config, error) {
 			}
 			cfg.Port = port
 		case "user", "uid":
-			cfg.User = value
+			username, proxyed := api.ParseUserName(value)
+			cfg.User = username.Login
+			if proxyed && username.Proxy != "" {
+				cfg.ProxyUser = username.Proxy
+			}
 		case "password", "pwd":
 			cfg.Password = value
+		case "auth_mode":
+			cfg.AuthMode = value
+		case "auth_key_file":
+			cfg.AuthKeyFile = value
+		case "auth_sig_scheme":
+			cfg.AuthSigScheme = value
 		case "fetch_rows", "fetchrows":
 			rows, err := strconv.ParseInt(value, 10, 64)
 			if err != nil {
@@ -656,6 +689,51 @@ func applyServerValue(cfg *Config, value string) error {
 				cfg.Password = pass
 			}
 		}
+		for key, values := range u.Query() {
+			switch strings.ToLower(key) {
+			case "as":
+				if len(values) > 0 {
+					cfg.ProxyUser = values[0]
+				}
+			case "auth_mode":
+				cfg.AuthMode = values[0]
+			case "auth_key_file":
+				cfg.AuthKeyFile = values[0]
+			case "auth_sig_scheme":
+				cfg.AuthSigScheme = values[0]
+			case "fetch_rows", "fetchrows":
+				rows, err := strconv.ParseInt(values[0], 10, 64)
+				if err != nil {
+					return fmt.Errorf("invalid fetch_rows %q", values[0])
+				}
+				cfg.FetchRows = rows
+			case "statement_cache", "statementcache":
+				mode, err := parseStatementCacheMode(values[0])
+				if err != nil {
+					return err
+				}
+				cfg.StatementCache = mode
+				cfg.statementCacheSet = true
+			case "io_metrics", "iometrics":
+				enabled, err := strconv.ParseBool(values[0])
+				if err != nil {
+					return fmt.Errorf("invalid io_metrics %q", values[0])
+				}
+				cfg.IOMetrics = enabled
+			case "alternative_servers":
+				if err := applyAlternativeServers(cfg, values[0]); err != nil {
+					return err
+				}
+			case "alternative_host":
+				cfg.AlternativeHost = values[0]
+			case "alternative_port":
+				port, err := strconv.Atoi(values[0])
+				if err != nil {
+					return fmt.Errorf("invalid alternative_port %q", values[0])
+				}
+				cfg.AlternativePort = port
+			}
+		}
 		return nil
 	}
 	host, port, err := net.SplitHostPort(value)
@@ -709,6 +787,15 @@ func mergeConfig(base Config, override Config) Config {
 	}
 	if override.Password != "" {
 		base.Password = override.Password
+	}
+	if override.AuthMode != "" {
+		base.AuthMode = override.AuthMode
+	}
+	if override.AuthKeyFile != "" {
+		base.AuthKeyFile = override.AuthKeyFile
+	}
+	if override.AuthSigScheme != "" {
+		base.AuthSigScheme = override.AuthSigScheme
 	}
 	if override.AlternativeHost != "" {
 		base.AlternativeHost = override.AlternativeHost

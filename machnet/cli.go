@@ -1,6 +1,7 @@
 package machnet
 
 import (
+	"crypto"
 	"sync"
 	"time"
 )
@@ -99,16 +100,24 @@ func (env *EnvHandle) Finalize() error {
 	return nil
 }
 
-func (env *EnvHandle) Connect(connStr string) (*ConnHandle, error) {
+func (env *EnvHandle) Connect(connStr string, key crypto.PrivateKey) (*ConnHandle, error) {
 	if env == nil {
 		return nil, makeClientErr("invalid environment")
 	}
-	host, port, user, pass, alts, fetchRows, trackIOBytes, err := parseConnString(connStr)
+	host, port, user, pass, authMode, authKeyFile, authSigScheme, alts, fetchRows, trackIOBytes, err := parseConnString(connStr)
 	if err != nil {
 		env.lastErr.setErr(err)
 		return nil, err
 	}
-	nc, err := dialNative(host, port, user, pass, alts, fetchRows, trackIOBytes)
+	if key == nil && authKeyFile != "" {
+		key, err = LoadPrivateKeyFromFile(authKeyFile)
+		if err != nil {
+			env.lastErr.setErr(err)
+			return nil, err
+		}
+	}
+
+	nc, err := dialNative(host, port, user, pass, authMode, key, authSigScheme, alts, fetchRows, trackIOBytes)
 	if err != nil {
 		env.lastErr.setErr(err)
 		return nil, err

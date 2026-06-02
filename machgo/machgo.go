@@ -2,6 +2,7 @@ package machgo
 
 import (
 	"context"
+	"crypto"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -54,8 +55,6 @@ type Config struct {
 	// If the value is not specified or less than or equal to 0, the defaultFetchRows is used.
 	FetchRows int64
 
-	TrustUsers map[string]string
-
 	// unused
 	ConType int
 }
@@ -67,9 +66,6 @@ type Database struct {
 
 	alternativeHost string
 	alternativePort int
-
-	trustUsersMutex sync.RWMutex
-	trustUsers      map[string]string
 
 	maxConnsMutex sync.RWMutex
 	maxConnsChan  chan struct{}
@@ -93,15 +89,11 @@ func NewDatabase(conf *Config) (*Database, error) {
 		alternativeHost: conf.AlternativeHost,
 		alternativePort: conf.AlternativePort,
 		handle:          handle,
-		trustUsers:      map[string]string{},
 		statementCache:  conf.StatementCache,
 		fetchRows:       conf.FetchRows,
 	}
 	if ret.fetchRows <= 0 {
 		ret.fetchRows = defaultFetchRows
-	}
-	for u, p := range conf.TrustUsers {
-		ret.trustUsers[strings.ToUpper(u)] = p
 	}
 
 	if conf.MaxOpenConnFactor <= 0 {
@@ -192,39 +184,16 @@ func (db *Database) SetMaxOpenConns(desiredMaxOpenConns int) {
 
 func (db *Database) Ping(ctx context.Context) (time.Duration, error) {
 	tick := time.Now()
-	db.trustUsersMutex.RLock()
-	var user, pass string
-	for u, p := range db.trustUsers {
-		user = u
-		pass = p
-		break
-	}
-	db.trustUsersMutex.RUnlock()
-	if user == "" {
-		return 0, errors.New("ping requires at least one trust user")
-	}
-	conn, err := db.Connect(ctx, api.WithPassword(user, pass))
-	if err != nil {
-		return time.Since(tick), err
-	}
-	if err := conn.Close(); err != nil {
-		return time.Since(tick), err
+	if conn, err := db.Connect(ctx, api.WithPassword("sys", "manager")); err != nil {
+		if !strings.Contains(err.Error(), "Invalid username/password") {
+			return time.Since(tick), err
+		}
+	} else {
+		if err := conn.Close(); err != nil {
+			return time.Since(tick), err
+		}
 	}
 	return time.Since(tick), nil
-}
-
-func (db *Database) SetTrustUser(user, password string) error {
-	db.trustUsersMutex.Lock()
-	defer db.trustUsersMutex.Unlock()
-	db.trustUsers[strings.ToUpper(user)] = password
-	return nil
-}
-
-func (db *Database) getTrustUser(user string) (string, bool) {
-	db.trustUsersMutex.RLock()
-	defer db.trustUsersMutex.RUnlock()
-	pass, ok := db.trustUsers[strings.ToUpper(user)]
-	return pass, ok
 }
 
 func (db *Database) UserAuth(ctx context.Context, user, password string) (bool, string, error) {
@@ -236,7 +205,7 @@ func (db *Database) UserAuth(ctx context.Context, user, password string) (bool, 
 	return true, "", err
 }
 
-func (db *Database) connectionString(user string, password string, fetchRows int64, ioMetrics bool) string {
+func (db *Database) connectionString(user string, password string, fetchRows int64, ioMetrics bool, authMode string) string {
 	entries := []string{
 		fmt.Sprintf("SERVER=%s", db.host),
 		fmt.Sprintf("PORT_NO=%d", db.port),
@@ -247,6 +216,9 @@ func (db *Database) connectionString(user string, password string, fetchRows int
 	}
 	if ioMetrics {
 		entries = append(entries, "IO_METRICS=1")
+	}
+	if strings.TrimSpace(authMode) != "" {
+		entries = append(entries, fmt.Sprintf("AUTH_MODE=%s", authMode))
 	}
 	if db.alternativeHost != "" && db.alternativePort != 0 {
 		entries = append(entries,
@@ -261,29 +233,37 @@ func (db *Database) Connect(ctx context.Context, opts ...api.ConnectOption) (api
 	var stmtReuse = db.statementCache
 	var fetchRows = db.fetchRows
 	var enabledIOMetrics bool = false
+	var authMode string
+	var authKey crypto.PrivateKey = nil
+	var proxyUser string
 
 	for _, opt := range opts {
 		switch o := opt.(type) {
 		case *api.ConnectOptionPassword:
 			user = o.User
 			password = o.Password
-		case *api.ConnectOptionTrustUser:
-			if pass, ok := db.getTrustUser(o.User); ok {
-				user = strings.ToUpper(o.User)
-				password = pass
-			}
-			if user == "" {
-				return nil, errors.New("trust user not found")
-			}
+			authMode = "PASSWORD"
 		case *api.ConnectOptionStatementCache:
 			stmtReuse = o.Mode
 		case *api.ConnectOptionFetchRows:
 			fetchRows = o.Rows
 		case *api.ConnectOptionIOMetrics:
 			enabledIOMetrics = o.Enabled
+		case *api.ConnectOptionAuthKey:
+			user = o.User
+			authMode = o.AuthMode
+			authKey = o.Key
+		case *api.ConnectOptionProxyUser:
+			proxyUser = o.ProxyUser
 		default:
 			return nil, fmt.Errorf("unknown option type-%T", o)
 		}
+	}
+
+	if strings.EqualFold(user, "sys") && proxyUser != "" && !strings.EqualFold(proxyUser, "sys") {
+		// "SYS AS PROXY_USER" format is required for proxy user authentication,
+		// and the proxy user cannot be "SYS" ('sys as sys' is 'sys').
+		user = fmt.Sprintf("SYS AS %s", strings.ToUpper(proxyUser))
 	}
 
 	returnChan := db.maxConnsChan
@@ -303,13 +283,11 @@ func (db *Database) Connect(ctx context.Context, opts ...api.ConnectOption) (api
 		}
 	}()
 	var handle *machnet.ConnHandle
-	if c, err := db.handle.Connect(db.connectionString(user, password, fetchRows, enabledIOMetrics)); err != nil {
+	if c, err := db.handle.Connect(db.connectionString(user, password, fetchRows, enabledIOMetrics, authMode), authKey); err != nil {
 		return nil, db.ErrorOf(err)
 	} else {
 		handle = c
 	}
-
-	db.SetTrustUser(user, password)
 
 	ret := &Conn{
 		db:                     db,
@@ -940,8 +918,69 @@ func (stmt *Stmt) bindParams(args ...any) error {
 	return nil
 }
 
+func formatResultMessage(err error, stmtType machnet.StmtType, rowCount int64) string {
+	if err != nil {
+		return err.Error()
+	}
+	switch stmtType {
+	case machnet.QPP_STMT_TYPE_CREATE_TABLE:
+		return "table created."
+	case machnet.QPP_STMT_TYPE_DROP_TABLE:
+		return "table dropped."
+	case machnet.QPC_STMT_TYPE_CREATE_ROLLUP:
+		return "rollup created."
+	case machnet.QPC_STMT_TYPE_DROP_ROLLUP:
+		return "rollup dropped."
+	case machnet.QPC_STMT_TYPE_CREATE_RETENTION:
+		return "retention created."
+	case machnet.QPC_STMT_TYPE_DROP_RETENTION:
+		return "retention dropped."
+	case machnet.QPP_STMT_TYPE_CREATE_INDEX:
+		return "index created."
+	case machnet.QPP_STMT_TYPE_DROP_INDEX:
+		return "index dropped."
+	case machnet.QPP_STMT_TYPE_ALTER_INDEX:
+		return "index altered."
+	case machnet.QPP_STMT_TYPE_CREATE_USER:
+		return "user created."
+	case machnet.QPP_STMT_TYPE_DROP_USER:
+		return "user dropped."
+	case machnet.QPP_STMT_TYPE_ALTER_USER:
+		return "user altered."
+	case machnet.QPP_STMT_TYPE_GRANT_USER:
+		return "user granted."
+	case machnet.QPP_STMT_TYPE_REVOKE_USER:
+		return "user revoked."
+	case machnet.QPP_STMT_TYPE_CREATE_VIEW:
+		return "view created."
+	case machnet.QPP_STMT_TYPE_DROP_VIEW:
+		return "view dropped."
+	}
+	rows := "no rows"
+	if rowCount == 1 {
+		rows = "a row"
+	} else if rowCount > 1 {
+		rows = api.FormatIntWithCommas(rowCount) + " rows"
+	}
+	if stmtType.IsSelect() {
+		return rows + " selected."
+	} else if stmtType.IsInsert() {
+		return rows + " inserted."
+	} else if stmtType.IsUpdate() {
+		return rows + " updated."
+	} else if stmtType.IsDelete() {
+		return rows + " deleted."
+	} else if stmtType.IsInsertSelect() {
+		return rows + " inserted from select."
+	} else if stmtType.IsAlterSystem() {
+		return "system altered."
+	} else if stmtType.IsDDL() {
+		return "ok."
+	}
+	return fmt.Sprintf("ok.(%d)", stmtType)
+}
+
 type Result struct {
-	message  string
 	err      error
 	rowCount int64
 	stmtType machnet.StmtType
@@ -950,7 +989,7 @@ type Result struct {
 var _ api.Result = (*Result)(nil)
 
 func (rs *Result) Message() string {
-	return rs.message
+	return formatResultMessage(rs.err, rs.stmtType, rs.rowCount)
 }
 
 func (rs *Result) Err() error {
@@ -1229,31 +1268,7 @@ func (r *Row) RowsAffected() int64 {
 }
 
 func (r *Row) Message() string {
-	if r.err != nil {
-		return r.err.Error()
-	}
-	rows := "no rows"
-	if r.rowCount == 1 {
-		rows = "a row"
-	} else if r.rowCount > 1 {
-		rows = api.FormatIntWithCommas(r.rowCount) + " rows"
-	}
-	if r.stmtType.IsSelect() {
-		return rows + " selected."
-	} else if r.stmtType.IsInsert() {
-		return rows + " inserted."
-	} else if r.stmtType.IsUpdate() {
-		return rows + " updated."
-	} else if r.stmtType.IsDelete() {
-		return rows + " deleted."
-	} else if r.stmtType.IsInsertSelect() {
-		return rows + " inserted from select."
-	} else if r.stmtType.IsAlterSystem() {
-		return "system altered."
-	} else if r.stmtType.IsDDL() {
-		return "ok."
-	}
-	return fmt.Sprintf("ok.(%d)", r.stmtType)
+	return formatResultMessage(r.err, r.stmtType, r.rowCount)
 }
 
 type Rows struct {

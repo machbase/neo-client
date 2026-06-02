@@ -12,7 +12,7 @@ import (
 )
 
 func TestParseDSNKeyValue(t *testing.T) {
-	cfg, err := ParseDSN("server=tcp://sys:manager@127.0.0.1:5656;fetch_rows=777;statement_cache=off;io_metrics=true;alternative_servers=127.0.0.2:5657")
+	cfg, err := ParseDSN("server=tcp://sys:manager@127.0.0.1:5656?as=user&fetch_rows=777&statement_cache=off&io_metrics=true&alternative_servers=127.0.0.2:5657")
 	if err != nil {
 		t.Fatalf("ParseDSN() error = %v", err)
 	}
@@ -33,6 +33,54 @@ func TestParseDSNKeyValue(t *testing.T) {
 	}
 	if cfg.AlternativeHost != "127.0.0.2" || cfg.AlternativePort != 5657 {
 		t.Fatalf("unexpected alternative server: %#v", cfg)
+	}
+	if cfg.ProxyUser != "user" {
+		t.Fatalf("unexpected proxy user: %q", cfg.ProxyUser)
+	}
+}
+
+func TestParseDSNAuthKey(t *testing.T) {
+	cfg, err := ParseDSN("server=127.0.0.1:5656;user=sys;auth_mode=challenge;auth_key_file=/tmp/machbase_key.pem;auth_sig_scheme=rsa_pss")
+	if err != nil {
+		t.Fatalf("ParseDSN() error = %v", err)
+	}
+	if cfg.AuthMode != "challenge" {
+		t.Fatalf("unexpected auth_mode: %q", cfg.AuthMode)
+	}
+	if cfg.AuthKeyFile != "/tmp/machbase_key.pem" {
+		t.Fatalf("unexpected auth_key_file: %q", cfg.AuthKeyFile)
+	}
+	if cfg.AuthSigScheme != "rsa_pss" {
+		t.Fatalf("unexpected auth_sig_scheme: %q", cfg.AuthSigScheme)
+	}
+	if cfg.ProxyUser != "" {
+		t.Fatalf("unexpected proxy user: %q", cfg.ProxyUser)
+	}
+}
+
+func TestParseDSNAuthKeyProxyLogin(t *testing.T) {
+	cfg, err := ParseDSN("server=127.0.0.1:5656;user=sys as user;auth_mode=challenge;auth_key_file=/tmp/machbase_key.pem;auth_sig_scheme=rsa_pss")
+	if err != nil {
+		t.Fatalf("ParseDSN() error = %v", err)
+	}
+	if cfg.AuthMode != "challenge" {
+		t.Fatalf("unexpected auth_mode: %q", cfg.AuthMode)
+	}
+	if cfg.AuthKeyFile != "/tmp/machbase_key.pem" {
+		t.Fatalf("unexpected auth_key_file: %q", cfg.AuthKeyFile)
+	}
+	if cfg.AuthSigScheme != "rsa_pss" {
+		t.Fatalf("unexpected auth_sig_scheme: %q", cfg.AuthSigScheme)
+	}
+	if cfg.ProxyUser != "user" {
+		t.Fatalf("unexpected proxy user: %q", cfg.ProxyUser)
+	}
+}
+
+func TestConfigValidateChallengeRequiresKeyFile(t *testing.T) {
+	cfg := Config{Host: "127.0.0.1", Port: 5656, User: "sys", AuthMode: "CHALLENGE"}
+	if err := cfg.validate(); err == nil {
+		t.Fatalf("expected validate() error")
 	}
 }
 

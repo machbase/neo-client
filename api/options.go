@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto"
 	"regexp"
 	"strings"
 	"time"
@@ -17,19 +18,35 @@ type ConnectOptionPassword struct {
 
 func (ConnectOptionPassword) connectOption() {}
 
-type ConnectOptionTrustUser struct {
-	User string
-}
-
-func (ConnectOptionTrustUser) connectOption() {}
-
 func WithPassword(user string, password string) ConnectOption {
 	return &ConnectOptionPassword{User: user, Password: password}
 }
 
-func WithTrustUser(user string) ConnectOption {
-	return &ConnectOptionTrustUser{User: user}
+type ConnectOptionAuthKey struct {
+	User     string
+	Key      crypto.PrivateKey
+	AuthMode string
 }
+
+func (ConnectOptionAuthKey) connectOption() {}
+
+func WithAuthKey(user string, key crypto.PrivateKey) ConnectOption {
+	return &ConnectOptionAuthKey{
+		User:     user,
+		Key:      key,
+		AuthMode: "CHALLENGE",
+	}
+}
+
+type ConnectOptionProxyUser struct {
+	ProxyUser string
+}
+
+func WithProxyUser(proxyUser string) ConnectOption {
+	return &ConnectOptionProxyUser{ProxyUser: proxyUser}
+}
+
+func (ConnectOptionProxyUser) connectOption() {}
 
 type StatementCacheMode int
 

@@ -2,6 +2,7 @@ package machnet
 
 import (
 	"bufio"
+	"crypto"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -20,12 +21,15 @@ type NativeConn struct {
 	ioBytes *ioByteCounter
 	packet  Packet
 
-	host         string
-	port         int
-	user         string
-	password     string
-	queryTimeout time.Duration
-	fetchRows    int64
+	host          string
+	port          int
+	user          string
+	password      string
+	authMode      string
+	authKey       crypto.PrivateKey
+	authSigScheme string
+	queryTimeout  time.Duration
+	fetchRows     int64
 
 	sessionID    uint64
 	serverEndian uint32
@@ -102,7 +106,7 @@ func countSQLPlaceholders(sql string) int {
 	return cnt
 }
 
-func dialNative(host string, port int, user string, password string, alts []net.TCPAddr, fetchRows int64, trackIOBytes bool) (*NativeConn, error) {
+func dialNative(host string, port int, user string, password string, authMode string, key crypto.PrivateKey, authSigScheme string, alts []net.TCPAddr, fetchRows int64, trackIOBytes bool) (*NativeConn, error) {
 	if fetchRows <= 0 {
 		fetchRows = defaultFetchRows
 	}
@@ -134,16 +138,19 @@ func dialNative(host string, port int, user string, password string, alts []net.
 			bw = bufio.NewWriterSize(c, defaultWriteBufferSize)
 		}
 		nc := &NativeConn{
-			netConn:      c,
-			br:           br,
-			bw:           bw,
-			ioBytes:      counter,
-			host:         host,
-			port:         port,
-			user:         user,
-			password:     password,
-			queryTimeout: defaultQueryTimeout,
-			fetchRows:    fetchRows,
+			netConn:       c,
+			br:            br,
+			bw:            bw,
+			ioBytes:       counter,
+			host:          host,
+			port:          port,
+			user:          user,
+			password:      password,
+			authMode:      authMode,
+			authKey:       key,
+			authSigScheme: authSigScheme,
+			queryTimeout:  defaultQueryTimeout,
+			fetchRows:     fetchRows,
 		}
 		if err := nc.handshake(); err != nil {
 			_ = c.Close()
@@ -336,12 +343,25 @@ func (c *NativeConn) sendPacketsOptional(packets [][]byte, expected byte, timeou
 }
 
 func (c *NativeConn) connectProtocol() error {
+	mode, sigScheme, err := finalizeAuthConnectOptions(c.authMode, c.authKey, c.authSigScheme)
+	if err != nil {
+		return err
+	}
+
 	w := newMarshalWriter(cmiConnectProtocol, 0, 0)
 	w.addUInt64(cmiCVersionID, protocolVersion())
 	w.addString(cmiCClientID, "CLI")
 	w.addString(cmiCDatabaseID, "data")
 	w.addString(cmiCUserID, c.user)
-	w.addString(cmiCPasswordID, c.password)
+	if mode != authModeChallenge {
+		w.addString(cmiCPasswordID, c.password)
+	}
+	if mode != "" {
+		w.addString(cmiCAuthModeID, mode)
+	}
+	if sigScheme != "" {
+		w.addString(cmiCAuthSigSchemeID, sigScheme)
+	}
 	w.addUInt64(cmiCTimeoutID, uint64(defaultQueryTimeout.Seconds()))
 	w.addUInt32(cmiCSHCID, 0)
 	if la, ok := c.netConn.LocalAddr().(*net.TCPAddr); ok && la.IP != nil {
@@ -369,6 +389,54 @@ func (c *NativeConn) connectProtocol() error {
 		}
 		return makeServerErr(statusErrNo(statusVal), msg)
 	}
+
+	if mode == authModeChallenge {
+		nonce, validMs, err := readChallengeFields(units)
+		if err != nil {
+			return err
+		}
+		_ = validMs
+		signature, err := signAuthNonceWithKey(c.authKey, "AUTH_KEY", sigScheme, nonce)
+		if err != nil {
+			return err
+		}
+		w2 := newMarshalWriter(cmiConnectProtocol, 0, 0)
+		w2.addUInt64(cmiCVersionID, protocolVersion())
+		w2.addString(cmiCClientID, "CLI")
+		w2.addString(cmiCDatabaseID, "data")
+		w2.addString(cmiCUserID, c.user)
+		w2.addString(cmiCAuthModeID, mode)
+		w2.addString(cmiCAuthSigSchemeID, sigScheme)
+		w2.addBinary(cmiCAuthSignatureID, signature)
+		w2.addUInt64(cmiCTimeoutID, uint64(defaultQueryTimeout.Seconds()))
+		w2.addUInt32(cmiCSHCID, 0)
+		if la, ok := c.netConn.LocalAddr().(*net.TCPAddr); ok && la.IP != nil {
+			w2.addString(cmiCIPID, la.IP.String())
+		} else {
+			w2.addString(cmiCIPID, "127.0.0.1")
+		}
+		body2, err := c.sendPackets(w2.finalize(), cmiConnectProtocol, defaultConnectTimeout)
+		if err != nil {
+			return err
+		}
+		units, err = collectUnits(body2)
+		if err != nil {
+			return err
+		}
+		result, ok = firstUnit(units, cmiRResultID)
+		if !ok || len(result.data) < 8 {
+			return errors.New("connect response missing result")
+		}
+		statusVal = binary.LittleEndian.Uint64(result.data)
+		if statusCode(statusVal) != cmiOKResult {
+			msg := ""
+			if m, ok := firstUnit(units, cmiRMessageID); ok {
+				msg = string(m.data)
+			}
+			return makeServerErr(statusErrNo(statusVal), msg)
+		}
+	}
+
 	if sid, ok := firstUnit(units, cmiCSIDID); ok && len(sid.data) >= 8 {
 		c.sessionID = binary.LittleEndian.Uint64(sid.data)
 	}
