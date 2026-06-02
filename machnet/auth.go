@@ -159,17 +159,19 @@ func signAuthNonceWithKey(key crypto.PrivateKey, keySource string, sigScheme str
 func validateSupportedAuthKey(key crypto.PrivateKey) error {
 	switch k := key.(type) {
 	case *ecdsa.PrivateKey:
-		if k.Curve == nil || k.Curve.Params() == nil || k.Curve.Params().BitSize != 256 {
-			return errors.New("AUTH_KEY_FILE must be ECDSA P-256 or RSA 2048 private key")
+		if k.Curve == nil || k.Curve.Params() == nil ||
+			(k.Curve.Params().BitSize != 256 && k.Curve.Params().BitSize != 384 && k.Curve.Params().BitSize != 521) {
+			return errors.New("AUTH_KEY must be ECDSA (P-256, P-384, P-521)")
 		}
 		return nil
 	case *rsa.PrivateKey:
-		if k.N == nil || k.N.BitLen() != 2048 {
-			return errors.New("AUTH_KEY_FILE must be ECDSA P-256 or RSA 2048 private key")
+		if k.N == nil ||
+			(k.N.BitLen() != 2048 && k.N.BitLen() != 3072 && k.N.BitLen() != 4096) {
+			return errors.New("AUTH_KEY must be RSA (2048, 3072, or 4096 bits)")
 		}
 		return nil
 	default:
-		return errors.New("AUTH_KEY_FILE must be ECDSA P-256 or RSA 2048 private key:")
+		return errors.New("AUTH_KEY must be ECDSA or RSA")
 	}
 }
 
