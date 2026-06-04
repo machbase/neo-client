@@ -6,6 +6,62 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestParseTableName(t *testing.T) {
+	tests := []struct {
+		name            string
+		input           string
+		expectedDB      string
+		expectedUser    string
+		expectedTable   string
+		expectedOrDB    string
+		expectedOrUser  string
+		expectedOrTable string
+	}{
+		{
+			name:            "table_only",
+			input:           "example",
+			expectedDB:      "MACHBASEDB",
+			expectedUser:    "SYS",
+			expectedTable:   "EXAMPLE",
+			expectedOrDB:    "db0",
+			expectedOrUser:  "user0",
+			expectedOrTable: "EXAMPLE",
+		},
+		{
+			name:            "user.table",
+			input:           "sys.example",
+			expectedDB:      "MACHBASEDB",
+			expectedUser:    "SYS",
+			expectedTable:   "EXAMPLE",
+			expectedOrDB:    "db0",
+			expectedOrUser:  "SYS",
+			expectedOrTable: "EXAMPLE",
+		},
+		{
+			name:            "db.user.table",
+			input:           "testdb.sys.example",
+			expectedDB:      "TESTDB",
+			expectedUser:    "SYS",
+			expectedTable:   "EXAMPLE",
+			expectedOrDB:    "TESTDB",
+			expectedOrUser:  "SYS",
+			expectedOrTable: "EXAMPLE",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, user, table := TableName(tt.input).Split()
+			require.Equal(t, tt.expectedDB, db)
+			require.Equal(t, tt.expectedUser, user)
+			require.Equal(t, tt.expectedTable, table)
+			db, user, table = TableName(tt.input).SplitOr("db0", "user0")
+			require.Equal(t, tt.expectedOrDB, db)
+			require.Equal(t, tt.expectedOrUser, user)
+			require.Equal(t, tt.expectedOrTable, table)
+		})
+	}
+}
+
 func TestParseProxyUserName(t *testing.T) {
 	tests := []struct {
 		name              string
