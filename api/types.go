@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -403,50 +402,4 @@ func (typ IndexType) String() string {
 	default:
 		return fmt.Sprintf("UndefinedIndex-%d", typ)
 	}
-}
-
-type SQLStatementType int
-
-const (
-	SQLStatementTypeOther SQLStatementType = iota
-	SQLStatementTypeSelect
-	SQLStatementTypeInsert
-	SQLStatementTypeUpdate
-	SQLStatementTypeDelete
-	SQLStatementTypeCreate
-	SQLStatementTypeDrop
-	SQLStatementTypeAlter
-	SQLStatementTypeDescribe
-)
-
-func DetectSQLStatementType(sqlText string) SQLStatementType {
-	toks := strings.Fields(sqlText)
-	if len(toks) == 0 {
-		return SQLStatementTypeOther
-	}
-	verb := strings.ToUpper(toks[0])
-	switch verb {
-	case "SELECT":
-		return SQLStatementTypeSelect
-	case "INSERT":
-		return SQLStatementTypeInsert
-	case "UPDATE":
-		return SQLStatementTypeUpdate
-	case "DELETE":
-		return SQLStatementTypeDelete
-	case "CREATE":
-		return SQLStatementTypeCreate
-	case "DROP":
-		return SQLStatementTypeDrop
-	case "ALTER":
-		return SQLStatementTypeAlter
-	case "DESCRIBE":
-		return SQLStatementTypeDescribe
-	default:
-		return SQLStatementTypeOther
-	}
-}
-
-func (st SQLStatementType) IsFetch() bool {
-	return st == SQLStatementTypeSelect || st == SQLStatementTypeDescribe
 }
