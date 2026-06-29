@@ -195,9 +195,64 @@ func (cn *Connector) Driver() driver.Driver {
 	return cn.driver
 }
 
+type ConnectOptionsProvider func(context.Context) ([]api.ConnectOption, error)
+
+type DatabaseConnector struct {
+	driver          *Driver
+	db              api.Database
+	optionsProvider ConnectOptionsProvider
+}
+
+var _ driver.Connector = (*DatabaseConnector)(nil)
+
+func NewDatabaseConnector(db api.Database, optionsProvider ConnectOptionsProvider) (*DatabaseConnector, error) {
+	if db == nil {
+		return nil, errors.New("database is nil")
+	}
+	return &DatabaseConnector{
+		driver:          &Driver{},
+		db:              db,
+		optionsProvider: optionsProvider,
+	}, nil
+}
+
+func OpenDBWithConnector(db api.Database, optionsProvider ConnectOptionsProvider) (*sql.DB, error) {
+	cn, err := NewDatabaseConnector(db, optionsProvider)
+	if err != nil {
+		return nil, err
+	}
+	return sql.OpenDB(cn), nil
+}
+
+func (cn *DatabaseConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	if cn == nil || cn.db == nil {
+		return nil, driver.ErrBadConn
+	}
+	var opts []api.ConnectOption
+	if cn.optionsProvider != nil {
+		provided, err := cn.optionsProvider(ctx)
+		if err != nil {
+			return nil, err
+		}
+		opts = provided
+	}
+	conn, err := cn.db.Connect(ctx, opts...)
+	if err != nil {
+		return nil, normalizeError(err)
+	}
+	return &Conn{connector: nil, conn: conn}, nil
+}
+
+func (cn *DatabaseConnector) Driver() driver.Driver {
+	if cn == nil {
+		return nil
+	}
+	return cn.driver
+}
+
 type Conn struct {
 	connector *Connector
-	conn      *machgo.Conn
+	conn      api.Conn
 }
 
 var _ driver.Conn = (*Conn)(nil)
@@ -389,6 +444,7 @@ type Rows struct {
 	rows    api.Rows
 	columns api.Columns
 	desc    []machgo.ColumnDesc
+	buffer  []any
 }
 
 var _ driver.Rows = (*Rows)(nil)
@@ -437,11 +493,22 @@ func (r *Rows) Next(dest []driver.Value) error {
 		}
 		return io.EOF
 	}
-	provider, ok := r.rows.(interface{ Row() []any })
-	if !ok {
-		return errors.New("rows does not expose current row")
+	var row []any
+	if provider, ok := r.rows.(interface{ Row() []any }); ok {
+		row = provider.Row()
+	} else {
+		if r.buffer == nil {
+			buf, err := r.columns.MakeBuffer()
+			if err != nil {
+				return normalizeError(err)
+			}
+			r.buffer = buf
+		}
+		if err := r.rows.Scan(r.buffer...); err != nil {
+			return normalizeError(err)
+		}
+		row = r.buffer
 	}
-	row := provider.Row()
 	for i := range dest {
 		if i >= len(row) {
 			dest[i] = nil
@@ -943,6 +1010,73 @@ func toDriverValue(value any) (driver.Value, error) {
 	switch v := value.(type) {
 	case nil:
 		return nil, nil
+	case *bool:
+		if v == nil {
+			return nil, nil
+		}
+		return *v, nil
+	case *int16:
+		if v == nil {
+			return nil, nil
+		}
+		return int64(*v), nil
+	case *uint16:
+		if v == nil {
+			return nil, nil
+		}
+		return int64(*v), nil
+	case *int32:
+		if v == nil {
+			return nil, nil
+		}
+		return int64(*v), nil
+	case *uint32:
+		if v == nil {
+			return nil, nil
+		}
+		return int64(*v), nil
+	case *int64:
+		if v == nil {
+			return nil, nil
+		}
+		return *v, nil
+	case *uint64:
+		if v == nil {
+			return nil, nil
+		}
+		return int64(*v), nil
+	case *float32:
+		if v == nil {
+			return nil, nil
+		}
+		return float64(*v), nil
+	case *float64:
+		if v == nil {
+			return nil, nil
+		}
+		return *v, nil
+	case *string:
+		if v == nil {
+			return nil, nil
+		}
+		return *v, nil
+	case *[]byte:
+		if v == nil {
+			return nil, nil
+		}
+		buf := make([]byte, len(*v))
+		copy(buf, *v)
+		return buf, nil
+	case *time.Time:
+		if v == nil {
+			return nil, nil
+		}
+		return *v, nil
+	case *net.IP:
+		if v == nil {
+			return nil, nil
+		}
+		return v.String(), nil
 	case int:
 		return int64(v), nil
 	case int16:
