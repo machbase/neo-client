@@ -677,6 +677,7 @@ func (c *Conn) QueryRow(ctx context.Context, query string, args ...any) api.Row 
 			Length:   desc.Size,
 			Type:     desc.Type.ColumnType(),
 			DataType: desc.Type.DataType(),
+			Nullable: desc.Nullable,
 		}
 	}
 	if values, err := stmt.fetch(); err != nil {
@@ -818,6 +819,7 @@ func (pStmt *PreparedStmt) QueryRow(ctx context.Context, params ...any) api.Row 
 			Length:   desc.Size,
 			Type:     desc.Type.ColumnType(),
 			DataType: desc.Type.DataType(),
+			Nullable: desc.Nullable,
 		}
 	}
 	return ret
@@ -1323,6 +1325,7 @@ func (r *Rows) Columns() (api.Columns, error) {
 			Length:   desc.Size,
 			Type:     desc.Type.ColumnType(),
 			DataType: desc.Type.DataType(),
+			Nullable: desc.Nullable,
 		}
 	}
 	return ret, nil
