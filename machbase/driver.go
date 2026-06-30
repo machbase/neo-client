@@ -286,10 +286,15 @@ func (c *Conn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
 	return nil, errTransactionsUnsupported
 }
 
-func (c *Conn) Ping(context.Context) error {
+func (c *Conn) Ping(ctx context.Context) error {
 	if c == nil || c.conn == nil {
 		return driver.ErrBadConn
 	}
+	rows, err := c.QueryContext(ctx, "SELECT 1", nil)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
 	return nil
 }
 
