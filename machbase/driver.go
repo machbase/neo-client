@@ -265,6 +265,13 @@ var _ driver.Pinger = (*Conn)(nil)
 var _ driver.SessionResetter = (*Conn)(nil)
 var _ driver.Validator = (*Conn)(nil)
 
+func (c *Conn) Explain(ctx context.Context, query string, full bool) (string, error) {
+	if c == nil || c.conn == nil {
+		return "", driver.ErrBadConn
+	}
+	return c.conn.Explain(ctx, query, full)
+}
+
 func (c *Conn) Prepare(query string) (driver.Stmt, error) {
 	return c.PrepareContext(context.Background(), query)
 }
