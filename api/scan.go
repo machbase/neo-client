@@ -239,6 +239,14 @@ func scanInt64(src int64, pDst any) error {
 		*dst = strconv.FormatInt(src, 10)
 	case *time.Time:
 		*dst = time.Unix(0, src)
+	case *TableType:
+		*dst = TableType(src)
+	case *TableFlag:
+		*dst = TableFlag(src)
+	case *ColumnType:
+		*dst = ColumnType(src)
+	case *ColumnFlag:
+		*dst = ColumnFlag(src)
 	case *sql.NullInt64:
 		dst.Valid = true
 		dst.Int64 = src
