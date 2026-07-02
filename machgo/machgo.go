@@ -639,6 +639,7 @@ func (c *Conn) Prepare(ctx context.Context, query string) (api.Stmt, error) {
 
 	stmt.sqlHead = queryHead(query)
 	if err := stmt.prepare(query); err != nil {
+		stmt.Close()
 		return nil, err
 	}
 	return &PreparedStmt{stmt: stmt}, nil
