@@ -81,7 +81,6 @@ func (cfg Config) machgoConfig() *machgo.Config {
 		Port:            cfg.Port,
 		AlternativeHost: cfg.AlternativeHost,
 		AlternativePort: cfg.AlternativePort,
-		MaxOpenConn:     -1,
 		StatementCache:  cfg.StatementCache,
 		FetchRows:       cfg.FetchRows,
 	}

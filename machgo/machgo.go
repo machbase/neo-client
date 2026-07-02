@@ -30,21 +30,10 @@ type Config struct {
 	AlternativeHost string
 	AlternativePort int
 
-	// MaxOpenConns
-	//
-	//	< 0 : unlimited
-	//	0 : default, maxOpenConns = CPU count * maxOpenConnsFactor
-	//	> 0 : specified max open connections
-	MaxOpenConn int
-
-	// MaxOpenConnsFactor
-	//
-	//	used to calculate the number of max open connections when maxOpenConns is 0
-	//	default is 1.5
-	MaxOpenConnFactor float64
-
-	MaxOpenQuery       int
-	MaxOpenQueryFactor float64
+	MaxOpenConn        int     // deprecated
+	MaxOpenConnFactor  float64 // deprecated
+	MaxOpenQuery       int     // deprecated
+	MaxOpenQueryFactor float64 // deprecated
 
 	// StatementCache controls the statement cache mode for the connection.
 	// Statement cache can improve performance by reusing prepared statements for identical queries.
@@ -96,17 +85,7 @@ func NewDatabase(conf *Config) (*Database, error) {
 		ret.fetchRows = defaultFetchRows
 	}
 
-	if conf.MaxOpenConnFactor <= 0 {
-		conf.MaxOpenConnFactor = 1.5
-	}
-
-	if conf.MaxOpenConn < 0 {
-		conf.MaxOpenConn = -1
-	} else if conf.MaxOpenConn == 0 {
-		conf.MaxOpenConn = int(float64(runtime.NumCPU()) * conf.MaxOpenConnFactor)
-	}
-
-	ret.SetMaxOpenConns(conf.MaxOpenConn)
+	ret.SetMaxOpenConns(-1)
 	return ret, nil
 }
 
