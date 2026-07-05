@@ -11,6 +11,128 @@ import (
 	"time"
 )
 
+type SqlType int
+
+const (
+	SqlTypeString   SqlType = 1
+	SqlTypeDatetime SqlType = 2
+	SqlTypeFloat    SqlType = 3
+	SqlTypeDouble   SqlType = 4
+	SqlTypeIPv4     SqlType = 5
+	SqlTypeIPv6     SqlType = 6
+	SqlTypeBinary   SqlType = 7
+	SqlTypeInt16    SqlType = 8
+	SqlTypeInt32    SqlType = 9
+	SqlTypeInt64    SqlType = 10
+	SqlTypeUInt16   SqlType = 11
+	SqlTypeUInt32   SqlType = 12
+	SqlTypeUInt64   SqlType = 13
+	SqlTypeJSON     SqlType = 14
+)
+
+func (st SqlType) String() string {
+	switch st {
+	case SqlTypeInt16:
+		return "INT16"
+	case SqlTypeUInt16:
+		return "UINT16"
+	case SqlTypeInt32:
+		return "INT32"
+	case SqlTypeUInt32:
+		return "UINT32"
+	case SqlTypeInt64:
+		return "INT64"
+	case SqlTypeUInt64:
+		return "UINT64"
+	case SqlTypeDatetime:
+		return "DATETIME"
+	case SqlTypeFloat:
+		return "FLOAT"
+	case SqlTypeDouble:
+		return "DOUBLE"
+	case SqlTypeIPv4:
+		return "IPV4"
+	case SqlTypeIPv6:
+		return "IPV6"
+	case SqlTypeString:
+		return "STRING"
+	case SqlTypeBinary:
+		return "BINARY"
+	case SqlTypeJSON:
+		return "JSON"
+	default:
+		return fmt.Sprintf("UNKNOWN(%d)", st)
+	}
+}
+
+func (st SqlType) ColumnType() ColumnType {
+	switch st {
+	default:
+		return ColumnTypeUnknown
+	case SqlTypeInt16:
+		return ColumnTypeShort
+	case SqlTypeUInt16:
+		return ColumnTypeUShort
+	case SqlTypeInt32:
+		return ColumnTypeInteger
+	case SqlTypeUInt32:
+		return ColumnTypeUInteger
+	case SqlTypeInt64:
+		return ColumnTypeLong
+	case SqlTypeUInt64:
+		return ColumnTypeULong
+	case SqlTypeDatetime:
+		return ColumnTypeDatetime
+	case SqlTypeFloat:
+		return ColumnTypeFloat
+	case SqlTypeDouble:
+		return ColumnTypeDouble
+	case SqlTypeIPv4:
+		return ColumnTypeIPv4
+	case SqlTypeIPv6:
+		return ColumnTypeIPv6
+	case SqlTypeString:
+		return ColumnTypeVarchar
+	case SqlTypeBinary:
+		return ColumnTypeBinary
+	}
+}
+
+func (st SqlType) DataType() DataType {
+	switch st {
+	default:
+		return DataTypeAny
+	case SqlTypeInt16:
+		return DataTypeInt16
+	case SqlTypeInt32:
+		return DataTypeInt32
+	case SqlTypeInt64:
+		return DataTypeInt64
+	case SqlTypeDatetime:
+		return DataTypeDatetime
+	case SqlTypeFloat:
+		return DataTypeFloat32
+	case SqlTypeDouble:
+		return DataTypeFloat64
+	case SqlTypeIPv4:
+		return DataTypeIPv4
+	case SqlTypeIPv6:
+		return DataTypeIPv6
+	case SqlTypeString:
+		return DataTypeString
+	case SqlTypeBinary:
+		return DataTypeBinary
+	case SqlTypeUInt16:
+		return DataTypeUint16
+	case SqlTypeUInt32:
+		return DataTypeUint32
+	case SqlTypeUInt64:
+		return DataTypeUint64
+	case SqlTypeJSON:
+		return DataTypeJSON
+	}
+}
+
 type DataType string
 
 const (
@@ -30,6 +152,10 @@ const (
 	DataTypeAny     DataType = "any"
 	DataTypeList    DataType = "list"
 	DataTypeDict    DataType = "dict"
+	DataTypeUint16  DataType = "uint16"
+	DataTypeUint32  DataType = "uint32"
+	DataTypeUint64  DataType = "uint64"
+	DataTypeJSON    DataType = "json"
 )
 
 func DataTypeOf(v any) DataType {
@@ -44,10 +170,16 @@ func DataTypeOf(v any) DataType {
 		return DataTypeDatetime
 	case int16, *int16:
 		return DataTypeInt16
+	case uint16, *uint16:
+		return DataTypeUint16
 	case int32, *int32:
 		return DataTypeInt32
+	case uint32, *uint32:
+		return DataTypeUint32
 	case int64, *int64:
 		return DataTypeInt64
+	case uint64, *uint64:
+		return DataTypeUint64
 	case *float32, float32:
 		return DataTypeFloat32
 	case *float64, float64:
@@ -380,6 +512,11 @@ func (typ DataType) makeBuffer(nullable bool) (any, error) {
 			return new(sql.NullString), nil
 		}
 		return new(string), nil
+	case DataTypeJSON:
+		if nullable {
+			return new(sql.Null[JSONString]), nil
+		}
+		return new(JSONString), nil
 	case DataTypeBinary:
 		return new([]byte), nil
 	case DataTypeBoolean:
@@ -394,5 +531,124 @@ func (typ DataType) makeBuffer(nullable bool) (any, error) {
 	default:
 		debug.PrintStack()
 		return nil, ErrDatabaseUnsupportedTypeName("makeBuffer", string(typ))
+	}
+}
+
+type JSONString string
+
+func (j JSONString) String() string {
+	return string(j)
+}
+
+// 0: Log Table, 1: Fixed Table, 3: Volatile Table,
+// 4: Lookup Table, 5: KeyValue Table, 6: Tag Table
+type TableType int
+
+const (
+	TableTypeLog      TableType = iota + 0
+	TableTypeFixed    TableType = 1
+	TableTypeVolatile TableType = 3
+	TableTypeLookup   TableType = 4
+	TableTypeKeyValue TableType = 5
+	TableTypeTag      TableType = 6
+	TableTypeView     TableType = 7
+)
+
+func (typ TableType) String() string {
+	switch typ {
+	case TableTypeLog:
+		return "LogTable"
+	case TableTypeFixed:
+		return "FixedTable"
+	case TableTypeVolatile:
+		return "VolatileTable"
+	case TableTypeLookup:
+		return "LookupTable"
+	case TableTypeKeyValue:
+		return "KeyValueTable"
+	case TableTypeTag:
+		return "TagTable"
+	default:
+		return fmt.Sprintf("UndefinedTable-%d", typ)
+	}
+}
+
+func (typ TableType) ShortString() string {
+	switch typ {
+	case TableTypeLog:
+		return "Log"
+	case TableTypeFixed:
+		return "Fixed"
+	case TableTypeVolatile:
+		return "Volatile"
+	case TableTypeLookup:
+		return "Lookup"
+	case TableTypeKeyValue:
+		return "KeyValue"
+	case TableTypeTag:
+		return "Tag"
+	case TableTypeView:
+		return "View"
+	default:
+		return fmt.Sprintf("UndefinedTable-%d", typ)
+	}
+}
+
+func (typ TableType) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf(`"%s"`, typ.String())), nil
+}
+
+type TableFlag int
+
+const (
+	TableFlagNone   TableFlag = 0
+	TableFlagData   TableFlag = 1
+	TableFlagRollup TableFlag = 2
+	TableFlagMeta   TableFlag = 4
+	TableFlagStat   TableFlag = 8
+)
+
+func (flag TableFlag) String() string {
+	switch flag {
+	case TableFlagNone:
+		return ""
+	case TableFlagData:
+		return "Data"
+	case TableFlagRollup:
+		return "Rollup"
+	case TableFlagMeta:
+		return "Meta"
+	case TableFlagStat:
+		return "Stat"
+	default:
+		return fmt.Sprintf("UndefinedTableFlag-%d", flag)
+	}
+}
+
+func (flag TableFlag) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf(`"%s"`, flag.String())), nil
+}
+
+type IndexType int
+
+const (
+	IndexTypeBitmap   IndexType = iota + 6
+	IndexTypeRedBlack IndexType = 8
+	IndexTypeKeyword  IndexType = 9
+	IndexTypeTag      IndexType = 11
+)
+
+func (typ IndexType) String() string {
+	switch typ {
+	case IndexTypeBitmap:
+		return "BITMAP (LSM)"
+	case IndexTypeRedBlack:
+		return "REDBLACK"
+	case IndexTypeKeyword:
+		return "KEYWORD (LSM)"
+	case IndexTypeTag:
+		return "TAG"
+	default:
+		return fmt.Sprintf("UndefinedIndex-%d", typ)
 	}
 }

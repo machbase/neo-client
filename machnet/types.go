@@ -6,6 +6,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"github.com/machbase/neo-client/api"
 )
 
 // cmi protocol version: 4.0.2
@@ -165,32 +167,6 @@ const (
 func align8(v int) int {
 	return (v + 7) &^ 7
 }
-
-type SqlType int
-
-const (
-	MACHCLI_SQL_TYPE_INT16    SqlType = 0
-	MACHCLI_SQL_TYPE_INT32    SqlType = 1
-	MACHCLI_SQL_TYPE_INT64    SqlType = 2
-	MACHCLI_SQL_TYPE_DATETIME SqlType = 3
-	MACHCLI_SQL_TYPE_FLOAT    SqlType = 4
-	MACHCLI_SQL_TYPE_DOUBLE   SqlType = 5
-	MACHCLI_SQL_TYPE_IPV4     SqlType = 6
-	MACHCLI_SQL_TYPE_IPV6     SqlType = 7
-	MACHCLI_SQL_TYPE_STRING   SqlType = 8
-	MACHCLI_SQL_TYPE_BINARY   SqlType = 9
-)
-
-type CType int
-
-const (
-	MACHCLI_C_TYPE_INT16  CType = 101
-	MACHCLI_C_TYPE_INT32  CType = 102
-	MACHCLI_C_TYPE_INT64  CType = 103
-	MACHCLI_C_TYPE_FLOAT  CType = 104
-	MACHCLI_C_TYPE_DOUBLE CType = 105
-	MACHCLI_C_TYPE_CHAR   CType = 106
-)
 
 type StmtType int
 
@@ -383,7 +359,7 @@ func (typ StmtType) SuccessfulMessage() string {
 }
 
 type ParamDesc struct {
-	Type      SqlType
+	Type      api.SqlType
 	Precision int
 	Scale     int
 	Nullable  bool
@@ -443,53 +419,69 @@ func makeServerErr(code int, msg string) error {
 	return &StatusError{code: code, msg: msg}
 }
 
-func sqlTypeToCmdType(sqlType SqlType) int {
+func sqlTypeToCmdType(sqlType api.SqlType) int {
 	switch sqlType {
-	case MACHCLI_SQL_TYPE_INT16:
+	case api.SqlTypeInt16:
 		return cmdInt16Type
-	case MACHCLI_SQL_TYPE_INT32:
+	case api.SqlTypeUInt16:
+		return cmdUInt16Type
+	case api.SqlTypeInt32:
 		return cmdInt32Type
-	case MACHCLI_SQL_TYPE_INT64:
+	case api.SqlTypeUInt32:
+		return cmdUInt32Type
+	case api.SqlTypeInt64:
 		return cmdInt64Type
-	case MACHCLI_SQL_TYPE_DATETIME:
+	case api.SqlTypeUInt64:
+		return cmdUInt64Type
+	case api.SqlTypeDatetime:
 		return cmdDateType
-	case MACHCLI_SQL_TYPE_FLOAT:
+	case api.SqlTypeFloat:
 		return cmdFlt32Type
-	case MACHCLI_SQL_TYPE_DOUBLE:
+	case api.SqlTypeDouble:
 		return cmdFlt64Type
-	case MACHCLI_SQL_TYPE_IPV4:
+	case api.SqlTypeIPv4:
 		return cmdIpv4Type
-	case MACHCLI_SQL_TYPE_IPV6:
+	case api.SqlTypeIPv6:
 		return cmdIpv6Type
-	case MACHCLI_SQL_TYPE_BINARY:
+	case api.SqlTypeBinary:
 		return cmdBinaryType
+	case api.SqlTypeJSON:
+		return cmdJSONType
 	default:
 		return cmdVarcharType
 	}
 }
 
-func spinerTypeToSQLType(spinerType int) SqlType {
+func spinerTypeToSqlType(spinerType int) api.SqlType {
 	switch spinerType {
-	case cmdBoolType, cmdInt16Type, cmdUInt16Type:
-		return MACHCLI_SQL_TYPE_INT16
-	case cmdInt32Type, cmdUInt32Type:
-		return MACHCLI_SQL_TYPE_INT32
-	case cmdInt64Type, cmdUInt64Type:
-		return MACHCLI_SQL_TYPE_INT64
+	case cmdBoolType, cmdInt16Type:
+		return api.SqlTypeInt16
+	case cmdUInt16Type:
+		return api.SqlTypeUInt16
+	case cmdInt32Type:
+		return api.SqlTypeInt32
+	case cmdUInt32Type:
+		return api.SqlTypeUInt32
+	case cmdInt64Type:
+		return api.SqlTypeInt64
+	case cmdUInt64Type:
+		return api.SqlTypeUInt64
 	case cmdDateType:
-		return MACHCLI_SQL_TYPE_DATETIME
+		return api.SqlTypeDatetime
 	case cmdFlt32Type:
-		return MACHCLI_SQL_TYPE_FLOAT
+		return api.SqlTypeFloat
 	case cmdFlt64Type:
-		return MACHCLI_SQL_TYPE_DOUBLE
+		return api.SqlTypeDouble
 	case cmdIpv4Type:
-		return MACHCLI_SQL_TYPE_IPV4
+		return api.SqlTypeIPv4
 	case cmdIpv6Type:
-		return MACHCLI_SQL_TYPE_IPV6
+		return api.SqlTypeIPv6
 	case cmdBinaryType, cmdBlobType:
-		return MACHCLI_SQL_TYPE_BINARY
+		return api.SqlTypeBinary
+	case cmdJSONType:
+		return api.SqlTypeJSON
 	default:
-		return MACHCLI_SQL_TYPE_STRING
+		return api.SqlTypeString
 	}
 }
 

@@ -823,10 +823,13 @@ func (stmt *Stmt) bindParams(args ...any) error {
 
 	for idx, arg := range args {
 		var value any
-		var sqlType machnet.SqlType
+		var sqlType api.SqlType
 		switch val := arg.(type) {
 		default:
-			pd, _ := stmt.handle.DescribeParam(idx)
+			pd, err := stmt.handle.DescribeParam(idx)
+			if err != nil {
+				return stmt.ErrorOf(err)
+			}
 			if val == nil {
 				sqlType = pd.Type
 				value = nil
@@ -834,63 +837,84 @@ func (stmt *Stmt) bindParams(args ...any) error {
 				return api.ErrDatabaseBindUnknownType(idx, fmt.Sprintf("%T, expect: %d", val, pd.Type))
 			}
 		case int16:
-			sqlType = machnet.MACHCLI_SQL_TYPE_INT16
+			sqlType = api.SqlTypeInt16
 			value = val
 		case *int16:
-			sqlType = machnet.MACHCLI_SQL_TYPE_INT16
+			sqlType = api.SqlTypeInt16
+			value = *val
+		case uint16:
+			sqlType = api.SqlTypeUInt16
+			value = val
+		case *uint16:
+			sqlType = api.SqlTypeUInt16
 			value = *val
 		case int32:
-			sqlType = machnet.MACHCLI_SQL_TYPE_INT32
+			sqlType = api.SqlTypeInt32
 			value = val
 		case *int32:
-			sqlType = machnet.MACHCLI_SQL_TYPE_INT32
+			sqlType = api.SqlTypeInt32
+			value = *val
+		case uint32:
+			sqlType = api.SqlTypeUInt32
+			value = val
+		case *uint32:
+			sqlType = api.SqlTypeUInt32
 			value = *val
 		case int:
-			sqlType = machnet.MACHCLI_SQL_TYPE_INT32
+			sqlType = api.SqlTypeInt32
 			value = val
 		case *int:
-			sqlType = machnet.MACHCLI_SQL_TYPE_INT32
+			sqlType = api.SqlTypeInt32
 			value = *val
 		case int64:
-			sqlType = machnet.MACHCLI_SQL_TYPE_INT64
+			sqlType = api.SqlTypeInt64
 			value = val
 		case *int64:
-			sqlType = machnet.MACHCLI_SQL_TYPE_INT64
+			sqlType = api.SqlTypeInt64
+			value = *val
+		case uint64:
+			sqlType = api.SqlTypeUInt64
+			value = val
+		case *uint64:
+			sqlType = api.SqlTypeUInt64
 			value = *val
 		case time.Time:
-			sqlType = machnet.MACHCLI_SQL_TYPE_DATETIME
+			sqlType = api.SqlTypeDatetime
 			value = val.UnixNano()
 		case *time.Time:
-			sqlType = machnet.MACHCLI_SQL_TYPE_DATETIME
+			sqlType = api.SqlTypeDatetime
 			value = (*val).UnixNano()
 		case float32:
-			sqlType = machnet.MACHCLI_SQL_TYPE_FLOAT
+			sqlType = api.SqlTypeFloat
 			value = val
 		case *float32:
-			sqlType = machnet.MACHCLI_SQL_TYPE_FLOAT
+			sqlType = api.SqlTypeFloat
 			value = *val
 		case float64:
-			sqlType = machnet.MACHCLI_SQL_TYPE_DOUBLE
+			sqlType = api.SqlTypeDouble
 			value = val
 		case *float64:
-			sqlType = machnet.MACHCLI_SQL_TYPE_DOUBLE
+			sqlType = api.SqlTypeDouble
 			value = *val
 		case net.IP:
 			if ipv4 := val.To4(); ipv4 != nil {
-				sqlType = machnet.MACHCLI_SQL_TYPE_IPV4
+				sqlType = api.SqlTypeIPv4
 				value = []byte(ipv4.String())
 			} else {
-				sqlType = machnet.MACHCLI_SQL_TYPE_IPV6
+				sqlType = api.SqlTypeIPv6
 				value = []byte(val.To16().String())
 			}
 		case string:
-			sqlType = machnet.MACHCLI_SQL_TYPE_STRING
+			sqlType = api.SqlTypeString
 			value = val
 		case *string:
-			sqlType = machnet.MACHCLI_SQL_TYPE_STRING
-			value = val
+			sqlType = api.SqlTypeString
+			value = *val
+		case api.JSONString:
+			sqlType = api.SqlTypeJSON
+			value = string(val)
 		case []byte:
-			sqlType = machnet.MACHCLI_SQL_TYPE_BINARY
+			sqlType = api.SqlTypeBinary
 			value = val
 		}
 		if err := stmt.handle.BindParam(idx, sqlType, value); err != nil {
@@ -997,114 +1021,10 @@ func (c *Conn) NewStmt() (*Stmt, error) {
 	return ret, nil
 }
 
-type SqlType int
-
-const (
-	MACHCLI_SQL_TYPE_INT16    SqlType = 0
-	MACHCLI_SQL_TYPE_INT32    SqlType = 1
-	MACHCLI_SQL_TYPE_INT64    SqlType = 2
-	MACHCLI_SQL_TYPE_DATETIME SqlType = 3
-	MACHCLI_SQL_TYPE_FLOAT    SqlType = 4
-	MACHCLI_SQL_TYPE_DOUBLE   SqlType = 5
-	MACHCLI_SQL_TYPE_IPV4     SqlType = 6
-	MACHCLI_SQL_TYPE_IPV6     SqlType = 7
-	MACHCLI_SQL_TYPE_STRING   SqlType = 8
-	MACHCLI_SQL_TYPE_BINARY   SqlType = 9
-)
-
-func (st SqlType) String() string {
-	switch st {
-	case MACHCLI_SQL_TYPE_INT16:
-		return "INT16"
-	case MACHCLI_SQL_TYPE_INT32:
-		return "INT32"
-	case MACHCLI_SQL_TYPE_INT64:
-		return "INT64"
-	case MACHCLI_SQL_TYPE_DATETIME:
-		return "DATETIME"
-	case MACHCLI_SQL_TYPE_FLOAT:
-		return "FLOAT"
-	case MACHCLI_SQL_TYPE_DOUBLE:
-		return "DOUBLE"
-	case MACHCLI_SQL_TYPE_IPV4:
-		return "IPV4"
-	case MACHCLI_SQL_TYPE_IPV6:
-		return "IPV6"
-	case MACHCLI_SQL_TYPE_STRING:
-		return "STRING"
-	case MACHCLI_SQL_TYPE_BINARY:
-		return "BINARY"
-	default:
-		return fmt.Sprintf("UNKNOWN(%d)", st)
-	}
-}
-
-func (st SqlType) ColumnType() api.ColumnType {
-	switch st {
-	default:
-		return api.ColumnTypeUnknown
-	case MACHCLI_SQL_TYPE_INT16:
-		return api.ColumnTypeShort
-	case MACHCLI_SQL_TYPE_INT32:
-		return api.ColumnTypeInteger
-	case MACHCLI_SQL_TYPE_INT64:
-		return api.ColumnTypeLong
-	case MACHCLI_SQL_TYPE_DATETIME:
-		return api.ColumnTypeDatetime
-	case MACHCLI_SQL_TYPE_FLOAT:
-		return api.ColumnTypeFloat
-	case MACHCLI_SQL_TYPE_DOUBLE:
-		return api.ColumnTypeDouble
-	case MACHCLI_SQL_TYPE_IPV4:
-		return api.ColumnTypeIPv4
-	case MACHCLI_SQL_TYPE_IPV6:
-		return api.ColumnTypeIPv6
-	case MACHCLI_SQL_TYPE_STRING:
-		return api.ColumnTypeVarchar
-	case MACHCLI_SQL_TYPE_BINARY:
-		return api.ColumnTypeBinary
-	}
-}
-
-func (st SqlType) DataType() api.DataType {
-	switch st {
-	default:
-		return api.DataTypeAny
-	case MACHCLI_SQL_TYPE_INT16:
-		return api.DataTypeInt16
-	case MACHCLI_SQL_TYPE_INT32:
-		return api.DataTypeInt32
-	case MACHCLI_SQL_TYPE_INT64:
-		return api.DataTypeInt64
-	case MACHCLI_SQL_TYPE_DATETIME:
-		return api.DataTypeDatetime
-	case MACHCLI_SQL_TYPE_FLOAT:
-		return api.DataTypeFloat32
-	case MACHCLI_SQL_TYPE_DOUBLE:
-		return api.DataTypeFloat64
-	case MACHCLI_SQL_TYPE_IPV4:
-		return api.DataTypeIPv4
-	case MACHCLI_SQL_TYPE_IPV6:
-		return api.DataTypeIPv6
-	case MACHCLI_SQL_TYPE_STRING:
-		return api.DataTypeString
-	case MACHCLI_SQL_TYPE_BINARY:
-		return api.DataTypeBinary
-	}
-}
-
-type ColumnDesc struct {
-	Name     string
-	Type     SqlType
-	Size     int
-	Scale    int
-	Nullable bool
-}
-
 type Stmt struct {
 	handle     *machnet.StmtHandle
 	conn       *Conn
-	columnDesc []ColumnDesc
+	columnDesc []api.ColumnDesc
 	reachEOF   bool
 	sqlHead    string
 	rowCount   int64
@@ -1169,10 +1089,10 @@ func (stmt *Stmt) execute() error {
 	if err != nil {
 		return stmt.ErrorOf(err)
 	}
-	stmt.columnDesc = make([]ColumnDesc, num)
+	stmt.columnDesc = make([]api.ColumnDesc, num)
 	for i := 0; i < num; i++ {
-		d := ColumnDesc{}
-		if err := stmt.handle.DescribeCol(i, &d.Name, (*machnet.SqlType)(&d.Type), &d.Size, &d.Scale, &d.Nullable); err != nil {
+		d := api.ColumnDesc{}
+		if err := stmt.handle.DescribeCol(i, &d.Name, (*api.SqlType)(&d.Type), &d.Size, &d.Scale, &d.Nullable); err != nil {
 			return stmt.ErrorOf(err)
 		}
 		stmt.columnDesc[i] = d
@@ -1398,7 +1318,7 @@ func (r *Rows) Row() []any {
 	return r.row
 }
 
-func (r *Rows) ColumnDescriptions() []ColumnDesc {
+func (r *Rows) ColumnDescriptions() []api.ColumnDesc {
 	if r.stmt == nil {
 		return nil
 	}
@@ -1524,38 +1444,38 @@ func (c *Conn) Appender(ctx context.Context, tableName string, opts ...api.Appen
 	return ret, nil
 }
 
-func columnTypeToSqlType(ct api.ColumnType) machnet.SqlType {
+func columnTypeToSqlType(ct api.ColumnType) api.SqlType {
 	switch ct {
 	case api.ColumnTypeShort:
-		return machnet.MACHCLI_SQL_TYPE_INT16
+		return api.SqlTypeInt16
 	case api.ColumnTypeUShort:
 		// Bind as INT32 to avoid INT16 overflow for unsigned short values.
-		return machnet.MACHCLI_SQL_TYPE_INT32
+		return api.SqlTypeInt32
 	case api.ColumnTypeInteger:
-		return machnet.MACHCLI_SQL_TYPE_INT32
+		return api.SqlTypeInt32
 	case api.ColumnTypeUInteger:
 		// Bind as INT64 to preserve unsigned integer range.
-		return machnet.MACHCLI_SQL_TYPE_INT64
+		return api.SqlTypeInt64
 	case api.ColumnTypeLong:
-		return machnet.MACHCLI_SQL_TYPE_INT64
+		return api.SqlTypeInt64
 	case api.ColumnTypeULong:
-		return machnet.MACHCLI_SQL_TYPE_INT64
+		return api.SqlTypeInt64
 	case api.ColumnTypeDatetime:
-		return machnet.MACHCLI_SQL_TYPE_DATETIME
+		return api.SqlTypeDatetime
 	case api.ColumnTypeFloat:
-		return machnet.MACHCLI_SQL_TYPE_FLOAT
+		return api.SqlTypeFloat
 	case api.ColumnTypeDouble:
-		return machnet.MACHCLI_SQL_TYPE_DOUBLE
+		return api.SqlTypeDouble
 	case api.ColumnTypeIPv4:
-		return machnet.MACHCLI_SQL_TYPE_IPV4
+		return api.SqlTypeIPv4
 	case api.ColumnTypeIPv6:
-		return machnet.MACHCLI_SQL_TYPE_IPV6
+		return api.SqlTypeIPv6
 	case api.ColumnTypeVarchar:
-		return machnet.MACHCLI_SQL_TYPE_STRING
+		return api.SqlTypeString
 	case api.ColumnTypeBinary:
-		return machnet.MACHCLI_SQL_TYPE_BINARY
+		return api.SqlTypeBinary
 	default:
-		return machnet.MACHCLI_SQL_TYPE_STRING
+		return api.SqlTypeString
 	}
 }
 
@@ -1566,7 +1486,7 @@ type Appender struct {
 	errCheckCount int
 	columns       api.Columns
 	columnNames   []string
-	columnTypes   []machnet.SqlType
+	columnTypes   []api.SqlType
 	inputColumns  []AppenderInputColumn
 	inputFormats  []string
 	closed        bool

@@ -4,6 +4,8 @@ import (
 	"crypto"
 	"sync"
 	"time"
+
+	"github.com/machbase/neo-client/api"
 )
 
 type EnvHandle struct {
@@ -303,7 +305,7 @@ func (stmt *StmtHandle) Execute() error {
 		if b, ok := stmt.bound[i]; ok {
 			params[i] = b
 		} else {
-			params[i] = BoundParam{sqlType: MACHCLI_SQL_TYPE_STRING, isNull: true}
+			params[i] = BoundParam{sqlType: api.SqlTypeString, isNull: true}
 		}
 	}
 	res, err := stmt.conn.native.executePrepared(stmt.id, stmt.sql, params, stmt.columns)
@@ -388,12 +390,12 @@ func (stmt *StmtHandle) DescribeParam(paramNo int) (ParamDesc, error) {
 	stmt.mu.Lock()
 	defer stmt.mu.Unlock()
 	if paramNo < 0 || paramNo >= len(stmt.paramDesc) {
-		return ParamDesc{Type: MACHCLI_SQL_TYPE_STRING, Nullable: true}, makeClientErr("invalid parameter index")
+		return ParamDesc{Type: api.SqlTypeString, Nullable: true}, makeClientErr("invalid parameter index")
 	}
 	return stmt.paramDesc[paramNo], nil
 }
 
-func (stmt *StmtHandle) BindParam(paramNo int, sqlType SqlType, value any) error {
+func (stmt *StmtHandle) BindParam(paramNo int, sqlType api.SqlType, value any) error {
 	if stmt == nil {
 		return makeClientErr("invalid statement")
 	}
@@ -440,7 +442,7 @@ func (stmt *StmtHandle) NumResultCol() (int, error) {
 	return len(stmt.columns), nil
 }
 
-func (stmt *StmtHandle) DescribeCol(columnNo int, pName *string, pType *SqlType, pSize *int, pScale *int, pNullable *bool) error {
+func (stmt *StmtHandle) DescribeCol(columnNo int, pName *string, pType *api.SqlType, pSize *int, pScale *int, pNullable *bool) error {
 	if stmt == nil {
 		return makeClientErr("invalid statement")
 	}
@@ -605,7 +607,7 @@ func (stmt *StmtHandle) flushAppendBufferedLocked(checkResponse bool) error {
 	return nil
 }
 
-func (stmt *StmtHandle) AppendData(types []SqlType, names []string, args []any, formats []string) error {
+func (stmt *StmtHandle) AppendData(types []api.SqlType, names []string, args []any, formats []string) error {
 	_ = types
 	_ = formats
 	if stmt == nil {

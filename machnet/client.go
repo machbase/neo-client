@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/machbase/neo-client/api"
 )
 
 type NativeConn struct {
@@ -490,7 +492,7 @@ func parseStmtResponseWithStmtTypeFallback(body []byte, sql string, fallbackCols
 		if qCount > 0 {
 			ret.paramDesc = make([]ParamDesc, qCount)
 			for i := range ret.paramDesc {
-				ret.paramDesc[i] = ParamDesc{Type: MACHCLI_SQL_TYPE_STRING, Nullable: true}
+				ret.paramDesc[i] = ParamDesc{Type: api.SqlTypeString, Nullable: true}
 			}
 		}
 	}

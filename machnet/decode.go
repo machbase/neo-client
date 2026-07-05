@@ -7,6 +7,8 @@ import (
 	"math"
 	"net"
 	"time"
+
+	"github.com/machbase/neo-client/api"
 )
 
 type ColumnMeta struct {
@@ -17,7 +19,7 @@ type ColumnMeta struct {
 	spinerType int
 	length     int
 	isVariable bool
-	sqlType    SqlType
+	sqlType    api.SqlType
 	nullable   bool
 }
 
@@ -44,7 +46,7 @@ func buildColumns(units map[uint32][]MarshalUnit) []ColumnMeta {
 			spinerType: spiner,
 			length:     computeColumnLength(spiner, precision),
 			isVariable: isVariableSpinerType(spiner),
-			sqlType:    spinerTypeToSQLType(spiner),
+			sqlType:    spinerTypeToSqlType(spiner),
 			nullable:   true,
 		}
 		ret = append(ret, meta)
@@ -59,10 +61,10 @@ func buildParamDesc(units map[uint32][]MarshalUnit, count int) []ParamDesc {
 	}
 	ret := make([]ParamDesc, count)
 	for i := 0; i < count; i++ {
-		d := ParamDesc{Type: MACHCLI_SQL_TYPE_STRING, Nullable: true}
+		d := ParamDesc{Type: api.SqlTypeString, Nullable: true}
 		if i < len(typUnits) && len(typUnits[i].data) >= 8 {
 			cmType := binary.LittleEndian.Uint64(typUnits[i].data)
-			d.Type = spinerTypeToSQLType(extractSpinerType(cmType))
+			d.Type = spinerTypeToSqlType(extractSpinerType(cmType))
 			d.Precision = extractPrecision(cmType)
 			d.Scale = extractScale(cmType)
 		}

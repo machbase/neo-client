@@ -454,7 +454,7 @@ func (r *Result) RowsAffected() (int64, error) {
 type Rows struct {
 	rows    api.Rows
 	columns api.Columns
-	desc    []machgo.ColumnDesc
+	desc    []api.ColumnDesc
 	buffer  []any
 }
 
@@ -472,7 +472,7 @@ func newRows(rows api.Rows) (*Rows, error) {
 		return nil, normalizeError(err)
 	}
 	ret := &Rows{rows: rows, columns: cols}
-	if provider, ok := rows.(interface{ ColumnDescriptions() []machgo.ColumnDesc }); ok {
+	if provider, ok := rows.(interface{ ColumnDescriptions() []api.ColumnDesc }); ok {
 		ret.desc = provider.ColumnDescriptions()
 	}
 	return ret, nil
@@ -549,15 +549,10 @@ func (r *Rows) ColumnTypeLength(index int) (length int64, ok bool) {
 	if !exists {
 		return 0, false
 	}
-	switch col.Type {
-	case api.ColumnTypeVarchar, api.ColumnTypeText, api.ColumnTypeClob, api.ColumnTypeBlob, api.ColumnTypeBinary, api.ColumnTypeJSON:
-		if col.Length <= 0 {
-			return 0, false
-		}
+	if col.Length > 0 {
 		return int64(col.Length), true
-	default:
-		return 0, false
 	}
+	return 0, false
 }
 
 func (r *Rows) ColumnTypeNullable(index int) (nullable, ok bool) {
@@ -574,7 +569,7 @@ func (r *Rows) ColumnTypePrecisionScale(index int) (precision, scale int64, ok b
 	}
 	desc := r.desc[index]
 	switch desc.Type {
-	case machgo.MACHCLI_SQL_TYPE_FLOAT, machgo.MACHCLI_SQL_TYPE_DOUBLE:
+	case api.SqlTypeFloat, api.SqlTypeDouble:
 		if desc.Size <= 0 {
 			return 0, int64(desc.Scale), false
 		}
@@ -590,28 +585,60 @@ func (r *Rows) ColumnTypeScanType(index int) reflect.Type {
 		return reflect.TypeOf(new(any)).Elem()
 	}
 	switch col.Type {
-	case api.ColumnTypeShort, api.ColumnTypeUShort, api.ColumnTypeInteger, api.ColumnTypeUInteger, api.ColumnTypeLong, api.ColumnTypeULong:
+	case api.ColumnTypeShort:
+		return reflect.TypeOf(int16(0))
+	case api.ColumnTypeUShort:
+		return reflect.TypeOf(uint16(0))
+	case api.ColumnTypeInteger:
+		return reflect.TypeOf(int32(0))
+	case api.ColumnTypeUInteger:
+		return reflect.TypeOf(uint32(0))
+	case api.ColumnTypeLong:
 		return reflect.TypeOf(int64(0))
-	case api.ColumnTypeFloat, api.ColumnTypeDouble:
+	case api.ColumnTypeULong:
+		return reflect.TypeOf(uint64(0))
+	case api.ColumnTypeFloat:
+		return reflect.TypeOf(float32(0))
+	case api.ColumnTypeDouble:
 		return reflect.TypeOf(float64(0))
 	case api.ColumnTypeDatetime:
 		return reflect.TypeOf(time.Time{})
 	case api.ColumnTypeBinary, api.ColumnTypeBlob, api.ColumnTypeClob:
 		return reflect.TypeOf([]byte(nil))
-	case api.ColumnTypeIPv4, api.ColumnTypeIPv6, api.ColumnTypeVarchar, api.ColumnTypeText, api.ColumnTypeJSON:
+	case api.ColumnTypeIPv4, api.ColumnTypeIPv6:
+		return reflect.TypeOf(net.IP(nil))
+	case api.ColumnTypeVarchar, api.ColumnTypeText:
 		return reflect.TypeOf("")
+	case api.ColumnTypeJSON:
+		return reflect.TypeOf(api.JSONString(""))
 	default:
 		switch col.DataType {
-		case api.DataTypeInt16, api.DataTypeInt32, api.DataTypeInt64:
+		case api.DataTypeInt16:
+			return reflect.TypeOf(int16(0))
+		case api.DataTypeUint16:
+			return reflect.TypeOf(uint16(0))
+		case api.DataTypeInt32:
+			return reflect.TypeOf(int32(0))
+		case api.DataTypeUint32:
+			return reflect.TypeOf(uint32(0))
+		case api.DataTypeInt64:
 			return reflect.TypeOf(int64(0))
-		case api.DataTypeFloat32, api.DataTypeFloat64:
+		case api.DataTypeUint64:
+			return reflect.TypeOf(uint64(0))
+		case api.DataTypeFloat32:
+			return reflect.TypeOf(float32(0))
+		case api.DataTypeFloat64:
 			return reflect.TypeOf(float64(0))
 		case api.DataTypeDatetime:
 			return reflect.TypeOf(time.Time{})
 		case api.DataTypeBinary:
 			return reflect.TypeOf([]byte(nil))
-		case api.DataTypeIPv4, api.DataTypeIPv6, api.DataTypeString:
+		case api.DataTypeIPv4, api.DataTypeIPv6:
+			return reflect.TypeOf(net.IP(nil))
+		case api.DataTypeString:
 			return reflect.TypeOf("")
+		case api.DataTypeJSON:
+			return reflect.TypeOf(api.JSONString(""))
 		default:
 			return reflect.TypeOf(new(any)).Elem()
 		}

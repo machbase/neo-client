@@ -63,6 +63,14 @@ func Scan(src any, dst any) error {
 		if sv.Valid {
 			return scanString(sv.String, dst)
 		}
+	case JSONString:
+		return scanString(string(sv), dst)
+	case *JSONString:
+		return scanString(string(*sv), dst)
+	case *sql.Null[JSONString]:
+		if sv.Valid {
+			return scanString(string(sv.V), dst)
+		}
 	case time.Time:
 		return scanDatetime(sv, dst)
 	case *time.Time:
@@ -122,6 +130,8 @@ func ScanNull(dst any) bool {
 	case *sql.Null[net.IP]:
 		d.Valid = false
 	case *sql.Null[[]byte]:
+		d.Valid = false
+	case *sql.Null[JSONString]:
 		d.Valid = false
 	default:
 		return false
@@ -361,6 +371,11 @@ func scanString(src string, pDst any) error {
 		dst.String = src
 	case *driver.Value:
 		*dst = driver.Value(src)
+	case *JSONString:
+		*dst = JSONString(src)
+	case *sql.Null[JSONString]:
+		dst.Valid = true
+		dst.V = JSONString(src)
 	default:
 		return ErrDatabaseScanType("STRING", pDst)
 	}
@@ -422,6 +437,8 @@ func Unbox(val any) any {
 	case *float64:
 		return *v
 	case *string:
+		return *v
+	case *JSONString:
 		return *v
 	case *time.Time:
 		return *v
@@ -494,6 +511,12 @@ func Unbox(val any) any {
 			return nil
 		}
 	case *sql.Null[float64]:
+		if v.Valid {
+			return v.V
+		} else {
+			return nil
+		}
+	case *sql.Null[JSONString]:
 		if v.Valid {
 			return v.V
 		} else {

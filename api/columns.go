@@ -140,26 +140,38 @@ func (cols Columns) MakeBuffer() ([]any, error) {
 	return rec, nil
 }
 
+type ColumnDesc struct {
+	Name     string
+	Type     SqlType
+	Size     int
+	Scale    int
+	Nullable bool
+}
+
 type ColumnType int
 
 const (
-	ColumnTypeShort    ColumnType = iota + 4
-	ColumnTypeUShort   ColumnType = 104
-	ColumnTypeInteger  ColumnType = 8
-	ColumnTypeUInteger ColumnType = 108
-	ColumnTypeLong     ColumnType = 12
-	ColumnTypeULong    ColumnType = 112
-	ColumnTypeFloat    ColumnType = 16
-	ColumnTypeDouble   ColumnType = 20
-	ColumnTypeVarchar  ColumnType = 5
-	ColumnTypeText     ColumnType = 49
-	ColumnTypeClob     ColumnType = 53
-	ColumnTypeBlob     ColumnType = 57
-	ColumnTypeBinary   ColumnType = 97
-	ColumnTypeDatetime ColumnType = 6
-	ColumnTypeIPv4     ColumnType = 32
-	ColumnTypeIPv6     ColumnType = 36
-	ColumnTypeJSON     ColumnType = 61
+	ColumnTypeShort    ColumnType = iota + 4 // cmdInt16Type
+	ColumnTypeUShort   ColumnType = 104      // cmdUInt16Type
+	ColumnTypeInteger  ColumnType = 8        // cmdInt32Type
+	ColumnTypeUInteger ColumnType = 108      // cmdUInt32Type
+	ColumnTypeLong     ColumnType = 12       // cmdInt64Type
+	ColumnTypeULong    ColumnType = 112      // cmdUInt64Type
+	ColumnTypeFloat    ColumnType = 16       // cmdFlt32Type
+	ColumnTypeDouble   ColumnType = 20       // cmdFlt64Type
+	ColumnTypeVarchar  ColumnType = 5        // cmdVarcharType
+	ColumnTypeText     ColumnType = 49       // cmdTextType
+	ColumnTypeClob     ColumnType = 53       // cmdClobType
+	ColumnTypeBlob     ColumnType = 57       // cmdBlobType
+	ColumnTypeBinary   ColumnType = 97       // cmdBinaryType
+	ColumnTypeDatetime ColumnType = 6        // cmdDateType
+	ColumnTypeIPv4     ColumnType = 32       // cmdIPv4Type
+	ColumnTypeIPv6     ColumnType = 36       // cmdIPv6Type
+	ColumnTypeIPNet    ColumnType = 101      // cmdIPNetType
+	ColumnTypeJSON     ColumnType = 61       // cmdJSONType
+	ColumnTypeNull     ColumnType = 24       // cmdNullType
+	ColumnTypeBool     ColumnType = 40       // cmdBoolType
+	ColumnTypeChar     ColumnType = 45       // cmdCharType
 	ColumnTypeUnknown  ColumnType = 0
 )
 
@@ -251,7 +263,7 @@ func (typ ColumnType) makeBuffer() (any, error) {
 	case ColumnTypeIPv6:
 		return new(net.IP), nil
 	case ColumnTypeJSON:
-		return new(string), nil
+		return new(JSONString), nil
 	case ColumnTypeDatetime:
 		return new(time.Time), nil
 	case ColumnTypeBinary:

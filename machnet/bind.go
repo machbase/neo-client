@@ -8,10 +8,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/machbase/neo-client/api"
 )
 
 type BoundParam struct {
-	sqlType SqlType
+	sqlType api.SqlType
 	value   any
 	isNull  bool
 }
@@ -54,33 +56,33 @@ func encodeBoundParam(p BoundParam) (int, []byte, error) {
 	cmdType := sqlTypeToCmdType(p.sqlType)
 	if p.isNull || p.value == nil {
 		switch p.sqlType {
-		case MACHCLI_SQL_TYPE_INT16:
+		case api.SqlTypeInt16:
 			b := make([]byte, 2)
 			binary.BigEndian.PutUint16(b, 0x8000)
 			return cmdType, b, nil
-		case MACHCLI_SQL_TYPE_INT32:
+		case api.SqlTypeInt32:
 			b := make([]byte, 4)
 			binary.BigEndian.PutUint32(b, 0x80000000)
 			return cmdType, b, nil
-		case MACHCLI_SQL_TYPE_INT64:
+		case api.SqlTypeInt64:
 			b := make([]byte, 8)
 			binary.BigEndian.PutUint64(b, 0x8000000000000000)
 			return cmdType, b, nil
-		case MACHCLI_SQL_TYPE_DATETIME:
+		case api.SqlTypeDatetime:
 			b := make([]byte, 8)
 			binary.BigEndian.PutUint64(b, datetimeNull)
 			return cmdType, b, nil
-		case MACHCLI_SQL_TYPE_FLOAT:
+		case api.SqlTypeFloat:
 			b := make([]byte, 4)
 			binary.BigEndian.PutUint32(b, math.Float32bits(floatNull))
 			return cmdType, b, nil
-		case MACHCLI_SQL_TYPE_DOUBLE:
+		case api.SqlTypeDouble:
 			b := make([]byte, 8)
 			binary.BigEndian.PutUint64(b, math.Float64bits(doubleNull))
 			return cmdType, b, nil
-		case MACHCLI_SQL_TYPE_IPV4:
+		case api.SqlTypeIPv4:
 			return cmdType, make([]byte, 5), nil
-		case MACHCLI_SQL_TYPE_IPV6:
+		case api.SqlTypeIPv6:
 			return cmdType, make([]byte, 17), nil
 		default:
 			return cmdType, nil, nil
@@ -88,7 +90,7 @@ func encodeBoundParam(p BoundParam) (int, []byte, error) {
 	}
 
 	switch p.sqlType {
-	case MACHCLI_SQL_TYPE_INT16:
+	case api.SqlTypeInt16:
 		v, err := toInt64(p.value)
 		if err != nil {
 			return 0, nil, err
@@ -96,7 +98,7 @@ func encodeBoundParam(p BoundParam) (int, []byte, error) {
 		b := make([]byte, 2)
 		binary.BigEndian.PutUint16(b, uint16(int16(v)))
 		return cmdType, b, nil
-	case MACHCLI_SQL_TYPE_INT32:
+	case api.SqlTypeInt32:
 		v, err := toInt64(p.value)
 		if err != nil {
 			return 0, nil, err
@@ -104,7 +106,7 @@ func encodeBoundParam(p BoundParam) (int, []byte, error) {
 		b := make([]byte, 4)
 		binary.BigEndian.PutUint32(b, uint32(int32(v)))
 		return cmdType, b, nil
-	case MACHCLI_SQL_TYPE_INT64:
+	case api.SqlTypeInt64:
 		v, err := toInt64(p.value)
 		if err != nil {
 			return 0, nil, err
@@ -112,7 +114,7 @@ func encodeBoundParam(p BoundParam) (int, []byte, error) {
 		b := make([]byte, 8)
 		binary.BigEndian.PutUint64(b, uint64(v))
 		return cmdType, b, nil
-	case MACHCLI_SQL_TYPE_DATETIME:
+	case api.SqlTypeDatetime:
 		v, err := toDateTimeInt64(p.value)
 		if err != nil {
 			return 0, nil, err
@@ -120,7 +122,7 @@ func encodeBoundParam(p BoundParam) (int, []byte, error) {
 		b := make([]byte, 8)
 		binary.BigEndian.PutUint64(b, uint64(v))
 		return cmdType, b, nil
-	case MACHCLI_SQL_TYPE_FLOAT:
+	case api.SqlTypeFloat:
 		v, err := toFloat64(p.value)
 		if err != nil {
 			return 0, nil, err
@@ -128,7 +130,7 @@ func encodeBoundParam(p BoundParam) (int, []byte, error) {
 		b := make([]byte, 4)
 		binary.BigEndian.PutUint32(b, math.Float32bits(float32(v)))
 		return cmdType, b, nil
-	case MACHCLI_SQL_TYPE_DOUBLE:
+	case api.SqlTypeDouble:
 		v, err := toFloat64(p.value)
 		if err != nil {
 			return 0, nil, err
@@ -136,7 +138,7 @@ func encodeBoundParam(p BoundParam) (int, []byte, error) {
 		b := make([]byte, 8)
 		binary.BigEndian.PutUint64(b, math.Float64bits(v))
 		return cmdType, b, nil
-	case MACHCLI_SQL_TYPE_IPV4:
+	case api.SqlTypeIPv4:
 		ip, err := toIP(p.value)
 		if err != nil {
 			return 0, nil, err
@@ -147,7 +149,7 @@ func encodeBoundParam(p BoundParam) (int, []byte, error) {
 			copy(b[1:], ip4)
 		}
 		return cmdType, b, nil
-	case MACHCLI_SQL_TYPE_IPV6:
+	case api.SqlTypeIPv6:
 		ip, err := toIP(p.value)
 		if err != nil {
 			return 0, nil, err
@@ -158,7 +160,7 @@ func encodeBoundParam(p BoundParam) (int, []byte, error) {
 			copy(b[1:], ip16)
 		}
 		return cmdType, b, nil
-	case MACHCLI_SQL_TYPE_BINARY:
+	case api.SqlTypeBinary:
 		switch v := p.value.(type) {
 		case []byte:
 			return cmdType, append([]byte(nil), v...), nil
