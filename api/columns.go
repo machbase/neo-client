@@ -18,9 +18,9 @@ type Column struct {
 }
 
 func (col Column) String() string {
-	if col.Type != 0 {
+	if col.Type != ColumnTypeUnknown {
 		return fmt.Sprintf("%s(%s)", col.Name, col.Type.String())
-	} else if col.DataType != "" {
+	} else if col.DataType != DataTypeUnknown {
 		return fmt.Sprintf("%s(%s)", col.Name, col.DataType)
 	} else {
 		return fmt.Sprintf("%s(unknown)", col.Name)
@@ -44,9 +44,9 @@ func (col *Column) IsMetaColumn() bool {
 }
 
 func (col *Column) makeBuffer() (any, error) {
-	if col.Type != 0 {
+	if col.Type != ColumnTypeUnknown {
 		return col.Type.makeBuffer()
-	} else if col.DataType != "" {
+	} else if col.DataType != DataTypeUnknown {
 		return col.DataType.makeBuffer(col.Nullable)
 	} else {
 		return nil, fmt.Errorf("Column type is not defined")
@@ -312,7 +312,7 @@ func (typ ColumnType) DataType() DataType {
 	case ColumnTypeIPv6:
 		return DataTypeIPv6
 	case ColumnTypeJSON:
-		return DataTypeString
+		return DataTypeJSON
 	default:
 		return DataType(fmt.Sprintf("UndefinedColumnType-%d", typ))
 	}

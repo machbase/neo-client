@@ -123,11 +123,11 @@ func (st SqlType) DataType() DataType {
 	case SqlTypeBinary:
 		return DataTypeBinary
 	case SqlTypeUInt16:
-		return DataTypeUint16
+		return DataTypeUInt16
 	case SqlTypeUInt32:
-		return DataTypeUint32
+		return DataTypeUInt32
 	case SqlTypeUInt64:
-		return DataTypeUint64
+		return DataTypeUInt64
 	case SqlTypeJSON:
 		return DataTypeJSON
 	}
@@ -136,6 +136,7 @@ func (st SqlType) DataType() DataType {
 type DataType string
 
 const (
+	DataTypeUnknown  DataType = ""
 	DataTypeInt16    DataType = "int16"
 	DataTypeInt32    DataType = "int32"
 	DataTypeInt64    DataType = "int64"
@@ -146,16 +147,16 @@ const (
 	DataTypeIPv6     DataType = "ipv6"
 	DataTypeString   DataType = "string"
 	DataTypeBinary   DataType = "binary"
+	DataTypeUInt16   DataType = "uint16"
+	DataTypeUInt32   DataType = "uint32"
+	DataTypeUInt64   DataType = "uint64"
+	DataTypeJSON     DataType = "json"
 	// exceptional case
 	DataTypeBoolean DataType = "bool"
 	DataTypeByte    DataType = "int8"
 	DataTypeAny     DataType = "any"
 	DataTypeList    DataType = "list"
 	DataTypeDict    DataType = "dict"
-	DataTypeUint16  DataType = "uint16"
-	DataTypeUint32  DataType = "uint32"
-	DataTypeUint64  DataType = "uint64"
-	DataTypeJSON    DataType = "json"
 )
 
 func DataTypeOf(v any) DataType {
@@ -171,15 +172,15 @@ func DataTypeOf(v any) DataType {
 	case int16, *int16:
 		return DataTypeInt16
 	case uint16, *uint16:
-		return DataTypeUint16
+		return DataTypeUInt16
 	case int32, *int32:
 		return DataTypeInt32
 	case uint32, *uint32:
-		return DataTypeUint32
+		return DataTypeUInt32
 	case int64, *int64:
 		return DataTypeInt64
 	case uint64, *uint64:
-		return DataTypeUint64
+		return DataTypeUInt64
 	case *float32, float32:
 		return DataTypeFloat32
 	case *float64, float64:

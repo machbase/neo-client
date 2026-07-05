@@ -615,15 +615,15 @@ func (r *Rows) ColumnTypeScanType(index int) reflect.Type {
 		switch col.DataType {
 		case api.DataTypeInt16:
 			return reflect.TypeOf(int16(0))
-		case api.DataTypeUint16:
+		case api.DataTypeUInt16:
 			return reflect.TypeOf(uint16(0))
 		case api.DataTypeInt32:
 			return reflect.TypeOf(int32(0))
-		case api.DataTypeUint32:
+		case api.DataTypeUInt32:
 			return reflect.TypeOf(uint32(0))
 		case api.DataTypeInt64:
 			return reflect.TypeOf(int64(0))
-		case api.DataTypeUint64:
+		case api.DataTypeUInt64:
 			return reflect.TypeOf(uint64(0))
 		case api.DataTypeFloat32:
 			return reflect.TypeOf(float32(0))

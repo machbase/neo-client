@@ -579,7 +579,7 @@ func (c *Conn) Exec(ctx context.Context, query string, args ...any) api.Result {
 			ret.err = err
 			return ret
 		} else {
-			ret.stmtType = machnet.StmtType(typ)
+			ret.stmtType = typ
 		}
 		return ret
 	}
@@ -605,7 +605,7 @@ func (c *Conn) Exec(ctx context.Context, query string, args ...any) api.Result {
 		ret.err = err
 		return ret
 	} else {
-		ret.stmtType = machnet.StmtType(typ)
+		ret.stmtType = typ
 	}
 	return ret
 }
@@ -647,7 +647,7 @@ func (c *Conn) QueryRow(ctx context.Context, query string, args ...any) api.Row 
 		ret.err = err
 		return ret
 	} else {
-		ret.stmtType = machnet.StmtType(typ)
+		ret.stmtType = typ
 	}
 	ret.rowCount = stmt.rowCount
 	ret.columns = make(api.Columns, len(stmt.columnDesc))
@@ -702,7 +702,7 @@ func (c *Conn) Query(ctx context.Context, query string, args ...any) (api.Rows, 
 		}
 		return nil, err
 	} else {
-		ret.stmtType = machnet.StmtType(typ)
+		ret.stmtType = typ
 	}
 	if ret.stmtType.IsSelect() {
 		ret.rowsCount = 0
@@ -741,7 +741,7 @@ func (pStmt *PreparedStmt) Exec(ctx context.Context, params ...any) api.Result {
 		ret.err = err
 		return ret
 	} else {
-		ret.stmtType = machnet.StmtType(typ)
+		ret.stmtType = typ
 	}
 	return ret
 }
@@ -760,7 +760,7 @@ func (pStmt *PreparedStmt) Query(ctx context.Context, params ...any) (api.Rows, 
 	if typ, err := pStmt.stmt.handle.GetStmtType(); err != nil {
 		return nil, err
 	} else {
-		ret.stmtType = machnet.StmtType(typ)
+		ret.stmtType = typ
 	}
 	if !ret.stmtType.IsSelect() {
 		ret.rowsCount = 0
