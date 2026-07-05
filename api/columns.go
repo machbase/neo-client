@@ -236,6 +236,39 @@ func (typ ColumnType) String() string {
 	}
 }
 
+func (typ ColumnType) ToSqlType() SqlType {
+	switch typ {
+	case ColumnTypeShort:
+		return SqlTypeInt16
+	case ColumnTypeUShort:
+		return SqlTypeUInt16
+	case ColumnTypeInteger:
+		return SqlTypeInt32
+	case ColumnTypeUInteger:
+		return SqlTypeUInt32
+	case ColumnTypeLong:
+		return SqlTypeInt64
+	case ColumnTypeULong:
+		return SqlTypeUInt64
+	case ColumnTypeDatetime:
+		return SqlTypeDatetime
+	case ColumnTypeFloat:
+		return SqlTypeFloat
+	case ColumnTypeDouble:
+		return SqlTypeDouble
+	case ColumnTypeIPv4:
+		return SqlTypeIPv4
+	case ColumnTypeIPv6:
+		return SqlTypeIPv6
+	case ColumnTypeVarchar:
+		return SqlTypeString
+	case ColumnTypeBinary:
+		return SqlTypeBinary
+	default:
+		return SqlTypeString
+	}
+}
+
 func (typ ColumnType) makeBuffer() (any, error) {
 	switch typ {
 	case ColumnTypeShort:
@@ -282,15 +315,15 @@ func (typ ColumnType) DataType() DataType {
 	case ColumnTypeShort:
 		return DataTypeInt16
 	case ColumnTypeUShort:
-		return DataTypeInt16
+		return DataTypeUInt16
 	case ColumnTypeInteger:
 		return DataTypeInt32
 	case ColumnTypeUInteger:
-		return DataTypeInt32
+		return DataTypeUInt32
 	case ColumnTypeLong:
 		return DataTypeInt64
 	case ColumnTypeULong:
-		return DataTypeInt64
+		return DataTypeUInt64
 	case ColumnTypeFloat:
 		return DataTypeFloat32
 	case ColumnTypeDouble:

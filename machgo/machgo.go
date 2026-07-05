@@ -1427,7 +1427,7 @@ func (c *Conn) Appender(ctx context.Context, tableName string, opts ...api.Appen
 		col.DataType = col.Type.DataType()
 		ret.columns = append(ret.columns, col)
 		ret.columnNames = append(ret.columnNames, col.Name)
-		ret.columnTypes = append(ret.columnTypes, columnTypeToSqlType(col.Type))
+		ret.columnTypes = append(ret.columnTypes, col.Type.ToSqlType())
 	}
 
 	stmt, err := c.NewStmt()
@@ -1442,41 +1442,6 @@ func (c *Conn) Appender(ctx context.Context, tableName string, opts ...api.Appen
 		return nil, err
 	}
 	return ret, nil
-}
-
-func columnTypeToSqlType(ct api.ColumnType) api.SqlType {
-	switch ct {
-	case api.ColumnTypeShort:
-		return api.SqlTypeInt16
-	case api.ColumnTypeUShort:
-		// Bind as INT32 to avoid INT16 overflow for unsigned short values.
-		return api.SqlTypeInt32
-	case api.ColumnTypeInteger:
-		return api.SqlTypeInt32
-	case api.ColumnTypeUInteger:
-		// Bind as INT64 to preserve unsigned integer range.
-		return api.SqlTypeInt64
-	case api.ColumnTypeLong:
-		return api.SqlTypeInt64
-	case api.ColumnTypeULong:
-		return api.SqlTypeInt64
-	case api.ColumnTypeDatetime:
-		return api.SqlTypeDatetime
-	case api.ColumnTypeFloat:
-		return api.SqlTypeFloat
-	case api.ColumnTypeDouble:
-		return api.SqlTypeDouble
-	case api.ColumnTypeIPv4:
-		return api.SqlTypeIPv4
-	case api.ColumnTypeIPv6:
-		return api.SqlTypeIPv6
-	case api.ColumnTypeVarchar:
-		return api.SqlTypeString
-	case api.ColumnTypeBinary:
-		return api.SqlTypeBinary
-	default:
-		return api.SqlTypeString
-	}
 }
 
 type Appender struct {
