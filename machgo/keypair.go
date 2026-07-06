@@ -162,6 +162,35 @@ func LoadPrivateKeyFromFile(keyFile string) (crypto.PrivateKey, error) {
 	return machnet.LoadPrivateKeyFromFile(keyFile)
 }
 
+func LoadPrivateKeyFromPEM(privateKeyPEM []byte) (crypto.PrivateKey, error) {
+	block, _ := pem.Decode(privateKeyPEM)
+	if block == nil {
+		return nil, fmt.Errorf("invalid AUTH_KEY")
+	}
+	switch block.Type {
+	case "PRIVATE KEY":
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		return key, nil
+	case "RSA PRIVATE KEY":
+		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		return key, nil
+	case "EC PRIVATE KEY":
+		key, err := x509.ParseECPrivateKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		return key, nil
+	default:
+		return nil, fmt.Errorf("invalid auth key type %s", block.Type)
+	}
+}
+
 type RegisteredAuthKey struct {
 	KeyID     int
 	User      string

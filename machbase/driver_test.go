@@ -5,6 +5,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,6 +56,28 @@ func TestParseDSNAuthKey(t *testing.T) {
 	}
 	if cfg.ProxyUser != "" {
 		t.Fatalf("unexpected proxy user: %q", cfg.ProxyUser)
+	}
+}
+
+func TestParseDSNAuthKeyPEM(t *testing.T) {
+	dsn := `server=127.0.0.1:5656;user=sys;auth_mode=challenge;auth_key_pem="-----BEGIN PRIVATE KEY-----
+MIIA...
+-----END PRIVATE KEY-----";auth_sig_scheme=rsa_pss`
+	cfg, err := ParseDSN(dsn)
+	if err != nil {
+		t.Fatalf("ParseDSN() error = %v", err)
+	}
+	if cfg.AuthMode != "challenge" {
+		t.Fatalf("unexpected auth_mode: %q", cfg.AuthMode)
+	}
+	if cfg.AuthKeyPEM == "" {
+		t.Fatalf("expected auth_key_pem")
+	}
+	if !strings.Contains(cfg.AuthKeyPEM, "BEGIN PRIVATE KEY") {
+		t.Fatalf("unexpected auth_key_pem: %q", cfg.AuthKeyPEM)
+	}
+	if cfg.AuthSigScheme != "rsa_pss" {
+		t.Fatalf("unexpected auth_sig_scheme: %q", cfg.AuthSigScheme)
 	}
 }
 
@@ -171,6 +194,20 @@ func TestConfigValidateChallengeRequiresKeyFile(t *testing.T) {
 	cfg := Config{Host: "127.0.0.1", Port: 5656, User: "sys", AuthMode: "CHALLENGE"}
 	if err := cfg.validate(); err == nil {
 		t.Fatalf("expected validate() error")
+	}
+}
+
+func TestConfigValidateChallengeWithAuthKeyPEM(t *testing.T) {
+	cfg := Config{Host: "127.0.0.1", Port: 5656, User: "sys", AuthMode: "CHALLENGE", AuthKeyPEM: "-----BEGIN PRIVATE KEY-----\nX\n-----END PRIVATE KEY-----"}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+}
+
+func TestConfigValidateImplicitChallengeWithAuthKeyPEM(t *testing.T) {
+	cfg := Config{Host: "127.0.0.1", Port: 5656, User: "sys", AuthKeyPEM: "-----BEGIN PRIVATE KEY-----\nX\n-----END PRIVATE KEY-----"}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate() error = %v", err)
 	}
 }
 

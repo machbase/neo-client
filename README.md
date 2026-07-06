@@ -245,6 +245,11 @@ Supported DSN keys include:
 
 - `server`: server address such as `tcp://sys:manager@127.0.0.1:5656`
 - `host`, `port`, `user`, `password`: explicit connection fields
+- `auth_mode`: authentication mode (`password` or `challenge`)
+- `auth_key_file`: private key file path for `auth_mode=challenge`
+- `auth_key_pem`: inline private key PEM content for `auth_mode=challenge`
+
+When `auth_key_file` or `auth_key_pem` is set and `auth_mode` is omitted, the driver treats it as challenge authentication implicitly.
 - `fetch_rows`: fetch batch size
 - `statement_cache`: `auto`, `on`, or `off`
 - `io_metrics`: `true` or `false`

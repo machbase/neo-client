@@ -2,6 +2,7 @@ package machbase
 
 import (
 	"context"
+	"crypto"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
@@ -38,6 +39,7 @@ type Config struct {
 	ProxyUser       string
 	AuthMode        string
 	AuthKeyFile     string
+	AuthKeyPEM      string
 	AuthSigScheme   string
 	AlternativeHost string
 	AlternativePort int
@@ -63,11 +65,15 @@ func (cfg Config) validate() error {
 		return errors.New("machbase dsn requires user")
 	}
 	authMode := strings.ToUpper(strings.TrimSpace(cfg.AuthMode))
-	if cfg.Password == "" && (authMode == "" || authMode == "PASSWORD") {
+	hasAuthKey := strings.TrimSpace(cfg.AuthKeyFile) != "" || strings.TrimSpace(cfg.AuthKeyPEM) != ""
+	if cfg.Password == "" && authMode == "PASSWORD" {
 		return errors.New("machbase dsn requires password")
 	}
-	if authMode == "CHALLENGE" && strings.TrimSpace(cfg.AuthKeyFile) == "" {
-		return errors.New("machbase dsn requires auth_key_file for auth_mode=CHALLENGE")
+	if cfg.Password == "" && authMode == "" && !hasAuthKey {
+		return errors.New("machbase dsn requires password")
+	}
+	if authMode == "CHALLENGE" && strings.TrimSpace(cfg.AuthKeyFile) == "" && strings.TrimSpace(cfg.AuthKeyPEM) == "" {
+		return errors.New("machbase dsn requires auth_key_file or auth_key_pem for auth_mode=CHALLENGE")
 	}
 	if cfg.Port <= 0 {
 		return fmt.Errorf("machbase dsn has invalid port %d", cfg.Port)
@@ -93,6 +99,7 @@ type Driver struct {
 	Password        string
 	AuthMode        string
 	AuthKeyFile     string
+	AuthKeyPEM      string
 	AuthSigScheme   string
 	AlternativeHost string
 	AlternativePort int
@@ -116,6 +123,7 @@ func (drv *Driver) baseConfig() Config {
 		Password:        drv.Password,
 		AuthMode:        drv.AuthMode,
 		AuthKeyFile:     drv.AuthKeyFile,
+		AuthKeyPEM:      drv.AuthKeyPEM,
 		AuthSigScheme:   drv.AuthSigScheme,
 		AlternativeHost: drv.AlternativeHost,
 		AlternativePort: drv.AlternativePort,
@@ -162,12 +170,22 @@ func (cn *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 		return nil, driver.ErrBadConn
 	}
 	opts := []api.ConnectOption{
-		api.WithStatementCache(cn.cfg.StatementCache),
-		api.WithFetchRows(cn.cfg.FetchRows),
 		api.WithIOMetrics(cn.cfg.IOMetrics),
 	}
-	if strings.TrimSpace(cn.cfg.AuthKeyFile) != "" || strings.EqualFold(strings.TrimSpace(cn.cfg.AuthMode), "CHALLENGE") {
-		key, err := machgo.LoadPrivateKeyFromFile(cn.cfg.AuthKeyFile)
+	if cn.cfg.statementCacheSet {
+		opts = append(opts, api.WithStatementCache(cn.cfg.StatementCache))
+	}
+	if cn.cfg.FetchRows > 0 {
+		opts = append(opts, api.WithFetchRows(cn.cfg.FetchRows))
+	}
+	if strings.TrimSpace(cn.cfg.AuthKeyFile) != "" || strings.TrimSpace(cn.cfg.AuthKeyPEM) != "" || strings.EqualFold(strings.TrimSpace(cn.cfg.AuthMode), "CHALLENGE") {
+		var key crypto.PrivateKey
+		var err error
+		if strings.TrimSpace(cn.cfg.AuthKeyPEM) != "" {
+			key, err = machgo.LoadPrivateKeyFromPEM([]byte(cn.cfg.AuthKeyPEM))
+		} else {
+			key, err = machgo.LoadPrivateKeyFromFile(cn.cfg.AuthKeyFile)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -675,6 +693,7 @@ func (r *Rows) column(index int) (*api.Column, bool) {
 //   - user="sys as demo";password="12;34";host=127.0.0.1;
 //   - user='sys as demo';password='12;34';host=127.0.0.1;
 //   - password="a\"b";password2='a\'b';
+//   - auth_mode=challenge;user=sys;auth_key_pem="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----";
 func ParseDSN(dsn string) (Config, error) {
 	var cfg Config
 	dsn = strings.TrimSpace(dsn)
@@ -742,6 +761,8 @@ func parseKeyValueDSN(dsn string) (Config, error) {
 			cfg.AuthMode = value
 		case "auth_key_file":
 			cfg.AuthKeyFile = value
+		case "auth_key_pem":
+			cfg.AuthKeyPEM = value
 		case "auth_sig_scheme":
 			cfg.AuthSigScheme = value
 		case "fetch_rows", "fetchrows":
@@ -801,9 +822,10 @@ func splitDSNSegments(dsn string) ([]string, error) {
 				escaped = true
 			}
 		case '\'', '"':
-			if quote == 0 {
+			switch quote {
+			case 0:
 				quote = ch
-			} else if quote == ch {
+			case ch:
 				quote = 0
 			}
 			current.WriteRune(ch)
@@ -918,6 +940,8 @@ func applyServerValue(cfg *Config, value string) error {
 				cfg.AuthMode = values[0]
 			case "auth_key_file":
 				cfg.AuthKeyFile = values[0]
+			case "auth_key_pem":
+				cfg.AuthKeyPEM = values[0]
 			case "auth_sig_scheme":
 				cfg.AuthSigScheme = values[0]
 			case "fetch_rows", "fetchrows":
@@ -1015,6 +1039,9 @@ func mergeConfig(base Config, override Config) Config {
 	}
 	if override.AuthKeyFile != "" {
 		base.AuthKeyFile = override.AuthKeyFile
+	}
+	if override.AuthKeyPEM != "" {
+		base.AuthKeyPEM = override.AuthKeyPEM
 	}
 	if override.AuthSigScheme != "" {
 		base.AuthSigScheme = override.AuthSigScheme
