@@ -215,7 +215,33 @@ func main() {
 }
 ```
 
-Supported DSN keys for the standard driver include:
+Supported DSN forms for the standard driver:
+
+- Server value only:
+	- `host`
+	- `host:port`
+	- URL form such as `tcp://user:password@host:port?as=proxy&fetch_rows=100`
+- Key-value pairs separated by `;`:
+	- `key=value;key=value;...`
+	- example: `user=sys;password=manager;server=127.0.0.1:5656`
+
+For key-value DSN syntax:
+
+- Value may be quoted with `"..."` or `'...'`.
+- `;` inside quoted values is treated as a literal character.
+- Escapes are supported inside quoted values with backslash:
+	- `\"` for `"` in double-quoted values
+	- `\'` for `'` in single-quoted values
+	- `\\` for `\`
+- Unterminated or mismatched quotes return a parse error.
+
+Examples:
+
+- `user="sys as demo";password="12;34";server=127.0.0.1:5656;`
+- `user='sys as demo';password='12;34';server=127.0.0.1:5656;`
+- `password="a\\\"b";server=127.0.0.1:5656;`
+
+Supported DSN keys include:
 
 - `server`: server address such as `tcp://sys:manager@127.0.0.1:5656`
 - `host`, `port`, `user`, `password`: explicit connection fields

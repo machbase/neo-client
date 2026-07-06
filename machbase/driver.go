@@ -175,6 +175,9 @@ func (cn *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	} else {
 		opts = append(opts, api.WithPassword(cn.cfg.User, cn.cfg.Password))
 	}
+	if cn.cfg.ProxyUser != "" && cn.cfg.User != cn.cfg.ProxyUser {
+		opts = append(opts, api.WithProxyUser(cn.cfg.ProxyUser))
+	}
 	conn, err := cn.db.Connect(ctx, opts...)
 	if err != nil {
 		return nil, normalizeError(err)
@@ -652,6 +655,26 @@ func (r *Rows) column(index int) (*api.Column, bool) {
 	return r.columns[index], true
 }
 
+// ParseDSN parses a Machbase DSN string and returns connection config.
+//
+// Supported syntax:
+//
+//  1. Server value only
+//     - host
+//     - host:port
+//     - tcp://user:password@host:port?as=proxy&fetch_rows=100
+//
+//  2. Key-value pairs separated by semicolon
+//     - key=value;key=value;...
+//     - Example: user=sys;password=manager;host=127.0.0.1;port=5656
+//
+// For key-value syntax, value may be quoted with single or double quotes.
+// A semicolon inside quotes is treated as a literal character, not a separator.
+// Quotes can be escaped inside quoted values with backslash.
+// Examples:
+//   - user="sys as demo";password="12;34";host=127.0.0.1;
+//   - user='sys as demo';password='12;34';host=127.0.0.1;
+//   - password="a\"b";password2='a\'b';
 func ParseDSN(dsn string) (Config, error) {
 	var cfg Config
 	dsn = strings.TrimSpace(dsn)
@@ -675,7 +698,10 @@ func ParseDSN(dsn string) (Config, error) {
 
 func parseKeyValueDSN(dsn string) (Config, error) {
 	var cfg Config
-	parts := strings.Split(dsn, ";")
+	parts, err := splitDSNSegments(dsn)
+	if err != nil {
+		return Config{}, err
+	}
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -687,6 +713,10 @@ func parseKeyValueDSN(dsn string) (Config, error) {
 		}
 		key = strings.ToLower(strings.TrimSpace(key))
 		value = strings.TrimSpace(value)
+		value, err = unquoteDSNValue(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid value for %q: %w", key, err)
+		}
 		switch key {
 		case "server":
 			if err := applyServerValue(&cfg, value); err != nil {
@@ -750,6 +780,90 @@ func parseKeyValueDSN(dsn string) (Config, error) {
 		}
 	}
 	return cfg.normalize(), nil
+}
+
+func splitDSNSegments(dsn string) ([]string, error) {
+	parts := make([]string, 0)
+	var current strings.Builder
+	var quote rune
+	escaped := false
+
+	for _, ch := range dsn {
+		if escaped {
+			current.WriteRune(ch)
+			escaped = false
+			continue
+		}
+		switch ch {
+		case '\\':
+			current.WriteRune(ch)
+			if quote != 0 {
+				escaped = true
+			}
+		case '\'', '"':
+			if quote == 0 {
+				quote = ch
+			} else if quote == ch {
+				quote = 0
+			}
+			current.WriteRune(ch)
+		case ';':
+			if quote != 0 {
+				current.WriteRune(ch)
+				continue
+			}
+			parts = append(parts, current.String())
+			current.Reset()
+		default:
+			current.WriteRune(ch)
+		}
+	}
+
+	if quote != 0 {
+		return nil, errors.New("unterminated quoted value")
+	}
+	if escaped {
+		return nil, errors.New("unterminated escape in quoted value")
+	}
+	parts = append(parts, current.String())
+	return parts, nil
+}
+
+func unquoteDSNValue(value string) (string, error) {
+	if len(value) < 2 {
+		return value, nil
+	}
+	if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
+		quote := rune(value[0])
+		content := value[1 : len(value)-1]
+		var out strings.Builder
+		escaped := false
+		for _, ch := range content {
+			if escaped {
+				if ch == quote || ch == '\\' {
+					out.WriteRune(ch)
+				} else {
+					out.WriteRune('\\')
+					out.WriteRune(ch)
+				}
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			out.WriteRune(ch)
+		}
+		if escaped {
+			return "", errors.New("unterminated escape sequence")
+		}
+		return out.String(), nil
+	}
+	if value[0] == '"' || value[0] == '\'' || value[len(value)-1] == '"' || value[len(value)-1] == '\'' {
+		return "", errors.New("mismatched quotes")
+	}
+	return value, nil
 }
 
 func parseStatementCacheMode(value string) (api.StatementCacheMode, error) {
@@ -889,6 +1003,9 @@ func mergeConfig(base Config, override Config) Config {
 	}
 	if override.User != "" {
 		base.User = override.User
+	}
+	if override.ProxyUser != "" {
+		base.ProxyUser = override.ProxyUser
 	}
 	if override.Password != "" {
 		base.Password = override.Password

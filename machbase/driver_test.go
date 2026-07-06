@@ -77,6 +77,96 @@ func TestParseDSNAuthKeyProxyLogin(t *testing.T) {
 	}
 }
 
+func TestParseDSNPassowrdProxyLogin(t *testing.T) {
+	cfg, err := ParseDSN("server=127.0.0.1:5656;user=sys as demo;password=manager;fetch_rows=100")
+	if err != nil {
+		t.Fatalf("ParseDSN() error = %v", err)
+	}
+	if cfg.Host != "127.0.0.1" || cfg.Port != 5656 {
+		t.Fatalf("unexpected host or port: %#v", cfg)
+	}
+	if cfg.User != "sys" || cfg.Password != "manager" {
+		t.Fatalf("unexpected credentials: %#v", cfg)
+	}
+	if cfg.ProxyUser != "demo" {
+		t.Fatalf("unexpected proxy user: %q", cfg.ProxyUser)
+	}
+	if cfg.FetchRows != 100 {
+		t.Fatalf("unexpected fetch_rows: %d", cfg.FetchRows)
+	}
+	if cfg.ProxyUser != "demo" {
+		t.Fatalf("unexpected proxy user: %q", cfg.ProxyUser)
+	}
+}
+
+func TestParseDSNKeyValueQuotedValues(t *testing.T) {
+	cfg, err := ParseDSN("user=\"sys as demo\";password=\"12;34\";host=127.0.0.1;")
+	if err != nil {
+		t.Fatalf("ParseDSN() error = %v", err)
+	}
+	if cfg.User != "sys" {
+		t.Fatalf("unexpected user: %q", cfg.User)
+	}
+	if cfg.ProxyUser != "demo" {
+		t.Fatalf("unexpected proxy user: %q", cfg.ProxyUser)
+	}
+	if cfg.Password != "12;34" {
+		t.Fatalf("unexpected password: %q", cfg.Password)
+	}
+	if cfg.Host != "127.0.0.1" {
+		t.Fatalf("unexpected host: %q", cfg.Host)
+	}
+}
+
+func TestParseDSNKeyValueSingleQuotedValues(t *testing.T) {
+	cfg, err := ParseDSN("user='sys as demo';password='12;34';host=127.0.0.1;")
+	if err != nil {
+		t.Fatalf("ParseDSN() error = %v", err)
+	}
+	if cfg.User != "sys" {
+		t.Fatalf("unexpected user: %q", cfg.User)
+	}
+	if cfg.ProxyUser != "demo" {
+		t.Fatalf("unexpected proxy user: %q", cfg.ProxyUser)
+	}
+	if cfg.Password != "12;34" {
+		t.Fatalf("unexpected password: %q", cfg.Password)
+	}
+}
+
+func TestParseDSNKeyValueQuotedValueErrors(t *testing.T) {
+	if _, err := ParseDSN("user=\"sys;password=manager;host=127.0.0.1"); err == nil {
+		t.Fatalf("expected unterminated quote error")
+	}
+	if _, err := ParseDSN("user=\"sys';password=manager;host=127.0.0.1"); err == nil {
+		t.Fatalf("expected mismatched quote error")
+	}
+}
+
+func TestParseDSNKeyValueQuotedValueEscapes(t *testing.T) {
+	cfg, err := ParseDSN(`user="sys as demo";password="12\";34\\x";host=127.0.0.1;`)
+	if err != nil {
+		t.Fatalf("ParseDSN() error = %v", err)
+	}
+	if cfg.Password != `12";34\x` {
+		t.Fatalf("unexpected password: %q", cfg.Password)
+	}
+
+	cfg, err = ParseDSN(`user='sys as demo';password='12\';34\\x';host=127.0.0.1;`)
+	if err != nil {
+		t.Fatalf("ParseDSN() error = %v", err)
+	}
+	if cfg.Password != `12';34\x` {
+		t.Fatalf("unexpected password: %q", cfg.Password)
+	}
+}
+
+func TestParseDSNKeyValueQuotedValueEscapeErrors(t *testing.T) {
+	if _, err := ParseDSN("user=\"sys\";password=\"abc\\\";host=127.0.0.1;"); err == nil {
+		t.Fatalf("expected unterminated escape error")
+	}
+}
+
 func TestConfigValidateChallengeRequiresKeyFile(t *testing.T) {
 	cfg := Config{Host: "127.0.0.1", Port: 5656, User: "sys", AuthMode: "CHALLENGE"}
 	if err := cfg.validate(); err == nil {
