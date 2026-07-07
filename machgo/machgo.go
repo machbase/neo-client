@@ -215,6 +215,7 @@ func (db *Database) Connect(ctx context.Context, opts ...api.ConnectOption) (api
 	var authMode string
 	var authKey crypto.PrivateKey = nil
 	var proxyUser string
+	var timeLocation *time.Location = time.UTC
 
 	for _, opt := range opts {
 		switch o := opt.(type) {
@@ -234,6 +235,8 @@ func (db *Database) Connect(ctx context.Context, opts ...api.ConnectOption) (api
 			authKey = o.Key
 		case *api.ConnectOptionProxyUser:
 			proxyUser = o.ProxyUser
+		case *api.ConnectOptionTimeLocation:
+			timeLocation = o.Location
 		default:
 			return nil, fmt.Errorf("unknown option type-%T", o)
 		}
@@ -274,6 +277,7 @@ func (db *Database) Connect(ctx context.Context, opts ...api.ConnectOption) (api
 		user:                   strings.ToUpper(user),
 		usedAt:                 time.Now(),
 		returnChan:             returnChan,
+		timeLocation:           timeLocation,
 		queryStmtReuseMode:     stmtReuse,
 		queryStmtPool:          map[string][]*Stmt{},
 		queryStmtPoolCap:       defaultQueryStmtPoolCap,
@@ -293,6 +297,7 @@ type Conn struct {
 	closeOnce  sync.Once
 	returnChan chan struct{}
 
+	timeLocation           *time.Location
 	queryStmtReuseMode     api.StatementCacheMode
 	queryStmtPoolMu        sync.Mutex
 	queryStmtFastKey       string
@@ -625,7 +630,7 @@ func (c *Conn) Prepare(ctx context.Context, query string) (api.Stmt, error) {
 }
 
 func (c *Conn) QueryRow(ctx context.Context, query string, args ...any) api.Row {
-	ret := &Row{}
+	ret := &Row{timeLocation: c.timeLocation}
 	stmt, err := c.acquireQueryStmt(query)
 	if err != nil {
 		ret.err = err
@@ -695,6 +700,7 @@ func (c *Conn) Query(ctx context.Context, query string, args ...any) (api.Rows, 
 		stmt:            stmt,
 		queryStmtKey:    query,
 		queryStmtPooled: true,
+		timeLocation:    c.timeLocation,
 	}
 	if typ, err := stmt.handle.GetStmtType(); err != nil {
 		if relErr := c.releaseQueryStmt(query, stmt, false); relErr != nil {
@@ -754,8 +760,9 @@ func (pStmt *PreparedStmt) Query(ctx context.Context, params ...any) (api.Rows, 
 		return nil, err
 	}
 	ret := &Rows{
-		stmt:       pStmt.stmt,
-		isPrepared: true,
+		stmt:         pStmt.stmt,
+		isPrepared:   true,
+		timeLocation: pStmt.stmt.conn.timeLocation,
 	}
 	if typ, err := pStmt.stmt.handle.GetStmtType(); err != nil {
 		return nil, err
@@ -771,7 +778,7 @@ func (pStmt *PreparedStmt) Query(ctx context.Context, params ...any) (api.Rows, 
 }
 
 func (pStmt *PreparedStmt) QueryRow(ctx context.Context, params ...any) api.Row {
-	ret := &Row{}
+	ret := &Row{timeLocation: pStmt.stmt.conn.timeLocation}
 	if err := pStmt.stmt.bindParams(params...); err != nil {
 		ret.err = err
 		return ret
@@ -1121,11 +1128,12 @@ func (stmt *Stmt) fetch() ([]any, error) {
 }
 
 type Row struct {
-	err      error
-	values   []any
-	columns  api.Columns
-	rowCount int64
-	stmtType machnet.StmtType
+	err          error
+	values       []any
+	columns      api.Columns
+	rowCount     int64
+	stmtType     machnet.StmtType
+	timeLocation *time.Location
 }
 
 var _ api.Row = (*Row)(nil)
@@ -1154,7 +1162,7 @@ func (r *Row) Scan(dest ...any) error {
 			dest[i] = nil
 			continue
 		}
-		if err := api.Scan(r.values[i], d); err != nil {
+		if err := api.Scan(r.values[i], d, r.timeLocation); err != nil {
 			return err
 		}
 	}
@@ -1182,6 +1190,7 @@ type Rows struct {
 	isPrepared      bool
 	queryStmtPooled bool
 	queryStmtKey    string
+	timeLocation    *time.Location
 }
 
 var _ api.Rows = (*Rows)(nil)
@@ -1342,7 +1351,7 @@ func (r *Rows) Scan(dest ...any) error {
 			}
 			continue
 		}
-		if err := api.Scan(r.row[i], d); err != nil {
+		if err := api.Scan(r.row[i], d, r.timeLocation); err != nil {
 			return err
 		}
 	}

@@ -66,6 +66,16 @@ type ConnectOptionStatementCache struct {
 
 func (ConnectOptionStatementCache) connectOption() {}
 
+func WithTimeLocation(loc *time.Location) ConnectOption {
+	return &ConnectOptionTimeLocation{Location: loc}
+}
+
+type ConnectOptionTimeLocation struct {
+	Location *time.Location
+}
+
+func (ConnectOptionTimeLocation) connectOption() {}
+
 func WithFetchRows(rows int64) ConnectOption {
 	return &ConnectOptionFetchRows{Rows: rows}
 }

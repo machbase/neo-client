@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func Scan(src any, dst any) error {
+func Scan(src any, dst any, loc *time.Location) error {
 	switch sv := src.(type) {
 	case int:
 		return scanInt32(int32(sv), dst)
@@ -72,12 +72,12 @@ func Scan(src any, dst any) error {
 			return scanString(string(sv.V), dst)
 		}
 	case time.Time:
-		return scanDatetime(sv, dst)
+		return scanDatetime(sv, dst, loc)
 	case *time.Time:
-		return scanDatetime(*sv, dst)
+		return scanDatetime(*sv, dst, loc)
 	case *sql.NullTime:
 		if sv.Valid {
-			return scanDatetime(sv.Time, dst)
+			return scanDatetime(sv.Time, dst, loc)
 		}
 	case []byte:
 		return scanBytes(sv, dst)
@@ -268,14 +268,14 @@ func scanInt64(src int64, pDst any) error {
 	return nil
 }
 
-func scanDatetime(src time.Time, pDst any) error {
+func scanDatetime(src time.Time, pDst any, loc *time.Location) error {
 	switch dst := pDst.(type) {
 	case *int64:
 		*dst = src.UnixNano()
 	case *time.Time:
-		*dst = src.In(time.UTC)
+		*dst = src.In(loc)
 	case *string:
-		*dst = src.In(time.UTC).Format(time.RFC3339)
+		*dst = src.In(loc).Format(time.RFC3339)
 	case *sql.NullTime:
 		dst.Valid = true
 		dst.Time = src
