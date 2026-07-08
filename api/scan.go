@@ -15,13 +15,25 @@ func Scan(src any, dst any, loc *time.Location) error {
 		return scanInt32(int32(sv), dst)
 	case *int:
 		return scanInt32(int32(*sv), dst)
+	case uint:
+		return scanInt32(int32(sv), dst)
+	case *uint:
+		return scanInt32(int32(*sv), dst)
 	case int16:
 		return scanInt16(sv, dst)
 	case *int16:
 		return scanInt16(*sv, dst)
+	case uint16:
+		return scanInt16(int16(sv), dst)
+	case *uint16:
+		return scanInt16(int16(*sv), dst)
 	case *sql.NullInt16:
 		if sv.Valid {
 			return scanInt16(sv.Int16, dst)
+		}
+	case *sql.Null[uint16]:
+		if sv.Valid {
+			return scanInt16(int16(sv.V), dst)
 		}
 	case int32:
 		return scanInt32(sv, dst)
@@ -31,6 +43,14 @@ func Scan(src any, dst any, loc *time.Location) error {
 		if sv.Valid {
 			return scanInt32(sv.Int32, dst)
 		}
+	case uint32:
+		return scanInt32(int32(sv), dst)
+	case *uint32:
+		return scanInt32(int32(*sv), dst)
+	case *sql.Null[uint32]:
+		if sv.Valid {
+			return scanInt32(int32(sv.V), dst)
+		}
 	case int64:
 		return scanInt64(sv, dst)
 	case *int64:
@@ -38,6 +58,14 @@ func Scan(src any, dst any, loc *time.Location) error {
 	case *sql.NullInt64:
 		if sv.Valid {
 			return scanInt64(sv.Int64, dst)
+		}
+	case uint64:
+		return scanInt64(int64(sv), dst)
+	case *uint64:
+		return scanInt64(int64(*sv), dst)
+	case *sql.Null[uint64]:
+		if sv.Valid {
+			return scanInt64(int64(sv.V), dst)
 		}
 	case float64:
 		return scanFloat64(sv, dst)

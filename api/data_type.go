@@ -473,16 +473,31 @@ func (typ DataType) makeBuffer(nullable bool) (any, error) {
 			return new(sql.NullInt16), nil
 		}
 		return new(int16), nil
+	case DataTypeUInt16:
+		if nullable {
+			return new(sql.Null[uint16]), nil
+		}
+		return new(uint16), nil
 	case DataTypeInt32:
 		if nullable {
 			return new(sql.NullInt32), nil
 		}
 		return new(int32), nil
+	case DataTypeUInt32:
+		if nullable {
+			return new(sql.Null[uint32]), nil
+		}
+		return new(uint32), nil
 	case DataTypeInt64:
 		if nullable {
 			return new(sql.NullInt64), nil
 		}
 		return new(int64), nil
+	case DataTypeUInt64:
+		if nullable {
+			return new(sql.Null[uint64]), nil
+		}
+		return new(uint64), nil
 	case DataTypeDatetime:
 		if nullable {
 			return new(sql.NullTime), nil
