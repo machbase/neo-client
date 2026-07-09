@@ -358,6 +358,9 @@ const (
 	ColumnFlagBasetime   = 0x01000000
 	ColumnFlagSummarized = 0x02000000
 	ColumnFlagMetaColumn = 0x04000000
+	// This is not a real column flag(not defined in the neo-engine),
+	// just workaround for base distance
+	ColumnFlagBaseDistance = 0x11000000
 )
 
 func (flag ColumnFlag) String() string {
@@ -365,11 +368,13 @@ func (flag ColumnFlag) String() string {
 	case ColumnFlagTagName:
 		return "tag name"
 	case ColumnFlagBasetime:
-		return "basetime"
+		return "base time"
 	case ColumnFlagSummarized:
 		return "summarized"
 	case ColumnFlagMetaColumn:
 		return "meta"
+	case ColumnFlagBaseDistance:
+		return "base distance"
 	default:
 		return ""
 	}

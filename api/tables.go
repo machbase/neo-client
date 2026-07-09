@@ -165,6 +165,9 @@ func describe(ctx context.Context, conn Conn, name TableName, includeHiddenColum
 		if col.Flag&ColumnFlagTagName > 0 {
 			d.TagNameColumn = col.Name
 		}
+		if col.Flag&ColumnFlagBasetime > 0 && col.Type != ColumnTypeDatetime {
+			col.Flag = ColumnFlagBaseDistance
+		}
 	}
 	rows.Close()
 	rows = nil
