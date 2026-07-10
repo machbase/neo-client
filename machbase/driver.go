@@ -1254,11 +1254,15 @@ func toDriverValue(value any) (driver.Value, error) {
 			return nil, nil
 		}
 		return *v, nil
+	case time.Time:
+		return v, nil
 	case *net.IP:
 		if v == nil {
 			return nil, nil
 		}
 		return v.String(), nil
+	case net.IP:
+		return v, nil
 	case int:
 		return int64(v), nil
 	case int16:
@@ -1277,10 +1281,6 @@ func toDriverValue(value any) (driver.Value, error) {
 		buf := make([]byte, len(v))
 		copy(buf, v)
 		return buf, nil
-	case time.Time:
-		return v, nil
-	case net.IP:
-		return v.String(), nil
 	default:
 		return nil, fmt.Errorf("machbase cannot convert row value %T to driver.Value", value)
 	}
