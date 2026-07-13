@@ -578,6 +578,7 @@ func (c *Conn) Exec(ctx context.Context, query string, args ...any) api.Result {
 		stmt.sqlHead = queryHead(query)
 		if err := stmt.handle.ExecDirect(query); err != nil {
 			ret.err = c.ErrorOf(err)
+			return ret
 		}
 		ret.rowCount, ret.err = stmt.handle.RowCount()
 		if typ, err := stmt.handle.GetStmtType(); err != nil {
