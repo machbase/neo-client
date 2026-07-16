@@ -1,6 +1,12 @@
 package machnet
 
-import "testing"
+import (
+	"bufio"
+	"io"
+	"net"
+	"testing"
+	"time"
+)
 
 func buildStmtResponseBodyForTest(t *testing.T, stmtType StmtType, includeStmtType bool) []byte {
 	t.Helper()
@@ -56,5 +62,36 @@ func TestParseStmtResponseUsesServerStmtTypeWithoutFallback(t *testing.T) {
 	}
 	if res.stmtType.IsExecRollup() {
 		t.Fatalf("stmtType %d should not be classified as rollup", res.stmtType)
+	}
+}
+
+func TestSendPacketsOptionalUsesIndependentWriteTimeout(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	payload := []byte("append payload")
+	serverDone := make(chan error, 1)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		buf := make([]byte, len(payload))
+		_, err := io.ReadFull(server, buf)
+		serverDone <- err
+	}()
+
+	conn := &NativeConn{
+		netConn: client,
+		br:      bufio.NewReader(client),
+		bw:      bufio.NewWriter(client),
+	}
+	body, ok, err := conn.sendPacketsOptional([][]byte{payload}, cmiAppendDataProtocol, time.Second, 5*time.Millisecond)
+	if err != nil {
+		t.Fatalf("sendPacketsOptional() error = %v", err)
+	}
+	if ok || len(body) != 0 {
+		t.Fatalf("sendPacketsOptional() = (%v, %v), want no optional response", body, ok)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server read error = %v", err)
 	}
 }

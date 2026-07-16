@@ -311,17 +311,15 @@ func (c *NativeConn) sendPacketsNoResponse(packets [][]byte, timeout time.Durati
 	return nil
 }
 
-func (c *NativeConn) sendPacketsOptional(packets [][]byte, expected byte, timeout time.Duration) ([]byte, bool, error) {
+func (c *NativeConn) sendPacketsOptional(packets [][]byte, expected byte, writeTimeout time.Duration, readTimeout time.Duration) ([]byte, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
 		return nil, false, errors.New("connection closed")
 	}
-	if timeout > 0 {
-		_ = c.netConn.SetWriteDeadline(time.Now().Add(timeout))
+	if writeTimeout > 0 {
+		_ = c.netConn.SetWriteDeadline(time.Now().Add(writeTimeout))
 		defer c.netConn.SetWriteDeadline(time.Time{})
-		_ = c.netConn.SetReadDeadline(time.Now().Add(timeout))
-		defer c.netConn.SetReadDeadline(time.Time{})
 	}
 	for _, p := range packets {
 		if err := writePacket(c.bw, p); err != nil {
@@ -330,6 +328,10 @@ func (c *NativeConn) sendPacketsOptional(packets [][]byte, expected byte, timeou
 	}
 	if err := c.bw.Flush(); err != nil {
 		return nil, false, err
+	}
+	if readTimeout > 0 {
+		_ = c.netConn.SetReadDeadline(time.Now().Add(readTimeout))
+		defer c.netConn.SetReadDeadline(time.Time{})
 	}
 	if err := c.packet.Read(c.br); err != nil {
 		var netErr net.Error
@@ -771,12 +773,13 @@ func (c *NativeConn) appendData(stmtID uint32, rows [][]byte, checkResponse bool
 	if !checkResponse {
 		return c.sendPacketsNoResponse(packets, c.queryTimeout)
 	}
-	// CAUTION: This is a short timeout for low latency append. But prone to cause false-timeout.
-	timeout := 5 * time.Millisecond
-	if c.queryTimeout > 0 && timeout > c.queryTimeout {
-		timeout = c.queryTimeout
+	// An append error response is optional, so keep only the response wait short.
+	// Writing the batch can block on server backpressure and must use queryTimeout.
+	responseTimeout := 5 * time.Millisecond
+	if c.queryTimeout > 0 && responseTimeout > c.queryTimeout {
+		responseTimeout = c.queryTimeout
 	}
-	body, ok, err := c.sendPacketsOptional(packets, cmiAppendDataProtocol, timeout)
+	body, ok, err := c.sendPacketsOptional(packets, cmiAppendDataProtocol, c.queryTimeout, responseTimeout)
 	if err != nil {
 		return err
 	}
