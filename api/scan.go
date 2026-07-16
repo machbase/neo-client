@@ -484,9 +484,27 @@ func Unbox(val any) any {
 		} else {
 			return nil
 		}
+	case *sql.NullByte:
+		if v.Valid {
+			return v.Byte
+		} else {
+			return nil
+		}
+	case *sql.Null[uint8]:
+		if v.Valid {
+			return v.V
+		} else {
+			return nil
+		}
 	case *sql.NullInt16:
 		if v.Valid {
 			return v.Int16
+		} else {
+			return nil
+		}
+	case *sql.Null[uint16]:
+		if v.Valid {
+			return v.V
 		} else {
 			return nil
 		}
@@ -496,9 +514,21 @@ func Unbox(val any) any {
 		} else {
 			return nil
 		}
+	case *sql.Null[uint32]:
+		if v.Valid {
+			return v.V
+		} else {
+			return nil
+		}
 	case *sql.NullInt64:
 		if v.Valid {
 			return v.Int64
+		} else {
+			return nil
+		}
+	case *sql.Null[uint64]:
+		if v.Valid {
+			return v.V
 		} else {
 			return nil
 		}
