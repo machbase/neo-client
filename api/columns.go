@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"fmt"
 	"net"
 	"strings"
@@ -272,35 +273,50 @@ func (typ ColumnType) ToSqlType() SqlType {
 func (typ ColumnType) makeBuffer() (any, error) {
 	switch typ {
 	case ColumnTypeShort:
-		return new(int16), nil
+		return new(sql.NullInt16), nil
+		//return new(int16), nil
 	case ColumnTypeUShort:
-		return new(uint16), nil
+		return new(sql.Null[uint16]), nil
+		//return new(uint16), nil
 	case ColumnTypeInteger:
-		return new(int32), nil
+		return new(sql.NullInt32), nil
+		//return new(int32), nil
 	case ColumnTypeUInteger:
-		return new(uint32), nil
+		return new(sql.Null[uint32]), nil
+		//return new(uint32), nil
 	case ColumnTypeLong:
-		return new(int64), nil
+		return new(sql.NullInt64), nil
+		//return new(int64), nil
 	case ColumnTypeULong:
-		return new(uint64), nil
+		return new(sql.Null[uint64]), nil
+		//return new(uint64), nil
 	case ColumnTypeFloat:
-		return new(float32), nil
+		return new(sql.Null[float32]), nil
+		//return new(float32), nil
 	case ColumnTypeDouble:
-		return new(float64), nil
+		return new(sql.NullFloat64), nil
+		//return new(float64), nil
 	case ColumnTypeVarchar:
-		return new(string), nil
+		return new(sql.NullString), nil
+		//return new(string), nil
 	case ColumnTypeText:
-		return new(string), nil
+		return new(sql.NullString), nil
+		//return new(string), nil
 	case ColumnTypeIPv4:
-		return new(net.IP), nil
+		return new(sql.Null[net.IP]), nil
+		//return new(net.IP), nil
 	case ColumnTypeIPv6:
-		return new(net.IP), nil
+		return new(sql.Null[net.IP]), nil
+		//return new(net.IP), nil
 	case ColumnTypeJSON:
-		return new(JSONString), nil
+		return new(sql.Null[JSONString]), nil
+		//return new(JSONString), nil
 	case ColumnTypeDatetime:
-		return new(time.Time), nil
+		return new(sql.NullTime), nil
+		//return new(time.Time), nil
 	case ColumnTypeBinary:
-		return new([]byte), nil
+		return new(sql.Null[[]byte]), nil
+		//return new([]byte), nil
 	default:
 		return nil, fmt.Errorf("unsupported column type: %d", typ)
 	}
