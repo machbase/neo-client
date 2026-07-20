@@ -1235,7 +1235,10 @@ func (r *Rows) Columns() (api.Columns, error) {
 			Length:   desc.Size,
 			Type:     desc.Type.ColumnType(),
 			DataType: desc.Type.DataType(),
-			Nullable: desc.Nullable,
+			Nullable: true,
+			// Since machnet does not provide a way to get the nullable information,
+			// we will set it to true for now, instead of:
+			// Nullable: desc.Nullable,
 		}
 	}
 	return ret, nil
