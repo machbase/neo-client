@@ -199,6 +199,15 @@ func scanInt16(src int16, pDst any) error {
 	case *sql.NullInt64:
 		dst.Valid = true
 		dst.Int64 = int64(src)
+	case *sql.Null[uint16]:
+		dst.Valid = true
+		dst.V = uint16(src)
+	case *sql.Null[uint32]:
+		dst.Valid = true
+		dst.V = uint32(src)
+	case *sql.Null[uint64]:
+		dst.Valid = true
+		dst.V = uint64(src)
 	case *driver.Value:
 		*dst = driver.Value(src)
 	default:
@@ -244,6 +253,12 @@ func scanInt32(src int32, pDst any) error {
 	case *sql.NullInt64:
 		dst.Valid = true
 		dst.Int64 = int64(src)
+	case *sql.Null[uint32]:
+		dst.Valid = true
+		dst.V = uint32(src)
+	case *sql.Null[uint64]:
+		dst.Valid = true
+		dst.V = uint64(src)
 	case *driver.Value:
 		*dst = driver.Value(src)
 	default:
@@ -288,6 +303,9 @@ func scanInt64(src int64, pDst any) error {
 	case *sql.NullInt64:
 		dst.Valid = true
 		dst.Int64 = src
+	case *sql.Null[uint64]:
+		dst.Valid = true
+		dst.V = uint64(src)
 	case *driver.Value:
 		*dst = driver.Value(src)
 	default:
