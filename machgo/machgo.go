@@ -970,28 +970,36 @@ func formatResultMessage(err error, stmtType machnet.StmtType, rowCount int64) s
 	case machnet.QPP_STMT_TYPE_DROP_VIEW:
 		return "view dropped."
 	}
-	rows := "no rows"
-	if rowCount == 1 {
-		rows = "a row"
-	} else if rowCount > 1 {
-		rows = api.FormatIntWithCommas(rowCount) + " rows"
-	}
-	if stmtType.IsSelect() {
-		return rows + " selected."
+
+	verb := ""
+	if stmtType >= 256 && stmtType <= 511 {
+		if msg := stmtType.SuccessfulMessage(); msg != "" {
+			return msg
+		}
+	} else if stmtType.IsSelect() {
+		verb = "selected."
 	} else if stmtType.IsInsert() {
-		return rows + " inserted."
-	} else if stmtType.IsUpdate() {
-		return rows + " updated."
+		verb = "inserted."
 	} else if stmtType.IsDelete() {
-		return rows + " deleted."
+		verb = "deleted."
 	} else if stmtType.IsInsertSelect() {
-		return rows + " inserted from select."
-	} else if stmtType.IsAlterSystem() {
-		return "system altered."
-	} else if stmtType.IsDDL() {
-		return "ok."
+		verb = "inserted from select."
+	} else if stmtType.IsUpdate() {
+		verb = "updated."
+	} else if stmtType.IsExecRollup() {
+		verb = "rollup executed."
+	} else {
+		return fmt.Sprintf("executed (%d).", stmtType)
 	}
-	return fmt.Sprintf("ok.(%d)", stmtType)
+
+	switch rowCount {
+	case 0:
+		return "no rows " + verb
+	case 1:
+		return "a row " + verb
+	default:
+		return api.FormatIntWithCommas(rowCount) + " rows " + verb
+	}
 }
 
 type Result struct {
@@ -1264,44 +1272,7 @@ func (r *Rows) definedMessage() (string, bool) {
 }
 
 func (r *Rows) Message() string {
-	var verb = ""
-
-	if r.stmtType >= 1 && r.stmtType <= 255 {
-		if msg, ok := r.definedMessage(); ok {
-			return msg
-		}
-		return "executed."
-	} else if r.stmtType >= 256 && r.stmtType <= 511 {
-		if msg := r.stmtType.SuccessfulMessage(); msg != "" {
-			return msg
-		}
-		if msg, ok := r.definedMessage(); ok {
-			return msg
-		}
-		return "system altered."
-	} else if r.stmtType.IsSelect() {
-		verb = "selected."
-	} else if r.stmtType.IsInsert() {
-		verb = "inserted."
-	} else if r.stmtType.IsDelete() {
-		verb = "deleted."
-	} else if r.stmtType.IsInsertSelect() {
-		verb = "inserted from select."
-	} else if r.stmtType.IsUpdate() {
-		verb = "updated."
-	} else if r.stmtType.IsExecRollup() {
-		return "rollup executed."
-	} else {
-		return fmt.Sprintf("executed (%d).", r.stmtType)
-	}
-	switch r.rowsCount {
-	case 0:
-		return "no rows " + verb
-	case 1:
-		return "a row " + verb
-	default:
-		return api.FormatIntWithCommas(r.rowsCount) + " rows " + verb
-	}
+	return formatResultMessage(r.err, r.stmtType, r.rowsCount)
 }
 
 func (r *Rows) RowsAffected() int64 {
