@@ -576,10 +576,13 @@ func (r *Rows) ColumnTypeLength(index int) (length int64, ok bool) {
 	return 0, false
 }
 
+// The nullable value should be true if it is known the column may be null,
+// or false if the column is known to be not nullable.
+// If the driver doses not support this function, ok should be false.
 func (r *Rows) ColumnTypeNullable(index int) (nullable, ok bool) {
 	col, exists := r.column(index)
 	if !exists {
-		return false, false
+		return true, false
 	}
 	return col.Nullable, true
 }
