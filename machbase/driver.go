@@ -449,7 +449,8 @@ func leadingSQLKeyword(query string) string {
 			end := 0
 			for end < len(remaining) {
 				ch := remaining[end]
-				if ch == ';' || ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
+				if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+					(ch >= '0' && ch <= '9') || ch == '_' || ch == '$') {
 					break
 				}
 				end++
@@ -472,6 +473,7 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	if err != nil {
 		return nil, normalizeError(err)
 	}
+	c.setTransactionState(query)
 	return newRows(rows)
 }
 
@@ -548,6 +550,9 @@ func (s *Stmt) queryRows(ctx context.Context, vals []any) (driver.Rows, error) {
 	rows, err := s.stmt.Query(ctx, vals...)
 	if err != nil {
 		return nil, normalizeError(err)
+	}
+	if s.conn != nil {
+		s.conn.setTransactionState(s.query)
 	}
 	return newRows(rows)
 }

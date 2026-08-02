@@ -288,6 +288,9 @@ func TestLeadingSQLKeyword(t *testing.T) {
 	}{
 		{query: " BEGIN", want: "BEGIN"},
 		{query: "begin;", want: "BEGIN"},
+		{query: "BEGIN/* suffix */;", want: "BEGIN"},
+		{query: "BEGIN-- suffix\n;", want: "BEGIN"},
+		{query: "BEGINNING", want: "BEGINNING"},
 		{query: "-- leading comment\n COMMIT", want: "COMMIT"},
 		{query: "/* block */ -- line\n rollback", want: "ROLLBACK"},
 		{query: "SELECT 'BEGIN'", want: "SELECT"},
