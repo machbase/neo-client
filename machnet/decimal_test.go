@@ -58,6 +58,24 @@ func TestTypeMetadataLayouts(t *testing.T) {
 	}
 }
 
+func TestDescribeDecimalReturnsDeclaredPrecision(t *testing.T) {
+	stmt := &StmtHandle{columns: []ColumnMeta{{
+		spinerType: cmdDecimalType,
+		precision:  30,
+		scale:      12,
+		length:     13,
+		sqlType:    api.SqlTypeDecimal,
+	}}}
+	var size int
+	var scale int
+	if err := stmt.DescribeColEx(0, nil, nil, &size, &scale, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if size != 30 || scale != 12 {
+		t.Fatalf("decimal metadata size=%d scale=%d", size, scale)
+	}
+}
+
 func TestParameterMetadataV2(t *testing.T) {
 	data := make([]byte, 4)
 	binary.BigEndian.PutUint16(data[:2], 1)

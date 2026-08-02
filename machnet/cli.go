@@ -469,7 +469,9 @@ func (stmt *StmtHandle) DescribeColEx(columnNo int, pName *string, pType *api.Sq
 	}
 	if pSize != nil {
 		sz := col.length
-		if col.isVariable {
+		if col.spinerType == cmdDecimalType {
+			sz = col.precision
+		} else if col.isVariable {
 			if sz <= 0 {
 				sz = col.precision
 			}
