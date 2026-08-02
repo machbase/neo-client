@@ -417,6 +417,12 @@ func (c *Conn) acquireQueryStmt(query string) (*Stmt, error) {
 
 		stmt.sqlHead = queryHead(query)
 		stmt.reachEOF = false
+		if stmt.handle.SupportsReprepare() {
+			if err := stmt.prepare(query); err != nil {
+				_ = stmt.Close()
+				return nil, err
+			}
+		}
 		return stmt, nil
 	}
 	if pool := c.queryStmtPool[query]; len(pool) > 0 {
@@ -434,6 +440,12 @@ func (c *Conn) acquireQueryStmt(query string) (*Stmt, error) {
 
 		stmt.sqlHead = queryHead(query)
 		stmt.reachEOF = false
+		if stmt.handle.SupportsReprepare() {
+			if err := stmt.prepare(query); err != nil {
+				_ = stmt.Close()
+				return nil, err
+			}
+		}
 		return stmt, nil
 	}
 	c.queryStmtPoolMu.Unlock()
@@ -821,6 +833,10 @@ func (stmt *Stmt) prepare(query string) error {
 	if err := stmt.handle.Prepare(query); err != nil {
 		return stmt.ErrorOf(err)
 	}
+	stmt.columnDesc = nil
+	stmt.rowCount = 0
+	stmt.execCount = 0
+	stmt.reachEOF = false
 	return nil
 }
 

@@ -276,6 +276,16 @@ func (stmt *StmtHandle) Prepare(query string) error {
 	return nil
 }
 
+// SupportsReprepare reports whether the connected server accepts PREPARE on
+// an existing statement id. CMI 4.0.3 servers use this to refresh metadata
+// when a cached statement is reused after schema invalidation.
+func (stmt *StmtHandle) SupportsReprepare() bool {
+	if stmt == nil || stmt.conn == nil || stmt.conn.native == nil {
+		return false
+	}
+	return stmt.conn.native.supportsV403()
+}
+
 func (stmt *StmtHandle) Execute() error {
 	if stmt == nil {
 		return makeClientErr("invalid statement")
