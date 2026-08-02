@@ -272,6 +272,8 @@ func (cn *DatabaseConnector) Driver() driver.Driver {
 type Conn struct {
 	connector *Connector
 	conn      api.Conn
+	txMu      sync.Mutex
+	inTx      bool
 }
 
 var _ driver.Conn = (*Conn)(nil)
@@ -364,9 +366,20 @@ func (c *Conn) Ping(ctx context.Context) error {
 	return nil
 }
 
-func (c *Conn) ResetSession(context.Context) error {
+func (c *Conn) ResetSession(ctx context.Context) error {
 	if c == nil || c.conn == nil {
 		return driver.ErrBadConn
+	}
+	c.txMu.Lock()
+	inTx := c.inTx
+	c.txMu.Unlock()
+	if inTx {
+		result := c.conn.Exec(ctx, "ROLLBACK")
+		if err := normalizeError(result.Err()); err != nil {
+			_ = c.Close()
+			return driver.ErrBadConn
+		}
+		c.setTransactionState("ROLLBACK")
 	}
 	return nil
 }
@@ -402,7 +415,49 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	if err := normalizeError(result.Err()); err != nil {
 		return nil, err
 	}
+	c.setTransactionState(query)
 	return &Result{result: result}, nil
+}
+
+func (c *Conn) setTransactionState(query string) {
+	verb := leadingSQLKeyword(query)
+	if verb != "BEGIN" && verb != "COMMIT" && verb != "ROLLBACK" {
+		return
+	}
+	c.txMu.Lock()
+	c.inTx = verb == "BEGIN"
+	c.txMu.Unlock()
+}
+
+func leadingSQLKeyword(query string) string {
+	remaining := strings.TrimSpace(query)
+	for remaining != "" {
+		switch {
+		case strings.HasPrefix(remaining, "--"):
+			newline := strings.IndexByte(remaining, '\n')
+			if newline < 0 {
+				return ""
+			}
+			remaining = strings.TrimSpace(remaining[newline+1:])
+		case strings.HasPrefix(remaining, "/*"):
+			end := strings.Index(remaining[2:], "*/")
+			if end < 0 {
+				return ""
+			}
+			remaining = strings.TrimSpace(remaining[end+4:])
+		default:
+			end := 0
+			for end < len(remaining) {
+				ch := remaining[end]
+				if ch == ';' || ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
+					break
+				}
+				end++
+			}
+			return strings.ToUpper(remaining[:end])
+		}
+	}
+	return ""
 }
 
 func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
@@ -479,6 +534,9 @@ func (s *Stmt) exec(ctx context.Context, vals []any) (driver.Result, error) {
 	result := s.stmt.Exec(ctx, vals...)
 	if err := normalizeError(result.Err()); err != nil {
 		return nil, err
+	}
+	if s.conn != nil {
+		s.conn.setTransactionState(s.query)
 	}
 	return &Result{result: result}, nil
 }

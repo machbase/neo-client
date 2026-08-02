@@ -281,6 +281,25 @@ func TestBeginTxOptions(t *testing.T) {
 	}
 }
 
+func TestLeadingSQLKeyword(t *testing.T) {
+	for _, tc := range []struct {
+		query string
+		want  string
+	}{
+		{query: " BEGIN", want: "BEGIN"},
+		{query: "begin;", want: "BEGIN"},
+		{query: "-- leading comment\n COMMIT", want: "COMMIT"},
+		{query: "/* block */ -- line\n rollback", want: "ROLLBACK"},
+		{query: "SELECT 'BEGIN'", want: "SELECT"},
+		{query: "-- comment only", want: ""},
+		{query: "/* unterminated", want: ""},
+	} {
+		if got := leadingSQLKeyword(tc.query); got != tc.want {
+			t.Fatalf("leadingSQLKeyword(%q)=%q, want %q", tc.query, got, tc.want)
+		}
+	}
+}
+
 func TestNormalizeErrorBadConn(t *testing.T) {
 	if !errors.Is(normalizeError(errors.New("connection closed")), driver.ErrBadConn) {
 		t.Fatalf("expected ErrBadConn for connection closed")
