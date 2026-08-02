@@ -9,13 +9,15 @@ import (
 )
 
 type Column struct {
-	Id       uint64     `json:"id,omitempty"`       // if the column came from database table
-	Name     string     `json:"name"`               //
-	Type     ColumnType `json:"type"`               //
-	Length   int        `json:"length,omitempty"`   //
-	DataType DataType   `json:"data_type"`          //
-	Flag     ColumnFlag `json:"flag,omitempty"`     // database column flag
-	Nullable bool       `json:"nullable,omitempty"` // is column nullable
+	Id          uint64      `json:"id,omitempty"`       // if the column came from database table
+	Name        string      `json:"name"`               //
+	Type        ColumnType  `json:"type"`               //
+	Length      int         `json:"length,omitempty"`   //
+	DataType    DataType    `json:"data_type"`          //
+	Flag        ColumnFlag  `json:"flag,omitempty"`     // database column flag
+	Nullable    bool        `json:"nullable,omitempty"` // is column nullable
+	Nullability Nullability `json:"nullability,omitempty"`
+	PrimaryKey  bool        `json:"primary_key,omitempty"`
 }
 
 func (col Column) String() string {
@@ -142,12 +144,23 @@ func (cols Columns) MakeBuffer() ([]any, error) {
 }
 
 type ColumnDesc struct {
-	Name     string
-	Type     SqlType
-	Size     int
-	Scale    int
-	Nullable bool
+	Name        string
+	Type        SqlType
+	Size        int
+	Scale       int
+	Nullable    bool
+	Nullability Nullability
+	PrimaryKey  bool
 }
+
+// Nullability preserves whether NULL support is known from server metadata.
+type Nullability uint8
+
+const (
+	NullabilityUnknown Nullability = iota
+	NullabilityNoNulls
+	NullabilityNullable
+)
 
 type ColumnType int
 
@@ -172,6 +185,7 @@ const (
 	ColumnTypeJSON     ColumnType = 61       // cmdJSONType
 	ColumnTypeNull     ColumnType = 24       // cmdNullType
 	ColumnTypeBool     ColumnType = 40       // cmdBoolType
+	ColumnTypeDecimal  ColumnType = 132      // cmdDecimalType
 	ColumnTypeChar     ColumnType = 45       // cmdCharType
 	ColumnTypeUnknown  ColumnType = 0
 )
@@ -194,6 +208,7 @@ const (
 	COLUMN_TYPE_BLOB     = "blob"
 	COLUMN_TYPE_BINARY   = "binary"
 	COLUMN_TYPE_JSON     = "json"
+	COLUMN_TYPE_DECIMAL  = "decimal"
 )
 
 func (typ ColumnType) String() string {
@@ -232,6 +247,8 @@ func (typ ColumnType) String() string {
 		return COLUMN_TYPE_IPV6
 	case ColumnTypeJSON:
 		return COLUMN_TYPE_JSON
+	case ColumnTypeDecimal:
+		return COLUMN_TYPE_DECIMAL
 	default:
 		return fmt.Sprintf("UndefinedColumnType-%d", typ)
 	}
@@ -265,6 +282,8 @@ func (typ ColumnType) ToSqlType() SqlType {
 		return SqlTypeString
 	case ColumnTypeBinary:
 		return SqlTypeBinary
+	case ColumnTypeDecimal:
+		return SqlTypeDecimal
 	default:
 		return SqlTypeString
 	}
@@ -316,6 +335,8 @@ func (typ ColumnType) makeBuffer() (any, error) {
 		//return new(time.Time), nil
 	case ColumnTypeBinary:
 		return new(sql.Null[[]byte]), nil
+	case ColumnTypeDecimal:
+		return new(sql.Null[Decimal]), nil
 		//return new([]byte), nil
 	default:
 		return nil, fmt.Errorf("unsupported column type: %d", typ)
@@ -362,6 +383,8 @@ func (typ ColumnType) DataType() DataType {
 		return DataTypeIPv6
 	case ColumnTypeJSON:
 		return DataTypeJSON
+	case ColumnTypeDecimal:
+		return DataTypeDecimal
 	default:
 		return DataType(fmt.Sprintf("UndefinedColumnType-%d", typ))
 	}
@@ -464,6 +487,8 @@ func MakeColumnOf(name string, value any) *Column {
 		}
 	case []byte:
 		return &Column{Name: name, Type: ColumnTypeBinary, DataType: DataTypeBinary}
+	case Decimal, *Decimal:
+		return &Column{Name: name, Type: ColumnTypeDecimal, DataType: DataTypeDecimal}
 	default:
 		return &Column{Name: name, Type: ColumnTypeUnknown, DataType: DataTypeAny}
 	}

@@ -2,9 +2,14 @@ package api
 
 import (
 	"testing"
-
-	"github.com/stretchr/testify/require"
 )
+
+func assertEqual[T comparable](t *testing.T, expected, actual T) {
+	t.Helper()
+	if expected != actual {
+		t.Fatalf("expected %v, got %v", expected, actual)
+	}
+}
 
 func TestParseTableName(t *testing.T) {
 	tests := []struct {
@@ -51,13 +56,13 @@ func TestParseTableName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			db, user, table := TableName(tt.input).Split()
-			require.Equal(t, tt.expectedDB, db)
-			require.Equal(t, tt.expectedUser, user)
-			require.Equal(t, tt.expectedTable, table)
+			assertEqual(t, tt.expectedDB, db)
+			assertEqual(t, tt.expectedUser, user)
+			assertEqual(t, tt.expectedTable, table)
 			db, user, table = TableName(tt.input).SplitOr("db0", "user0")
-			require.Equal(t, tt.expectedOrDB, db)
-			require.Equal(t, tt.expectedOrUser, user)
-			require.Equal(t, tt.expectedOrTable, table)
+			assertEqual(t, tt.expectedOrDB, db)
+			assertEqual(t, tt.expectedOrUser, user)
+			assertEqual(t, tt.expectedOrTable, table)
 		})
 	}
 }
@@ -116,10 +121,10 @@ func TestParseProxyUserName(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			un := &UserName{}
 			allowed := un.Parse(tt.input)
-			require.Equal(t, tt.expectedLoginName, un.Login)
-			require.Equal(t, tt.expectedProxyUser, un.Proxy)
-			require.Equal(t, tt.expectedAllowed, allowed)
-			require.Equal(t, tt.expectedString, un.String())
+			assertEqual(t, tt.expectedLoginName, un.Login)
+			assertEqual(t, tt.expectedProxyUser, un.Proxy)
+			assertEqual(t, tt.expectedAllowed, allowed)
+			assertEqual(t, tt.expectedString, un.String())
 		})
 	}
 }

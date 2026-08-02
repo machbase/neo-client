@@ -119,6 +119,26 @@ func Scan(src any, dst any, loc *time.Location) error {
 		if sv.Valid {
 			return scanIP(sv.V, dst)
 		}
+	case Decimal:
+		switch d := dst.(type) {
+		case *Decimal:
+			*d = sv
+			return nil
+		case *string:
+			*d = sv.String()
+			return nil
+		case *driver.Value:
+			*d = sv.String()
+			return nil
+		case *sql.Null[Decimal]:
+			d.V = sv
+			d.Valid = true
+			return nil
+		}
+	case *Decimal:
+		if sv != nil {
+			return Scan(*sv, dst, loc)
+		}
 	}
 	return ErrCannotConvertValue(src, dst)
 }
@@ -160,6 +180,8 @@ func ScanNull(dst any) bool {
 	case *sql.Null[[]byte]:
 		d.Valid = false
 	case *sql.Null[JSONString]:
+		d.Valid = false
+	case *sql.Null[Decimal]:
 		d.Valid = false
 	default:
 		return false

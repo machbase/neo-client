@@ -175,21 +175,21 @@ func TestSignAuthNonce(t *testing.T) {
 		}
 	})
 
-	t.Run("unsupported ec curve", func(t *testing.T) {
+	t.Run("ecdsa p384", func(t *testing.T) {
 		dir := t.TempDir()
 		keyFile := writeECP384PrivateKeyPEM(t, dir)
-		_, err := signAuthNonce(keyFile, authSigSchemeECDSA, nonce)
-		if err == nil {
-			t.Fatalf("expected error")
+		sig, err := signAuthNonce(keyFile, authSigSchemeECDSA, nonce)
+		if err != nil || len(sig) == 0 {
+			t.Fatalf("signAuthNonce() error = %v", err)
 		}
 	})
 
-	t.Run("unsupported rsa bits", func(t *testing.T) {
+	t.Run("rsa 3072", func(t *testing.T) {
 		dir := t.TempDir()
 		keyFile := writeRSA3072PrivateKeyPEM(t, dir)
-		_, err := signAuthNonce(keyFile, authSigSchemeRSAPKCS1V15, nonce)
-		if err == nil {
-			t.Fatalf("expected error")
+		sig, err := signAuthNonce(keyFile, authSigSchemeRSAPKCS1V15, nonce)
+		if err != nil || len(sig) == 0 {
+			t.Fatalf("signAuthNonce() error = %v", err)
 		}
 	})
 }

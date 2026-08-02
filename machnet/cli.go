@@ -321,6 +321,9 @@ func (stmt *StmtHandle) Execute() error {
 	if len(res.columns) > 0 {
 		stmt.columns = res.columns
 	}
+	if len(res.paramDesc) > 0 {
+		stmt.paramDesc = res.paramDesc
+	}
 	stmt.rows = res.rows
 	stmt.rowPos = 0
 	stmt.fetchLast = res.lastResult || len(stmt.columns) == 0
@@ -390,7 +393,7 @@ func (stmt *StmtHandle) DescribeParam(paramNo int) (ParamDesc, error) {
 	stmt.mu.Lock()
 	defer stmt.mu.Unlock()
 	if paramNo < 0 || paramNo >= len(stmt.paramDesc) {
-		return ParamDesc{Type: api.SqlTypeString, Nullable: true}, makeClientErr("invalid parameter index")
+		return ParamDesc{Type: api.SqlTypeString, Nullability: api.NullabilityUnknown}, makeClientErr("invalid parameter index")
 	}
 	return stmt.paramDesc[paramNo], nil
 }
@@ -443,6 +446,10 @@ func (stmt *StmtHandle) NumResultCol() (int, error) {
 }
 
 func (stmt *StmtHandle) DescribeCol(columnNo int, pName *string, pType *api.SqlType, pSize *int, pScale *int, pNullable *bool) error {
+	return stmt.DescribeColEx(columnNo, pName, pType, pSize, pScale, pNullable, nil, nil)
+}
+
+func (stmt *StmtHandle) DescribeColEx(columnNo int, pName *string, pType *api.SqlType, pSize *int, pScale *int, pNullable *bool, pNullability *api.Nullability, pPrimaryKey *bool) error {
 	if stmt == nil {
 		return makeClientErr("invalid statement")
 	}
@@ -477,6 +484,12 @@ func (stmt *StmtHandle) DescribeCol(columnNo int, pName *string, pType *api.SqlT
 	}
 	if pNullable != nil {
 		*pNullable = col.nullable
+	}
+	if pNullability != nil {
+		*pNullability = col.nullability
+	}
+	if pPrimaryKey != nil {
+		*pPrimaryKey = col.primaryKey
 	}
 	return nil
 }

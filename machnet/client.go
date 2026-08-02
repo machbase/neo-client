@@ -33,9 +33,10 @@ type NativeConn struct {
 	queryTimeout  time.Duration
 	fetchRows     int64
 
-	sessionID    uint64
-	serverEndian uint32
-	closed       bool
+	sessionID     uint64
+	serverEndian  uint32
+	serverVersion uint64
+	closed        bool
 
 	stmtMu      sync.Mutex
 	stmtCursor  uint32
@@ -391,6 +392,9 @@ func (c *NativeConn) connectProtocol() error {
 		}
 		return makeServerErr(statusErrNo(statusVal), msg)
 	}
+	if version, ok := firstUnit(units, cmiCVersionID); ok && len(version.data) >= 8 {
+		c.serverVersion = binary.LittleEndian.Uint64(version.data[:8])
+	}
 
 	if mode == authModeChallenge {
 		nonce, validMs, err := readChallengeFields(units)
@@ -442,6 +446,9 @@ func (c *NativeConn) connectProtocol() error {
 	if sid, ok := firstUnit(units, cmiCSIDID); ok && len(sid.data) >= 8 {
 		c.sessionID = binary.LittleEndian.Uint64(sid.data)
 	}
+	if version, ok := firstUnit(units, cmiCVersionID); ok && len(version.data) >= 8 {
+		c.serverVersion = binary.LittleEndian.Uint64(version.data[:8])
+	}
 	if e, ok := firstUnit(units, cmiCEndianID); ok {
 		switch {
 		case len(e.data) >= 4:
@@ -455,11 +462,19 @@ func (c *NativeConn) connectProtocol() error {
 	return nil
 }
 
+func (c *NativeConn) supportsV403() bool {
+	return protocolVersion() >= cmiV403MetadataVersion && c.serverVersion >= cmiV403MetadataVersion
+}
+
 func parseStmtResponse(body []byte, sql string, fallbackCols []ColumnMeta) (*StmtExecResult, error) {
-	return parseStmtResponseWithStmtTypeFallback(body, sql, fallbackCols, true)
+	return parseStmtResponseVersion(body, sql, fallbackCols, true, false)
 }
 
 func parseStmtResponseWithStmtTypeFallback(body []byte, sql string, fallbackCols []ColumnMeta, useStmtTypeFallback bool) (*StmtExecResult, error) {
+	return parseStmtResponseVersion(body, sql, fallbackCols, useStmtTypeFallback, false)
+}
+
+func parseStmtResponseVersion(body []byte, sql string, fallbackCols []ColumnMeta, useStmtTypeFallback, v403 bool) (*StmtExecResult, error) {
 	units, err := collectUnits(body)
 	if err != nil {
 		return nil, err
@@ -484,20 +499,36 @@ func parseStmtResponseWithStmtTypeFallback(body []byte, sql string, fallbackCols
 	}
 
 	paramTypeUnits := units[cmiPParamTypeID]
+	paramCount := len(paramTypeUnits)
+	if binds, ok := firstUnit(units, cmiPBindsID); ok {
+		if len(binds.data) < 8 {
+			return nil, fmt.Errorf("malformed parameter count metadata")
+		}
+		value := binary.LittleEndian.Uint64(binds.data[:8])
+		if value > 0xffff {
+			return nil, fmt.Errorf("parameter count exceeds protocol limit")
+		}
+		paramCount = int(value)
+	}
 	switch {
-	case len(paramTypeUnits) > 0:
-		ret.paramDesc = buildParamDesc(units, len(paramTypeUnits))
+	case paramCount > 0:
+		ret.paramDesc = buildParamDesc(units, paramCount, v403)
+		if v403 {
+			if err := applyParamMetadataV2(ret.paramDesc, units); err != nil {
+				return nil, err
+			}
+		}
 	default:
 		qCount := countSQLPlaceholders(sql)
 		if qCount > 0 {
 			ret.paramDesc = make([]ParamDesc, qCount)
 			for i := range ret.paramDesc {
-				ret.paramDesc[i] = ParamDesc{Type: api.SqlTypeString, Nullable: true}
+				ret.paramDesc[i] = ParamDesc{Type: api.SqlTypeString, Nullability: api.NullabilityUnknown, Ordinal: i + 1}
 			}
 		}
 	}
 
-	ret.columns = buildColumns(units)
+	ret.columns = buildColumns(units, v403)
 	if len(ret.columns) == 0 && len(fallbackCols) > 0 {
 		ret.columns = append([]ColumnMeta(nil), fallbackCols...)
 	}
@@ -609,7 +640,7 @@ func (c *NativeConn) execDirect(stmtID uint32, sql string) (*StmtExecResult, err
 	if err != nil {
 		return nil, err
 	}
-	ret, err := parseStmtResponse(body, sql, nil)
+	ret, err := parseStmtResponseVersion(body, sql, nil, true, c.supportsV403())
 	if err != nil {
 		return nil, err
 	}
@@ -630,7 +661,7 @@ func (c *NativeConn) prepare(stmtID uint32, sql string) (*StmtExecResult, error)
 	if err != nil {
 		return nil, err
 	}
-	ret, err := parseStmtResponse(body, sql, nil)
+	ret, err := parseStmtResponseVersion(body, sql, nil, true, c.supportsV403())
 	if err != nil {
 		return nil, err
 	}
@@ -645,19 +676,24 @@ func (c *NativeConn) executePrepared(stmtID uint32, sql string, params []BoundPa
 	w.addUInt64(cmiPIDID, uint64(stmtID))
 	w.addSInt64(cmiFRowsID, c.fetchRows)
 	if len(params) > 0 {
-		p, err := encodeParams(params)
+		v403 := c.supportsV403()
+		p, err := encodeParams(params, v403)
 		if err != nil {
 			return nil, err
 		}
 		if len(p) > 0 {
-			w.addBinary(cmiEParamID, p)
+			if v403 {
+				w.addBinary(cmiEParamV2ID, p)
+			} else {
+				w.addBinary(cmiEParamID, p)
+			}
 		}
 	}
 	body, err := c.sendPackets(w.finalize(), cmiExecuteProtocol, c.queryTimeout)
 	if err != nil {
 		return nil, err
 	}
-	ret, err := parseStmtResponseWithStmtTypeFallback(body, sql, preparedCols, false)
+	ret, err := parseStmtResponseVersion(body, sql, preparedCols, false, c.supportsV403())
 	if err != nil {
 		return nil, err
 	}
@@ -705,7 +741,7 @@ func (c *NativeConn) appendOpen(stmtID uint32, table string, errCheckCount int) 
 	if err != nil {
 		return nil, err
 	}
-	ret, err := parseStmtResponse(body, "APPEND "+table, nil)
+	ret, err := parseStmtResponseVersion(body, "APPEND "+table, nil, true, c.supportsV403())
 	if err != nil {
 		return nil, err
 	}

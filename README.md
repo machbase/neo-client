@@ -255,7 +255,30 @@ When `auth_key_file` or `auth_key_pem` is set and `auth_mode` is omitted, the dr
 - `io_metrics`: `true` or `false`
 - `alternative_servers`: alternative server list such as `127.0.0.2:5656`
 
-The standard driver follows `database/sql` pooling through `sql.DB`. Explicit transaction statements are not supported by Machbase Neo, so `Begin` and `BeginTx` return an error. `LastInsertId` is also not supported.
+The standard driver follows `database/sql` pooling through `sql.DB`. On servers that support transaction tables, `Begin`, `BeginTx`, `Commit`, and `Rollback` execute explicit transactions. Only the default isolation level is accepted; read-only and custom isolation options return an error. `LastInsertId` is not supported.
+
+### DECIMAL and Named Parameters
+
+Machbase protocol 4.0.3 servers expose exact DECIMAL values, nullable/primary-key metadata, and named parameter occurrences. Native code uses `api.Decimal` and `api.Named`:
+
+```go
+amount, err := api.ParseDecimal("1234567890.125", 30, 3)
+if err != nil {
+	panic(err)
+}
+result := conn.Exec(ctx,
+	"INSERT INTO payments(id, amount) VALUES (:id, :amount)",
+	api.Named("id", int32(1)),
+	api.Named("amount", amount),
+)
+if err := result.Err(); err != nil {
+	panic(err)
+}
+```
+
+The `database/sql` driver accepts `sql.Named` and returns DECIMAL query values as exact strings. Parameter names are case-sensitive, a repeated marker reuses one supplied value, and named and positional arguments cannot be mixed.
+
+When connected to a pre-4.0.3 server, positional query, bind, fetch, and append behavior remains on the legacy protocol. Named arguments return an unsupported error, and nullable metadata is reported as unknown (`ColumnType.Nullable()` returns `ok=false`).
 
 ## Running the Included Examples
 

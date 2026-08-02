@@ -18,13 +18,24 @@ type BoundParam struct {
 	isNull  bool
 }
 
-func encodeParams(params []BoundParam) ([]byte, error) {
+func encodeParams(params []BoundParam, v403 bool) ([]byte, error) {
 	if len(params) == 0 {
 		return nil, nil
 	}
 	offset := 0
 	buf := make([]byte, 0, 128)
 	h := make([]byte, 2)
+	if len(params) > 0xffff {
+		return nil, fmt.Errorf("parameter count exceeds protocol limit")
+	}
+	if !v403 && len(params) > 0xff {
+		return nil, fmt.Errorf("protocol versions before 4.0.3 support at most 255 parameters")
+	}
+	if v403 {
+		binary.BigEndian.PutUint16(h, 2)
+		buf = append(buf, h...)
+		offset += 2
+	}
 	binary.BigEndian.PutUint16(h, uint16(len(params)))
 	buf = append(buf, h...)
 	offset += 2
@@ -34,12 +45,23 @@ func encodeParams(params []BoundParam) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("bind %d: %w", idx, err)
 		}
-		entry := make([]byte, 11)
-		entry[0] = byte(idx + 1)
-		entry[1] = sqlParamInput
-		entry[2] = byte(typ)
-		binary.BigEndian.PutUint32(entry[3:7], uint32(len(data)))
-		binary.BigEndian.PutUint32(entry[7:11], uint32(len(data)))
+		entryLen := 11
+		if v403 {
+			entryLen = 12
+		}
+		entry := make([]byte, entryLen)
+		pos := 0
+		if v403 {
+			binary.BigEndian.PutUint16(entry[:2], uint16(idx+1))
+			pos = 2
+		} else {
+			entry[0] = byte(idx + 1)
+			pos = 1
+		}
+		entry[pos] = sqlParamInput
+		entry[pos+1] = byte(typ)
+		binary.BigEndian.PutUint32(entry[pos+2:pos+6], uint32(len(data)))
+		binary.BigEndian.PutUint32(entry[pos+6:pos+10], uint32(len(data)))
 		buf = append(buf, entry...)
 		offset += len(entry)
 		buf = append(buf, data...)
@@ -84,6 +106,12 @@ func encodeBoundParam(p BoundParam) (int, []byte, error) {
 			return cmdType, make([]byte, 5), nil
 		case api.SqlTypeIPv6:
 			return cmdType, make([]byte, 17), nil
+		case api.SqlTypeDecimal:
+			size, err := decimalSize(api.DecimalMaxPrecision)
+			if err != nil {
+				return 0, nil, err
+			}
+			return cmdType, make([]byte, size), nil
 		default:
 			return cmdType, nil, nil
 		}
@@ -169,6 +197,9 @@ func encodeBoundParam(p BoundParam) (int, []byte, error) {
 		default:
 			return 0, nil, fmt.Errorf("unsupported binary type %T", p.value)
 		}
+	case api.SqlTypeDecimal:
+		data, err := encodeDecimal(p.value, api.DecimalMaxPrecision, api.DecimalMaxScale)
+		return cmdType, data, err
 	default:
 		switch v := p.value.(type) {
 		case string:

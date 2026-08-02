@@ -659,11 +659,13 @@ func (c *Conn) QueryRow(ctx context.Context, query string, args ...any) api.Row 
 	ret.columns = make(api.Columns, len(stmt.columnDesc))
 	for i, desc := range stmt.columnDesc {
 		ret.columns[i] = &api.Column{
-			Name:     desc.Name,
-			Length:   desc.Size,
-			Type:     desc.Type.ColumnType(),
-			DataType: desc.Type.DataType(),
-			Nullable: desc.Nullable,
+			Name:        desc.Name,
+			Length:      desc.Size,
+			Type:        desc.Type.ColumnType(),
+			DataType:    desc.Type.DataType(),
+			Nullable:    desc.Nullable,
+			Nullability: desc.Nullability,
+			PrimaryKey:  desc.PrimaryKey,
 		}
 	}
 	if values, err := stmt.fetch(); err != nil {
@@ -803,11 +805,13 @@ func (pStmt *PreparedStmt) QueryRow(ctx context.Context, params ...any) api.Row 
 	ret.columns = make(api.Columns, len(pStmt.stmt.columnDesc))
 	for i, desc := range pStmt.stmt.columnDesc {
 		ret.columns[i] = &api.Column{
-			Name:     desc.Name,
-			Length:   desc.Size,
-			Type:     desc.Type.ColumnType(),
-			DataType: desc.Type.DataType(),
-			Nullable: desc.Nullable,
+			Name:        desc.Name,
+			Length:      desc.Size,
+			Type:        desc.Type.ColumnType(),
+			DataType:    desc.Type.DataType(),
+			Nullable:    desc.Nullable,
+			Nullability: desc.Nullability,
+			PrimaryKey:  desc.PrimaryKey,
 		}
 	}
 	return ret
@@ -824,6 +828,10 @@ func (stmt *Stmt) bindParams(args ...any) error {
 	numParam, err := stmt.handle.NumParam()
 	if err != nil {
 		return stmt.ErrorOf(err)
+	}
+	args, err = stmt.mapNamedParams(args, numParam)
+	if err != nil {
+		return err
 	}
 	if len(args) != numParam {
 		return api.ErrParamCount(numParam, len(args))
@@ -924,12 +932,78 @@ func (stmt *Stmt) bindParams(args ...any) error {
 		case []byte:
 			sqlType = api.SqlTypeBinary
 			value = val
+		case api.Decimal:
+			sqlType = api.SqlTypeDecimal
+			value = val
+		case *api.Decimal:
+			sqlType = api.SqlTypeDecimal
+			if val != nil {
+				value = *val
+			}
 		}
 		if err := stmt.handle.BindParam(idx, sqlType, value); err != nil {
 			return stmt.ErrorOf(err)
 		}
 	}
 	return nil
+}
+
+func (stmt *Stmt) mapNamedParams(args []any, numParam int) ([]any, error) {
+	hasNamed := false
+	for _, arg := range args {
+		switch arg.(type) {
+		case api.NamedParam, *api.NamedParam:
+			hasNamed = true
+		}
+	}
+	if !hasNamed {
+		return args, nil
+	}
+	provided := make(map[string]any, len(args))
+	for _, arg := range args {
+		var named api.NamedParam
+		switch value := arg.(type) {
+		case api.NamedParam:
+			named = value
+		case *api.NamedParam:
+			if value == nil {
+				return nil, api.NewError("named parameter is nil")
+			}
+			named = *value
+		default:
+			return nil, api.NewError("named and positional parameters cannot be mixed")
+		}
+		if named.Name == "" {
+			return nil, api.NewError("named parameter name is empty")
+		}
+		if _, exists := provided[named.Name]; exists {
+			return nil, api.NewErrorf("duplicate named parameter %q", named.Name)
+		}
+		provided[named.Name] = named.Value
+	}
+	ret := make([]any, numParam)
+	required := make(map[string]struct{}, numParam)
+	for idx := 0; idx < numParam; idx++ {
+		desc, err := stmt.handle.DescribeParam(idx)
+		if err != nil {
+			return nil, stmt.ErrorOf(err)
+		}
+		if desc.Name == "" {
+			return nil, api.NewError("named parameters require Machbase protocol 4.0.3 metadata and cannot be mixed with anonymous markers")
+		}
+		value, exists := provided[desc.Name]
+		if !exists {
+			return nil, api.NewErrorf("missing named parameter %q", desc.Name)
+		}
+		ret[idx] = value
+		required[desc.Name] = struct{}{}
+	}
+	for name := range provided {
+		if _, exists := required[name]; !exists {
+			return nil, api.NewErrorf("unexpected named parameter %q", name)
+		}
+	}
+	return ret, nil
 }
 
 func formatResultMessage(err error, stmtType machnet.StmtType, rowCount int64) string {
@@ -1108,7 +1182,7 @@ func (stmt *Stmt) execute() error {
 	stmt.columnDesc = make([]api.ColumnDesc, num)
 	for i := 0; i < num; i++ {
 		d := api.ColumnDesc{}
-		if err := stmt.handle.DescribeCol(i, &d.Name, (*api.SqlType)(&d.Type), &d.Size, &d.Scale, &d.Nullable); err != nil {
+		if err := stmt.handle.DescribeColEx(i, &d.Name, (*api.SqlType)(&d.Type), &d.Size, &d.Scale, &d.Nullable, &d.Nullability, &d.PrimaryKey); err != nil {
 			return stmt.ErrorOf(err)
 		}
 		stmt.columnDesc[i] = d
@@ -1239,14 +1313,13 @@ func (r *Rows) Columns() (api.Columns, error) {
 	ret := make(api.Columns, len(r.stmt.columnDesc))
 	for i, desc := range r.stmt.columnDesc {
 		ret[i] = &api.Column{
-			Name:     desc.Name,
-			Length:   desc.Size,
-			Type:     desc.Type.ColumnType(),
-			DataType: desc.Type.DataType(),
-			Nullable: true,
-			// Since machnet does not provide a way to get the nullable information,
-			// we will set it to true for now, instead of:
-			// Nullable: desc.Nullable,
+			Name:        desc.Name,
+			Length:      desc.Size,
+			Type:        desc.Type.ColumnType(),
+			DataType:    desc.Type.DataType(),
+			Nullable:    desc.Nullable,
+			Nullability: desc.Nullability,
+			PrimaryKey:  desc.PrimaryKey,
 		}
 	}
 	return ret, nil
@@ -1379,7 +1452,7 @@ func (c *Conn) Appender(ctx context.Context, tableName string, opts ...api.Appen
 	if err := r.Scan(&tableId, &tableType, &tableFlag, &tableColCount); err != nil {
 		return nil, err
 	}
-	if tableType != api.TableTypeLog && tableType != api.TableTypeTag {
+	if tableType != api.TableTypeLog && tableType != api.TableTypeTag && tableType != api.TableTypeTransaction {
 		return nil, fmt.Errorf("%s '%s' doesn't support append", tableType, tableName)
 	}
 	rows, err := c.Query(ctx, "select name, type, length, id, flag from M$SYS_COLUMNS where table_id = ? and database_id = ? order by id", tableId, dbId)
@@ -1555,7 +1628,7 @@ func (a *Appender) Flush() error {
 
 func (a *Appender) Append(values ...any) error {
 	switch a.tableType {
-	case api.TableTypeTag:
+	case api.TableTypeTag, api.TableTypeTransaction:
 		return a.append(values...)
 	case api.TableTypeLog:
 		var valuesWithTime []any

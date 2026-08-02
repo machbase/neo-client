@@ -28,6 +28,7 @@ const (
 	SqlTypeUInt32   SqlType = 12
 	SqlTypeUInt64   SqlType = 13
 	SqlTypeJSON     SqlType = 14
+	SqlTypeDecimal  SqlType = 15
 )
 
 func (st SqlType) String() string {
@@ -60,6 +61,8 @@ func (st SqlType) String() string {
 		return "BINARY"
 	case SqlTypeJSON:
 		return "JSON"
+	case SqlTypeDecimal:
+		return "DECIMAL"
 	default:
 		return fmt.Sprintf("UNKNOWN(%d)", st)
 	}
@@ -95,6 +98,8 @@ func (st SqlType) ColumnType() ColumnType {
 		return ColumnTypeVarchar
 	case SqlTypeBinary:
 		return ColumnTypeBinary
+	case SqlTypeDecimal:
+		return ColumnTypeDecimal
 	}
 }
 
@@ -130,6 +135,8 @@ func (st SqlType) DataType() DataType {
 		return DataTypeUInt64
 	case SqlTypeJSON:
 		return DataTypeJSON
+	case SqlTypeDecimal:
+		return DataTypeDecimal
 	}
 }
 
@@ -151,6 +158,7 @@ const (
 	DataTypeUInt32   DataType = "uint32"
 	DataTypeUInt64   DataType = "uint64"
 	DataTypeJSON     DataType = "json"
+	DataTypeDecimal  DataType = "decimal"
 	// exceptional case
 	DataTypeBoolean DataType = "bool"
 	DataTypeByte    DataType = "int8"
@@ -185,6 +193,8 @@ func DataTypeOf(v any) DataType {
 		return DataTypeFloat32
 	case *float64, float64:
 		return DataTypeFloat64
+	case *Decimal, Decimal:
+		return DataTypeDecimal
 	}
 }
 
@@ -315,6 +325,17 @@ func (typ DataType) Apply(value any, timeformat string, tz *time.Location) (any,
 		return ToInt8(value)
 	case DataTypeBinary:
 		return parseBinary(value)
+	case DataTypeDecimal:
+		switch v := value.(type) {
+		case Decimal:
+			return v, nil
+		case *Decimal:
+			return *v, nil
+		case string:
+			return ParseDecimal(v, DecimalMaxPrecision, DecimalMaxScale)
+		default:
+			return nil, fmt.Errorf("%T is not convertible to decimal", value)
+		}
 	// case DB_COLUMN_TYPE_CLOB:
 	// 	return util.ParseString(v)
 	// case DB_COLUMN_TYPE_BLOB:
@@ -370,6 +391,8 @@ func (typ DataType) ColumnType() ColumnType {
 		return ColumnTypeBlob
 	case DataTypeBoolean:
 		return ColumnTypeInteger
+	case DataTypeDecimal:
+		return ColumnTypeDecimal
 	case DataTypeByte:
 		return ColumnTypeInteger
 	default:
@@ -436,6 +459,8 @@ func ParseDataType(typ string) DataType {
 		return DataTypeString
 	case "binary":
 		return DataTypeBinary
+	case "decimal", "numeric", "number":
+		return DataTypeDecimal
 	case "bool":
 		return DataTypeBoolean
 	case "int8":
@@ -535,6 +560,11 @@ func (typ DataType) makeBuffer(nullable bool) (any, error) {
 		return new(JSONString), nil
 	case DataTypeBinary:
 		return new([]byte), nil
+	case DataTypeDecimal:
+		if nullable {
+			return new(sql.Null[Decimal]), nil
+		}
+		return new(Decimal), nil
 	case DataTypeBoolean:
 		if nullable {
 			return new(sql.NullBool), nil
@@ -557,17 +587,18 @@ func (j JSONString) String() string {
 }
 
 // 0: Log Table, 1: Fixed Table, 3: Volatile Table,
-// 4: Lookup Table, 5: KeyValue Table, 6: Tag Table
+// 4: Lookup Table, 5: KeyValue Table, 6: Tag Table, 8: Transaction Table
 type TableType int
 
 const (
-	TableTypeLog      TableType = iota + 0
-	TableTypeFixed    TableType = 1
-	TableTypeVolatile TableType = 3
-	TableTypeLookup   TableType = 4
-	TableTypeKeyValue TableType = 5
-	TableTypeTag      TableType = 6
-	TableTypeView     TableType = 7
+	TableTypeLog         TableType = iota + 0
+	TableTypeFixed       TableType = 1
+	TableTypeVolatile    TableType = 3
+	TableTypeLookup      TableType = 4
+	TableTypeKeyValue    TableType = 5
+	TableTypeTag         TableType = 6
+	TableTypeView        TableType = 7
+	TableTypeTransaction TableType = 8
 )
 
 func (typ TableType) String() string {
@@ -584,6 +615,10 @@ func (typ TableType) String() string {
 		return "KeyValueTable"
 	case TableTypeTag:
 		return "TagTable"
+	case TableTypeView:
+		return "View"
+	case TableTypeTransaction:
+		return "TransactionTable"
 	default:
 		return fmt.Sprintf("UndefinedTable-%d", typ)
 	}
@@ -605,6 +640,8 @@ func (typ TableType) ShortString() string {
 		return "Tag"
 	case TableTypeView:
 		return "View"
+	case TableTypeTransaction:
+		return "Transaction"
 	default:
 		return fmt.Sprintf("UndefinedTable-%d", typ)
 	}
