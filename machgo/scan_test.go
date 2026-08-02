@@ -18,6 +18,9 @@ func TestRowScanNullDestination(t *testing.T) {
 	if nullable.Valid {
 		t.Fatal("Row.Scan NULL left NullString valid")
 	}
+	if nullable.String != "" {
+		t.Fatalf("Row.Scan NULL left stale value %q", nullable.String)
+	}
 }
 
 func TestRowsScanNullDestination(t *testing.T) {
@@ -32,5 +35,8 @@ func TestRowsScanNullDestination(t *testing.T) {
 	}
 	if nullable.Valid {
 		t.Fatal("Rows.Scan NULL left NullString valid")
+	}
+	if nullable.String != "" {
+		t.Fatalf("Rows.Scan NULL left stale value %q", nullable.String)
 	}
 }
