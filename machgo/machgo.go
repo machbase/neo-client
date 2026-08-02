@@ -747,8 +747,12 @@ func (pStmt *PreparedStmt) Close() error {
 }
 
 func (pStmt *PreparedStmt) Exec(ctx context.Context, params ...any) api.Result {
-	defer pStmt.stmt.handle.ExecuteClean()
 	ret := &Result{}
+	if err := pStmt.stmt.reprepareIfSupported(); err != nil {
+		ret.err = err
+		return ret
+	}
+	defer pStmt.stmt.handle.ExecuteClean()
 	if err := pStmt.stmt.bindParams(params...); err != nil {
 		ret.err = err
 		return ret
@@ -768,6 +772,9 @@ func (pStmt *PreparedStmt) Exec(ctx context.Context, params ...any) api.Result {
 }
 
 func (pStmt *PreparedStmt) Query(ctx context.Context, params ...any) (api.Rows, error) {
+	if err := pStmt.stmt.reprepareIfSupported(); err != nil {
+		return nil, err
+	}
 	if err := pStmt.stmt.bindParams(params...); err != nil {
 		return nil, err
 	}
@@ -794,6 +801,10 @@ func (pStmt *PreparedStmt) Query(ctx context.Context, params ...any) (api.Rows, 
 
 func (pStmt *PreparedStmt) QueryRow(ctx context.Context, params ...any) api.Row {
 	ret := &Row{timeLocation: pStmt.stmt.conn.timeLocation}
+	if err := pStmt.stmt.reprepareIfSupported(); err != nil {
+		ret.err = err
+		return ret
+	}
 	if err := pStmt.stmt.bindParams(params...); err != nil {
 		ret.err = err
 		return ret
@@ -833,11 +844,19 @@ func (stmt *Stmt) prepare(query string) error {
 	if err := stmt.handle.Prepare(query); err != nil {
 		return stmt.ErrorOf(err)
 	}
+	stmt.sqlText = query
 	stmt.columnDesc = nil
 	stmt.rowCount = 0
 	stmt.execCount = 0
 	stmt.reachEOF = false
 	return nil
+}
+
+func (stmt *Stmt) reprepareIfSupported() error {
+	if stmt == nil || stmt.handle == nil || !stmt.handle.SupportsReprepare() {
+		return nil
+	}
+	return stmt.prepare(stmt.sqlText)
 }
 
 func (stmt *Stmt) bindParams(args ...any) error {
@@ -1130,6 +1149,7 @@ func (c *Conn) NewStmt() (*Stmt, error) {
 type Stmt struct {
 	handle     *machnet.StmtHandle
 	conn       *Conn
+	sqlText    string
 	columnDesc []api.ColumnDesc
 	reachEOF   bool
 	sqlHead    string
