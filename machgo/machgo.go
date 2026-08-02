@@ -1242,7 +1242,9 @@ func (r *Row) Scan(dest ...any) error {
 	}
 	for i, d := range dest {
 		if r.values[i] == nil {
-			dest[i] = nil
+			if !api.ScanNull(d) {
+				return api.ErrDatabaseScanNull(fmt.Sprintf("VALUE into %T", d))
+			}
 			continue
 		}
 		if err := api.Scan(r.values[i], d, r.timeLocation); err != nil {
@@ -1395,7 +1397,7 @@ func (r *Rows) Scan(dest ...any) error {
 		}
 		if r.row[i] == nil {
 			if !api.ScanNull(dest[i]) {
-				dest[i] = nil
+				return api.ErrDatabaseScanNull(fmt.Sprintf("VALUE into %T", dest[i]))
 			}
 			continue
 		}
