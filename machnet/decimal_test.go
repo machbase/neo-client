@@ -2,6 +2,7 @@ package machnet
 
 import (
 	"encoding/binary"
+	"math/big"
 	"testing"
 
 	"github.com/machbase/neo-client/api"
@@ -38,6 +39,42 @@ func TestDecimalCodec(t *testing.T) {
 	decoded, err := decodeDecimal(null, 65, 30)
 	if err != nil || decoded != nil {
 		t.Fatalf("decoded NULL = %#v, %v", decoded, err)
+	}
+}
+
+func TestDecimalCodecAllSupportedPrecisions(t *testing.T) {
+	for precision := 1; precision <= api.DecimalMaxPrecision; precision++ {
+		max := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(precision)), nil)
+		max.Sub(max, big.NewInt(1))
+		for _, scale := range []int{0, min(precision, api.DecimalMaxScale)} {
+			for _, unscaled := range []*big.Int{
+				big.NewInt(0),
+				new(big.Int).Set(max),
+				new(big.Int).Neg(new(big.Int).Set(max)),
+			} {
+				value, err := api.NewDecimal(unscaled, precision, scale)
+				if err != nil {
+					t.Fatalf("NewDecimal(p=%d,s=%d,value=%s): %v", precision, scale, unscaled, err)
+				}
+				encoded, err := encodeDecimal(value, precision, scale)
+				if err != nil {
+					t.Fatalf("encodeDecimal(p=%d,s=%d,value=%s): %v", precision, scale, unscaled, err)
+				}
+				if got, want := len(encoded), decimalSizes[precision]; got != want {
+					t.Fatalf("encoded width(p=%d)=%d, want %d", precision, got, want)
+				}
+				decodedValue, err := decodeDecimal(encoded, precision, scale)
+				if err != nil {
+					t.Fatalf("decodeDecimal(p=%d,s=%d,value=%s): %v", precision, scale, unscaled, err)
+				}
+				decoded := decodedValue.(api.Decimal)
+				if decoded.Unscaled().Cmp(unscaled) != 0 || decoded.Precision() != precision || decoded.Scale() != scale {
+					t.Fatalf("decimal roundtrip(p=%d,s=%d)=(%s,%d,%d), want (%s,%d,%d)",
+						precision, scale, decoded.Unscaled(), decoded.Precision(), decoded.Scale(),
+						unscaled, precision, scale)
+				}
+			}
+		}
 	}
 }
 
@@ -157,5 +194,20 @@ func TestDecimalBindUsesMaxCarrier(t *testing.T) {
 	_, nullData, err := encodeBoundParam(BoundParam{sqlType: api.SqlTypeDecimal, isNull: true})
 	if err != nil || len(nullData) != 28 {
 		t.Fatalf("decimal NULL bind length=%d err=%v", len(nullData), err)
+	}
+}
+
+func TestDecimalBindUsesStringCarrierForWideInteger(t *testing.T) {
+	const text = "99999999999999999999999999999999999999999999999999999999999999999"
+	decimal, err := api.ParseDecimal(text, api.DecimalMaxPrecision, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	typ, data, err := encodeBoundParam(BoundParam{sqlType: api.SqlTypeDecimal, value: decimal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if typ != cmdVarcharType || string(data) != text {
+		t.Fatalf("wide decimal bind type=%d value=%q", typ, data)
 	}
 }

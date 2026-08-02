@@ -199,6 +199,21 @@ func encodeBoundParam(p BoundParam) (int, []byte, error) {
 		}
 	case api.SqlTypeDecimal:
 		data, err := encodeDecimal(p.value, api.DecimalMaxPrecision, api.DecimalMaxScale)
+		if err != nil {
+			// Query DECIMAL values use a DECIMAL(65,30) wire carrier. Values
+			// with more than 35 integer digits cannot fit that carrier even
+			// though they are valid DECIMAL(65,0) values. Preserve the full
+			// public Decimal domain by letting the server perform its exact
+			// VARCHAR-to-DECIMAL conversion for that case.
+			switch value := p.value.(type) {
+			case api.Decimal:
+				return cmdVarcharType, []byte(value.String()), nil
+			case *api.Decimal:
+				if value != nil {
+					return cmdVarcharType, []byte(value.String()), nil
+				}
+			}
+		}
 		return cmdType, data, err
 	default:
 		switch v := p.value.(type) {
