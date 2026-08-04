@@ -249,19 +249,57 @@ func TestCheckNamedValue(t *testing.T) {
 	if _, ok := values[1].Value.(int64); !ok {
 		t.Fatalf("expected uint16 to normalize to int64, got %T", values[1].Value)
 	}
-	if err := checkNamedValue(&driver.NamedValue{Ordinal: 1, Name: "foo", Value: 1}); err == nil {
-		t.Fatalf("expected named parameter error")
+	named := &driver.NamedValue{Ordinal: 1, Name: "foo", Value: 1}
+	if err := checkNamedValue(named); err != nil {
+		t.Fatalf("named parameter error = %v", err)
+	}
+	converted, err := namedValuesToAny([]driver.NamedValue{*named})
+	if err != nil {
+		t.Fatalf("namedValuesToAny() error = %v", err)
+	}
+	if param, ok := converted[0].(api.NamedParam); !ok || param.Name != "foo" || param.Value != 1 {
+		t.Fatalf("unexpected named conversion: %#v", converted[0])
 	}
 	if err := checkNamedValue(&driver.NamedValue{Ordinal: 1, Value: true}); err == nil {
 		t.Fatalf("expected unsupported bool error")
 	}
 }
 
-func TestBeginTxUnsupported(t *testing.T) {
+func TestBeginTxOptions(t *testing.T) {
 	conn := &Conn{}
-	_, err := conn.BeginTx(context.Background(), driver.TxOptions{})
-	if !errors.Is(err, errTransactionsUnsupported) {
-		t.Fatalf("BeginTx() error = %v", err)
+	_, err := conn.BeginTx(context.Background(), driver.TxOptions{Isolation: driver.IsolationLevel(1)})
+	if err == nil || !strings.Contains(err.Error(), "isolation") {
+		t.Fatalf("BeginTx(isolation) error = %v", err)
+	}
+	_, err = conn.BeginTx(context.Background(), driver.TxOptions{ReadOnly: true})
+	if err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("BeginTx(read-only) error = %v", err)
+	}
+	_, err = conn.BeginTx(context.Background(), driver.TxOptions{})
+	if !errors.Is(err, driver.ErrBadConn) {
+		t.Fatalf("BeginTx(default) error = %v", err)
+	}
+}
+
+func TestLeadingSQLKeyword(t *testing.T) {
+	for _, tc := range []struct {
+		query string
+		want  string
+	}{
+		{query: " BEGIN", want: "BEGIN"},
+		{query: "begin;", want: "BEGIN"},
+		{query: "BEGIN/* suffix */;", want: "BEGIN"},
+		{query: "BEGIN-- suffix\n;", want: "BEGIN"},
+		{query: "BEGINNING", want: "BEGINNING"},
+		{query: "-- leading comment\n COMMIT", want: "COMMIT"},
+		{query: "/* block */ -- line\n rollback", want: "ROLLBACK"},
+		{query: "SELECT 'BEGIN'", want: "SELECT"},
+		{query: "-- comment only", want: ""},
+		{query: "/* unterminated", want: ""},
+	} {
+		if got := leadingSQLKeyword(tc.query); got != tc.want {
+			t.Fatalf("leadingSQLKeyword(%q)=%q, want %q", tc.query, got, tc.want)
+		}
 	}
 }
 

@@ -276,6 +276,16 @@ func (stmt *StmtHandle) Prepare(query string) error {
 	return nil
 }
 
+// SupportsReprepare reports whether the connected server accepts PREPARE on
+// an existing statement id. CMI 4.0.3 servers use this to refresh metadata
+// when a cached statement is reused after schema invalidation.
+func (stmt *StmtHandle) SupportsReprepare() bool {
+	if stmt == nil || stmt.conn == nil || stmt.conn.native == nil {
+		return false
+	}
+	return stmt.conn.native.supportsV403()
+}
+
 func (stmt *StmtHandle) Execute() error {
 	if stmt == nil {
 		return makeClientErr("invalid statement")
@@ -320,6 +330,9 @@ func (stmt *StmtHandle) Execute() error {
 	stmt.rowCount = res.rowCount
 	if len(res.columns) > 0 {
 		stmt.columns = res.columns
+	}
+	if len(res.paramDesc) > 0 {
+		stmt.paramDesc = res.paramDesc
 	}
 	stmt.rows = res.rows
 	stmt.rowPos = 0
@@ -390,7 +403,7 @@ func (stmt *StmtHandle) DescribeParam(paramNo int) (ParamDesc, error) {
 	stmt.mu.Lock()
 	defer stmt.mu.Unlock()
 	if paramNo < 0 || paramNo >= len(stmt.paramDesc) {
-		return ParamDesc{Type: api.SqlTypeString, Nullable: true}, makeClientErr("invalid parameter index")
+		return ParamDesc{Type: api.SqlTypeString, Nullability: api.NullabilityUnknown}, makeClientErr("invalid parameter index")
 	}
 	return stmt.paramDesc[paramNo], nil
 }
@@ -443,6 +456,10 @@ func (stmt *StmtHandle) NumResultCol() (int, error) {
 }
 
 func (stmt *StmtHandle) DescribeCol(columnNo int, pName *string, pType *api.SqlType, pSize *int, pScale *int, pNullable *bool) error {
+	return stmt.DescribeColEx(columnNo, pName, pType, pSize, pScale, pNullable, nil, nil)
+}
+
+func (stmt *StmtHandle) DescribeColEx(columnNo int, pName *string, pType *api.SqlType, pSize *int, pScale *int, pNullable *bool, pNullability *api.Nullability, pPrimaryKey *bool) error {
 	if stmt == nil {
 		return makeClientErr("invalid statement")
 	}
@@ -462,7 +479,9 @@ func (stmt *StmtHandle) DescribeCol(columnNo int, pName *string, pType *api.SqlT
 	}
 	if pSize != nil {
 		sz := col.length
-		if col.isVariable {
+		if col.spinerType == cmdDecimalType {
+			sz = col.precision
+		} else if col.isVariable {
 			if sz <= 0 {
 				sz = col.precision
 			}
@@ -477,6 +496,12 @@ func (stmt *StmtHandle) DescribeCol(columnNo int, pName *string, pType *api.SqlT
 	}
 	if pNullable != nil {
 		*pNullable = col.nullable
+	}
+	if pNullability != nil {
+		*pNullability = col.nullability
+	}
+	if pPrimaryKey != nil {
+		*pPrimaryKey = col.primaryKey
 	}
 	return nil
 }

@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/machbase/neo-client/api"
@@ -24,8 +25,6 @@ const (
 	DefaultDriverName = "machbase"
 	defaultPort       = 5656
 )
-
-var errTransactionsUnsupported = errors.New("machbase does not support explicit transactions")
 
 func init() {
 	sql.Register(DefaultDriverName, &Driver{})
@@ -273,6 +272,8 @@ func (cn *DatabaseConnector) Driver() driver.Driver {
 type Conn struct {
 	connector *Connector
 	conn      api.Conn
+	txMu      sync.Mutex
+	inTx      bool
 }
 
 var _ driver.Conn = (*Conn)(nil)
@@ -306,12 +307,52 @@ func (c *Conn) Close() error {
 }
 
 func (c *Conn) Begin() (driver.Tx, error) {
-	return nil, errTransactionsUnsupported
+	return c.BeginTx(context.Background(), driver.TxOptions{})
 }
 
-func (c *Conn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
-	return nil, errTransactionsUnsupported
+func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	if opts.Isolation != driver.IsolationLevel(sql.LevelDefault) {
+		return nil, fmt.Errorf("machbase transaction isolation level %d is not supported", opts.Isolation)
+	}
+	if opts.ReadOnly {
+		return nil, errors.New("machbase read-only transactions are not supported")
+	}
+	if c == nil || c.conn == nil {
+		return nil, driver.ErrBadConn
+	}
+	if _, err := c.ExecContext(ctx, "BEGIN", nil); err != nil {
+		return nil, err
+	}
+	return &Tx{conn: c}, nil
 }
+
+type Tx struct {
+	mu   sync.Mutex
+	conn *Conn
+	done bool
+}
+
+var _ driver.Tx = (*Tx)(nil)
+
+func (tx *Tx) finish(sqlText string) error {
+	if tx == nil {
+		return sql.ErrTxDone
+	}
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+	if tx.done || tx.conn == nil {
+		return sql.ErrTxDone
+	}
+	_, err := tx.conn.ExecContext(context.Background(), sqlText, nil)
+	if err == nil {
+		tx.done = true
+	}
+	return err
+}
+
+func (tx *Tx) Commit() error { return tx.finish("COMMIT") }
+
+func (tx *Tx) Rollback() error { return tx.finish("ROLLBACK") }
 
 func (c *Conn) Ping(ctx context.Context) error {
 	if c == nil || c.conn == nil {
@@ -325,9 +366,20 @@ func (c *Conn) Ping(ctx context.Context) error {
 	return nil
 }
 
-func (c *Conn) ResetSession(context.Context) error {
+func (c *Conn) ResetSession(ctx context.Context) error {
 	if c == nil || c.conn == nil {
 		return driver.ErrBadConn
+	}
+	c.txMu.Lock()
+	inTx := c.inTx
+	c.txMu.Unlock()
+	if inTx {
+		result := c.conn.Exec(ctx, "ROLLBACK")
+		if err := normalizeError(result.Err()); err != nil {
+			_ = c.Close()
+			return driver.ErrBadConn
+		}
+		c.setTransactionState("ROLLBACK")
 	}
 	return nil
 }
@@ -363,7 +415,50 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	if err := normalizeError(result.Err()); err != nil {
 		return nil, err
 	}
+	c.setTransactionState(query)
 	return &Result{result: result}, nil
+}
+
+func (c *Conn) setTransactionState(query string) {
+	verb := leadingSQLKeyword(query)
+	if verb != "BEGIN" && verb != "COMMIT" && verb != "ROLLBACK" {
+		return
+	}
+	c.txMu.Lock()
+	c.inTx = verb == "BEGIN"
+	c.txMu.Unlock()
+}
+
+func leadingSQLKeyword(query string) string {
+	remaining := strings.TrimSpace(query)
+	for remaining != "" {
+		switch {
+		case strings.HasPrefix(remaining, "--"):
+			newline := strings.IndexByte(remaining, '\n')
+			if newline < 0 {
+				return ""
+			}
+			remaining = strings.TrimSpace(remaining[newline+1:])
+		case strings.HasPrefix(remaining, "/*"):
+			end := strings.Index(remaining[2:], "*/")
+			if end < 0 {
+				return ""
+			}
+			remaining = strings.TrimSpace(remaining[end+4:])
+		default:
+			end := 0
+			for end < len(remaining) {
+				ch := remaining[end]
+				if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+					(ch >= '0' && ch <= '9') || ch == '_' || ch == '$') {
+					break
+				}
+				end++
+			}
+			return strings.ToUpper(remaining[:end])
+		}
+	}
+	return ""
 }
 
 func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
@@ -378,6 +473,7 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	if err != nil {
 		return nil, normalizeError(err)
 	}
+	c.setTransactionState(query)
 	return newRows(rows)
 }
 
@@ -441,6 +537,9 @@ func (s *Stmt) exec(ctx context.Context, vals []any) (driver.Result, error) {
 	if err := normalizeError(result.Err()); err != nil {
 		return nil, err
 	}
+	if s.conn != nil {
+		s.conn.setTransactionState(s.query)
+	}
 	return &Result{result: result}, nil
 }
 
@@ -451,6 +550,9 @@ func (s *Stmt) queryRows(ctx context.Context, vals []any) (driver.Rows, error) {
 	rows, err := s.stmt.Query(ctx, vals...)
 	if err != nil {
 		return nil, normalizeError(err)
+	}
+	if s.conn != nil {
+		s.conn.setTransactionState(s.query)
 	}
 	return newRows(rows)
 }
@@ -584,7 +686,10 @@ func (r *Rows) ColumnTypeNullable(index int) (nullable, ok bool) {
 	if !exists {
 		return true, false
 	}
-	return col.Nullable, true
+	if col.Nullability == api.NullabilityUnknown {
+		return true, true
+	}
+	return col.Nullability == api.NullabilityNullable, true
 }
 
 func (r *Rows) ColumnTypePrecisionScale(index int) (precision, scale int64, ok bool) {
@@ -593,7 +698,7 @@ func (r *Rows) ColumnTypePrecisionScale(index int) (precision, scale int64, ok b
 	}
 	desc := r.desc[index]
 	switch desc.Type {
-	case api.SqlTypeFloat, api.SqlTypeDouble:
+	case api.SqlTypeFloat, api.SqlTypeDouble, api.SqlTypeDecimal:
 		if desc.Size <= 0 {
 			return 0, int64(desc.Scale), false
 		}
@@ -627,6 +732,8 @@ func (r *Rows) ColumnTypeScanType(index int) reflect.Type {
 		return reflect.TypeOf(float64(0))
 	case api.ColumnTypeDatetime:
 		return reflect.TypeOf(time.Time{})
+	case api.ColumnTypeDecimal:
+		return reflect.TypeOf("")
 	case api.ColumnTypeBinary, api.ColumnTypeBlob, api.ColumnTypeClob:
 		return reflect.TypeOf([]byte(nil))
 	case api.ColumnTypeIPv4, api.ColumnTypeIPv6:
@@ -1074,7 +1181,11 @@ func namedValuesToAny(args []driver.NamedValue) ([]any, error) {
 		if err := checkNamedValue(&arg); err != nil {
 			return nil, err
 		}
-		vals[i] = arg.Value
+		if arg.Name != "" {
+			vals[i] = api.Named(arg.Name, arg.Value)
+		} else {
+			vals[i] = arg.Value
+		}
 	}
 	return vals, nil
 }
@@ -1090,9 +1201,6 @@ func valuesToAny(args []driver.Value) []any {
 func checkNamedValue(nv *driver.NamedValue) error {
 	if nv == nil {
 		return nil
-	}
-	if nv.Name != "" {
-		return fmt.Errorf("machbase does not support named parameters: %s", nv.Name)
 	}
 	value, err := normalizeNamedValue(nv.Value)
 	if err != nil {
@@ -1111,7 +1219,7 @@ func normalizeNamedValue(value any) (any, error) {
 			return int64(v), nil
 		}
 		return v, nil
-	case int16, *int16, int32, *int32, int64, *int64, float32, *float32, float64, *float64, string, *string, []byte, time.Time, *time.Time, net.IP:
+	case int16, *int16, int32, *int32, int64, *int64, float32, *float32, float64, *float64, string, *string, []byte, time.Time, *time.Time, net.IP, api.Decimal, *api.Decimal:
 		return v, nil
 	case *int:
 		if v == nil {
@@ -1266,6 +1374,13 @@ func toDriverValue(value any) (driver.Value, error) {
 		return v.String(), nil
 	case net.IP:
 		return v, nil
+	case api.Decimal:
+		return v.String(), nil
+	case *api.Decimal:
+		if v == nil {
+			return nil, nil
+		}
+		return v.String(), nil
 	case int:
 		return int64(v), nil
 	case int16:

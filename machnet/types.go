@@ -10,12 +10,14 @@ import (
 	"github.com/machbase/neo-client/api"
 )
 
-// cmi protocol version: 4.0.2
+// cmi protocol version: 4.0.3
 const (
 	cmiProtocolMajor = 4
 	cmiProtocolMinor = 0
-	cmiProtocolFix   = 2
+	cmiProtocolFix   = 3
 )
+
+const cmiV403MetadataVersion uint64 = (4 << 48) | 3
 
 const (
 	cmiPacketMaxBody = 64 * 1024
@@ -62,18 +64,20 @@ const (
 	cmiRMessageID  = 0x00000011
 	cmiREMessageID = 0x00000012
 
-	cmiPStatementID = 0x00000020
-	cmiPBindsID     = 0x00000021
-	cmiPIDID        = 0x00000022
-	cmiPRowsID      = 0x00000023
-	cmiPColumnsID   = 0x00000024
-	cmiPTableID     = 0x00000025
-	cmiPColNameID   = 0x00000026
-	cmiPColTypeID   = 0x00000027
-	cmiPParamTypeID = 0x00000029
+	cmiPStatementID   = 0x00000020
+	cmiPBindsID       = 0x00000021
+	cmiPIDID          = 0x00000022
+	cmiPRowsID        = 0x00000023
+	cmiPColumnsID     = 0x00000024
+	cmiPTableID       = 0x00000025
+	cmiPColNameID     = 0x00000026
+	cmiPColTypeID     = 0x00000027
+	cmiPParamTypeID   = 0x00000029
+	cmiPParamMetaV2ID = 0x0000002A
 
-	cmiEParamID  = 0x00000031
-	cmiEEndianID = 0x00000034
+	cmiEParamID   = 0x00000031
+	cmiEParamV2ID = 0x00000033
+	cmiEEndianID  = 0x00000034
 
 	cmiDStatementID = 0x00000040
 
@@ -133,6 +137,7 @@ const (
 	cmdUInt16Type  = (0x001a << 2) | cmdFixFlag
 	cmdUInt32Type  = (0x001b << 2) | cmdFixFlag
 	cmdUInt64Type  = (0x001c << 2) | cmdFixFlag
+	cmdDecimalType = (0x0021 << 2) | cmdFixFlag
 )
 
 const (
@@ -359,10 +364,13 @@ func (typ StmtType) SuccessfulMessage() string {
 }
 
 type ParamDesc struct {
-	Type      api.SqlType
-	Precision int
-	Scale     int
-	Nullable  bool
+	Type        api.SqlType
+	Precision   int
+	Scale       int
+	Nullable    bool
+	Nullability api.Nullability
+	Ordinal     int
+	Name        string
 }
 
 type StatusError struct {
@@ -447,6 +455,8 @@ func sqlTypeToCmdType(sqlType api.SqlType) int {
 		return cmdBinaryType
 	case api.SqlTypeJSON:
 		return cmdJSONType
+	case api.SqlTypeDecimal:
+		return cmdDecimalType
 	default:
 		return cmdVarcharType
 	}
@@ -480,6 +490,8 @@ func spinerTypeToSqlType(spinerType int) api.SqlType {
 		return api.SqlTypeBinary
 	case cmdJSONType:
 		return api.SqlTypeJSON
+	case cmdDecimalType:
+		return api.SqlTypeDecimal
 	default:
 		return api.SqlTypeString
 	}
@@ -595,6 +607,8 @@ func inferStmtType(sql string) StmtType {
 		return 1
 	case "EXEC":
 		return 522
+	case "BEGIN":
+		return 489
 	default:
 		return 0
 	}
@@ -650,6 +664,11 @@ func computeColumnLength(spinerType int, precision int) int {
 		return 2
 	case cmdNulType:
 		return 0
+	case cmdDecimalType:
+		if size, err := decimalSize(precision); err == nil {
+			return size
+		}
+		return 0
 	default:
 		return precision
 	}
@@ -663,8 +682,29 @@ func extractPrecision(cmType uint64) int {
 	return int((cmType >> 28) & 0x0fffffff)
 }
 
-func extractScale(cmType uint64) int {
+func extractScale(cmType uint64, v403 bool) int {
+	if v403 {
+		return int((cmType >> 23) & 0x1f)
+	}
 	return int(cmType & 0x0fffffff)
+}
+
+func extractNullability(cmType uint64, v403 bool) api.Nullability {
+	if !v403 {
+		return api.NullabilityUnknown
+	}
+	flags := cmType & 0x007fffff
+	if flags&0x4 != 0 {
+		return api.NullabilityUnknown
+	}
+	if flags&0x2 != 0 {
+		return api.NullabilityNullable
+	}
+	return api.NullabilityNoNulls
+}
+
+func extractPrimaryKey(cmType uint64, v403 bool) bool {
+	return v403 && cmType&0x1 != 0
 }
 
 func statusCode(v uint64) uint64 {

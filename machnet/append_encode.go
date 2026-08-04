@@ -287,6 +287,8 @@ func encodeAppendColumnValue(col ColumnMeta, value any, serverEndian uint32) ([]
 		var ret [8]byte
 		putUint64ByEndian(ret[:], uint64(v), serverEndian)
 		return ret[:], nil
+	case cmdDecimalType:
+		return encodeDecimal(value, col.precision, col.scale)
 	case cmdIpv4Type:
 		ip, err := toIP(value)
 		if err != nil {

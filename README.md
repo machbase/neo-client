@@ -255,7 +255,32 @@ When `auth_key_file` or `auth_key_pem` is set and `auth_mode` is omitted, the dr
 - `io_metrics`: `true` or `false`
 - `alternative_servers`: alternative server list such as `127.0.0.2:5656`
 
-The standard driver follows `database/sql` pooling through `sql.DB`. Explicit transaction statements are not supported by Machbase Neo, so `Begin` and `BeginTx` return an error. `LastInsertId` is also not supported.
+The standard driver follows `database/sql` pooling through `sql.DB`. On servers that support transaction tables, `Begin`, `BeginTx`, `Commit`, and `Rollback` execute explicit transactions. Only the default isolation level is accepted; read-only and custom isolation options return an error. `LastInsertId` is not supported.
+
+### Machbase 8.6.0 DECIMAL and Named Parameters
+
+Machbase 8.6.0 provides exact DECIMAL values, nullable column information, and named parameters. Native code uses `api.Decimal` and `api.Named`:
+
+```go
+amount, err := api.ParseDecimal("1234567890.125", 30, 3)
+if err != nil {
+	panic(err)
+}
+result := conn.Exec(ctx,
+	"INSERT INTO payments(id, amount) VALUES (:id, :amount)",
+	api.Named("id", int32(1)),
+	api.Named("amount", amount),
+)
+if err := result.Err(); err != nil {
+	panic(err)
+}
+```
+
+The `database/sql` driver accepts `sql.Named` and returns DECIMAL query values as exact strings. Parameter names are case-sensitive, a repeated marker reuses one supplied value, and named and positional arguments cannot be mixed.
+
+When connected to Machbase 8.5.x, use positional `?` parameters with the table and data types supported by that server version. Named parameters and Machbase 8.6.0 data types are not available, and nullable column information may be unknown (`ColumnType.Nullable()` returns `ok=false`).
+
+See [Machbase 8.6.0 Go client guide](docs/machbase-860-upgrade.md) for Transaction table edition limits, DECIMAL/NULL scan patterns, transaction and appender usage, prepared statements, and Machbase 8.5.x compatibility.
 
 ## Running the Included Examples
 
@@ -298,7 +323,7 @@ go run ./_example/driver_insert.go -s 127.0.0.1:5656 -u sys -p manager
 - `Appender.Close()` returns success and failure counts for the append session.
 - For regular application usage, prefer `machgo` over importing `machnet` directly.
 - Use `machbase` when you need compatibility with `database/sql` and its connection pooling.
-- The standard driver does not support explicit transactions or `LastInsertId`.
+- On servers that support transaction tables, the standard driver supports explicit transactions. `LastInsertId` remains unsupported.
 
 ## See Also
 
@@ -306,3 +331,6 @@ go run ./_example/driver_insert.go -s 127.0.0.1:5656 -u sys -p manager
 - [_example/append.go](./_example/append.go)
 - [_example/driver_query.go](./_example/driver_query.go)
 - [_example/driver_insert.go](./_example/driver_insert.go)
+- [Machbase 8.6.0 Go client 사용 안내서](./docs/machbase-860-upgrade.md)
+- [Machbase 8.6.0 native 전체 예제](./docs/examples/machbase860-native/main.go)
+- [Machbase 8.6.0 database/sql 전체 예제](./docs/examples/machbase860-database-sql/main.go)

@@ -119,6 +119,26 @@ func Scan(src any, dst any, loc *time.Location) error {
 		if sv.Valid {
 			return scanIP(sv.V, dst)
 		}
+	case Decimal:
+		switch d := dst.(type) {
+		case *Decimal:
+			*d = sv
+			return nil
+		case *string:
+			*d = sv.String()
+			return nil
+		case *driver.Value:
+			*d = sv.String()
+			return nil
+		case *sql.Null[Decimal]:
+			d.V = sv
+			d.Valid = true
+			return nil
+		}
+	case *Decimal:
+		if sv != nil {
+			return Scan(*sv, dst, loc)
+		}
 	}
 	return ErrCannotConvertValue(src, dst)
 }
@@ -126,41 +146,66 @@ func Scan(src any, dst any, loc *time.Location) error {
 func ScanNull(dst any) bool {
 	switch d := dst.(type) {
 	case *sql.NullBool:
+		d.Bool = false
 		d.Valid = false
 	case *sql.Null[int]:
+		d.V = 0
 		d.Valid = false
 	case *sql.NullInt16:
+		d.Int16 = 0
 		d.Valid = false
 	case *sql.Null[int16]:
+		d.V = 0
 		d.Valid = false
 	case *sql.NullInt32:
+		d.Int32 = 0
 		d.Valid = false
 	case *sql.Null[int32]:
+		d.V = 0
 		d.Valid = false
 	case *sql.NullInt64:
+		d.Int64 = 0
 		d.Valid = false
 	case *sql.Null[int64]:
+		d.V = 0
 		d.Valid = false
 	case *sql.Null[float32]:
+		d.V = 0
 		d.Valid = false
 	case *sql.NullFloat64:
+		d.Float64 = 0
 		d.Valid = false
 	case *sql.Null[float64]:
+		d.V = 0
 		d.Valid = false
 	case *sql.NullString:
+		d.String = ""
 		d.Valid = false
 	case *sql.Null[string]:
+		d.V = ""
 		d.Valid = false
 	case *sql.NullTime:
+		d.Time = time.Time{}
 		d.Valid = false
 	case *sql.Null[time.Time]:
+		d.V = time.Time{}
 		d.Valid = false
 	case *sql.Null[net.IP]:
+		d.V = nil
 		d.Valid = false
 	case *sql.Null[[]byte]:
+		d.V = nil
 		d.Valid = false
 	case *sql.Null[JSONString]:
+		d.V = ""
 		d.Valid = false
+	case *sql.Null[Decimal]:
+		d.V = Decimal{}
+		d.Valid = false
+	case *[]byte:
+		*d = nil
+	case *driver.Value:
+		*d = nil
 	default:
 		return false
 	}
