@@ -257,9 +257,9 @@ When `auth_key_file` or `auth_key_pem` is set and `auth_mode` is omitted, the dr
 
 The standard driver follows `database/sql` pooling through `sql.DB`. On servers that support transaction tables, `Begin`, `BeginTx`, `Commit`, and `Rollback` execute explicit transactions. Only the default isolation level is accepted; read-only and custom isolation options return an error. `LastInsertId` is not supported.
 
-### DECIMAL and Named Parameters
+### Machbase 8.6.0 DECIMAL and Named Parameters
 
-Machbase protocol 4.0.3 servers expose exact DECIMAL values, nullable metadata, and named parameter occurrences. Native code uses `api.Decimal` and `api.Named`:
+Machbase 8.6.0 provides exact DECIMAL values, nullable column information, and named parameters. Native code uses `api.Decimal` and `api.Named`:
 
 ```go
 amount, err := api.ParseDecimal("1234567890.125", 30, 3)
@@ -278,11 +278,9 @@ if err := result.Err(); err != nil {
 
 The `database/sql` driver accepts `sql.Named` and returns DECIMAL query values as exact strings. Parameter names are case-sensitive, a repeated marker reuses one supplied value, and named and positional arguments cannot be mixed.
 
-When connected to a pre-4.0.3 server, positional query, bind, fetch, and append behavior for the existing server table and data-type set remains on the legacy protocol. This does not imply that new Transaction-table or DECIMAL capabilities exist on an older server. Named arguments return an unsupported error, and nullable metadata is reported as unknown (`ColumnType.Nullable()` returns `ok=false`).
+When connected to Machbase 8.5.x, use positional `?` parameters with the table and data types supported by that server version. Named parameters and Machbase 8.6.0 data types are not available, and nullable column information may be unknown (`ColumnType.Nullable()` returns `ok=false`).
 
-The current server SELECT result path does not transmit the reserved primary-key flag. `Column.PrimaryKey == false` therefore must not be used as authoritative proof that a result column is not a primary key; query the system catalog instead.
-
-See [Machbase 8.6 Go client guide](docs/machbase-860-upgrade.md) for Transaction table edition limits, DECIMAL/NULL scan patterns, transaction and appender boundaries, prepared-statement DDL refresh, and 8.5.2 compatibility.
+See [Machbase 8.6.0 Go client guide](docs/machbase-860-upgrade.md) for Transaction table edition limits, DECIMAL/NULL scan patterns, transaction and appender usage, prepared statements, and Machbase 8.5.x compatibility.
 
 ## Running the Included Examples
 
@@ -333,6 +331,6 @@ go run ./_example/driver_insert.go -s 127.0.0.1:5656 -u sys -p manager
 - [_example/append.go](./_example/append.go)
 - [_example/driver_query.go](./_example/driver_query.go)
 - [_example/driver_insert.go](./_example/driver_insert.go)
-- [Machbase 8.6 Go client 초보자 안내서](./docs/machbase-860-upgrade.md)
-- [Machbase 8.6 native 전체 예제](./docs/examples/machbase860-native/main.go)
-- [Machbase 8.6 database/sql 전체 예제](./docs/examples/machbase860-database-sql/main.go)
+- [Machbase 8.6.0 Go client 사용 안내서](./docs/machbase-860-upgrade.md)
+- [Machbase 8.6.0 native 전체 예제](./docs/examples/machbase860-native/main.go)
+- [Machbase 8.6.0 database/sql 전체 예제](./docs/examples/machbase860-database-sql/main.go)
