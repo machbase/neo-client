@@ -687,7 +687,7 @@ func (r *Rows) ColumnTypeNullable(index int) (nullable, ok bool) {
 		return true, false
 	}
 	if col.Nullability == api.NullabilityUnknown {
-		return false, false
+		return true, true
 	}
 	return col.Nullability == api.NullabilityNullable, true
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -1363,25 +1364,6 @@ func (r *Rows) Columns() (api.Columns, error) {
 	return ret, nil
 }
 
-func (r *Rows) definedMessage() (string, bool) {
-	if r.stmt == nil {
-		return "", false
-	}
-	switch r.stmt.sqlHead {
-	case "CREATE":
-		return "Created successfully.", true
-	case "DROP":
-		return "Dropped successfully.", true
-	case "TRUNCATE":
-		return "Truncated successfully.", true
-	case "ALTER":
-		return "Altered successfully.", true
-	case "CONNECT":
-		return "Connected successfully.", true
-	}
-	return "", false
-}
-
 func (r *Rows) Message() string {
 	return formatResultMessage(r.err, r.stmtType, r.rowsCount)
 }
@@ -1433,7 +1415,13 @@ func (r *Rows) Scan(dest ...any) error {
 		}
 		if r.row[i] == nil {
 			if !api.ScanNull(dest[i]) {
-				return api.ErrDatabaseScanNull(fmt.Sprintf("VALUE into %T", dest[i]))
+				// if dest[i] is not a pointer, we cannot set it to nil, so return an error
+				// otherwise, if dest[i] is a pointer, we can set it to nil, so we can continue
+				if reflect.ValueOf(dest[i]).Kind() != reflect.Ptr {
+					return api.ErrDatabaseScanNull(fmt.Sprintf("into %T", dest[i]))
+				}
+				// set the pointer to nil
+				reflect.ValueOf(dest[i]).Elem().Set(reflect.Zero(reflect.TypeOf(dest[i]).Elem()))
 			}
 			continue
 		}
