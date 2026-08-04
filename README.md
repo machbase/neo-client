@@ -259,7 +259,7 @@ The standard driver follows `database/sql` pooling through `sql.DB`. On servers 
 
 ### DECIMAL and Named Parameters
 
-Machbase protocol 4.0.3 servers expose exact DECIMAL values, nullable/primary-key metadata, and named parameter occurrences. Native code uses `api.Decimal` and `api.Named`:
+Machbase protocol 4.0.3 servers expose exact DECIMAL values, nullable metadata, and named parameter occurrences. Native code uses `api.Decimal` and `api.Named`:
 
 ```go
 amount, err := api.ParseDecimal("1234567890.125", 30, 3)
@@ -278,7 +278,11 @@ if err := result.Err(); err != nil {
 
 The `database/sql` driver accepts `sql.Named` and returns DECIMAL query values as exact strings. Parameter names are case-sensitive, a repeated marker reuses one supplied value, and named and positional arguments cannot be mixed.
 
-When connected to a pre-4.0.3 server, positional query, bind, fetch, and append behavior remains on the legacy protocol. Named arguments return an unsupported error, and nullable metadata is reported as unknown (`ColumnType.Nullable()` returns `ok=false`).
+When connected to a pre-4.0.3 server, positional query, bind, fetch, and append behavior for the existing server table and data-type set remains on the legacy protocol. This does not imply that new Transaction-table or DECIMAL capabilities exist on an older server. Named arguments return an unsupported error, and nullable metadata is reported as unknown (`ColumnType.Nullable()` returns `ok=false`).
+
+The current server SELECT result path does not transmit the reserved primary-key flag. `Column.PrimaryKey == false` therefore must not be used as authoritative proof that a result column is not a primary key; query the system catalog instead.
+
+See [Machbase 8.6 Go client guide](docs/machbase-860-upgrade.md) for Transaction table edition limits, DECIMAL/NULL scan patterns, transaction and appender boundaries, prepared-statement DDL refresh, and 8.5.2 compatibility.
 
 ## Running the Included Examples
 

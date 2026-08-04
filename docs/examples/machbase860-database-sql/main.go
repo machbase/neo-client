@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
+	"os"
 
 	_ "github.com/machbase/neo-client"
 	"github.com/machbase/neo-client/api"
@@ -13,28 +15,32 @@ import (
 const tableName = "GO860_SQL_SAMPLE"
 
 func main() {
-	ctx := context.Background()
+	if err := run(context.Background()); err != nil {
+		log.Print(err)
+		os.Exit(1)
+	}
+}
+
+func run(ctx context.Context) error {
 	db, err := sql.Open("machbase",
 		"server=tcp://sys:manager@127.0.0.1:5656;statement_cache=auto")
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("open: %w", err)
 	}
 	defer db.Close()
 	if err := db.PingContext(ctx); err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("ping: %w", err)
 	}
 
-	_, _ = db.ExecContext(ctx, "DROP TABLE "+tableName)
-	_, err = db.ExecContext(ctx, "CREATE TRANSACTION TABLE "+tableName+
-		" (ID INTEGER PRIMARY KEY, AMOUNT DECIMAL(30,12), NOTE VARCHAR(80))")
-	if err != nil {
-		log.Fatal(err)
+	if _, err := db.ExecContext(ctx, "CREATE TRANSACTION TABLE "+tableName+
+		" (ID INTEGER PRIMARY KEY, AMOUNT DECIMAL(30,12), NOTE VARCHAR(80))"); err != nil {
+		return fmt.Errorf("create table: %w", err)
 	}
-	defer db.ExecContext(ctx, "DROP TABLE "+tableName)
+	defer func() { _, _ = db.ExecContext(context.Background(), "DROP TABLE "+tableName) }()
 
 	amount, err := api.ParseDecimal("123.450000000000", 30, 12)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("parse decimal: %w", err)
 	}
 	result, err := db.ExecContext(ctx,
 		"INSERT INTO "+tableName+" VALUES (:id, :amount, :note)",
@@ -42,61 +48,120 @@ func main() {
 		sql.Named("amount", amount),
 		sql.Named("id", int32(1)))
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("named insert: %w", err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("insert rows affected: %w", err)
 	}
 	fmt.Printf("insert affected=%d\n", affected)
-
-	var exactText string
-	err = db.QueryRowContext(ctx,
-		"SELECT AMOUNT FROM "+tableName+" WHERE ID=:id",
-		sql.Named("id", int32(1))).Scan(&exactText)
-	if err != nil {
-		log.Fatal(err)
+	if _, err := result.LastInsertId(); err == nil {
+		return errors.New("LastInsertId unexpectedly succeeded")
+	} else {
+		fmt.Println("last_insert_id unsupported=true")
 	}
-	fmt.Printf("amount=%s\n", exactText)
 
-	_, err = db.ExecContext(ctx,
-		"INSERT INTO "+tableName+" VALUES (?, ?, ?)", int32(2), nil, nil)
+	// database/sql returns DECIMAL as exact text. Parse with the declared shape
+	// when application code needs api.Decimal operations.
+	var exactText string
+	if err := db.QueryRowContext(ctx,
+		"SELECT AMOUNT FROM "+tableName+" WHERE ID=:id",
+		sql.Named("id", int32(1))).Scan(&exactText); err != nil {
+		return fmt.Errorf("query decimal: %w", err)
+	}
+	parsed, err := api.ParseDecimal(exactText, 30, 12)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("parse queried decimal: %w", err)
+	}
+	fmt.Printf("amount=%s precision=%d scale=%d\n",
+		parsed.String(), parsed.Precision(), parsed.Scale())
+
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO "+tableName+" VALUES (?, ?, ?)", int32(2), nil, nil); err != nil {
+		return fmt.Errorf("insert null: %w", err)
 	}
 	var nullableAmount sql.NullString
 	var nullableNote sql.NullString
-	err = db.QueryRowContext(ctx,
+	if err := db.QueryRowContext(ctx,
 		"SELECT AMOUNT, NOTE FROM "+tableName+" WHERE ID=?", int32(2)).
-		Scan(&nullableAmount, &nullableNote)
-	if err != nil {
-		log.Fatal(err)
+		Scan(&nullableAmount, &nullableNote); err != nil {
+		return fmt.Errorf("query null: %w", err)
 	}
 	fmt.Printf("nullable amount.valid=%t note.valid=%t\n",
 		nullableAmount.Valid, nullableNote.Valid)
 
+	// Rollback: the inserted row must disappear.
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("begin rollback example: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		"UPDATE "+tableName+" SET NOTE=? WHERE ID=?", "rolled back", int32(1)); err != nil {
+		"INSERT INTO "+tableName+" VALUES (?, ?, ?)", int32(10), amount, "rollback"); err != nil {
 		_ = tx.Rollback()
-		log.Fatal(err)
+		return fmt.Errorf("insert for rollback: %w", err)
 	}
 	if err := tx.Rollback(); err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("rollback: %w", err)
+	}
+	var count int64
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM "+tableName+" WHERE ID=?", int32(10)).Scan(&count); err != nil {
+		return fmt.Errorf("verify rollback: %w", err)
+	}
+	fmt.Printf("after rollback count=%d\n", count)
+	if !errors.Is(tx.Commit(), sql.ErrTxDone) {
+		return errors.New("finished transaction did not return sql.ErrTxDone")
 	}
 
+	// Commit: the inserted row must remain visible on a new operation.
+	tx, err = db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin commit example: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO "+tableName+" VALUES (?, ?, ?)", int32(11), amount, "commit"); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("insert for commit: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM "+tableName+" WHERE ID=?", int32(11)).Scan(&count); err != nil {
+		return fmt.Errorf("verify commit: %w", err)
+	}
+	fmt.Printf("after commit count=%d\n", count)
+
+	// Prepared named statement is deliberately executed twice to demonstrate reuse.
 	stmt, err := db.PrepareContext(ctx,
 		"SELECT NOTE FROM "+tableName+" WHERE ID=:id")
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("prepare: %w", err)
 	}
 	defer stmt.Close()
-	var note string
-	if err := stmt.QueryRowContext(ctx, sql.Named("id", int32(1))).Scan(&note); err != nil {
-		log.Fatal(err)
+	for _, id := range []int32{1, 11} {
+		var note sql.NullString
+		if err := stmt.QueryRowContext(ctx, sql.Named("id", id)).Scan(&note); err != nil {
+			return fmt.Errorf("prepared query id=%d: %w", id, err)
+		}
+		fmt.Printf("prepared id=%d note=%q\n", id, note.String)
 	}
-	fmt.Printf("note after rollback=%s\n", note)
+
+	rows, err := db.QueryContext(ctx, "SELECT ID, NOTE FROM "+tableName+" ORDER BY ID")
+	if err != nil {
+		return fmt.Errorf("query rows: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int32
+		var note sql.NullString
+		if err := rows.Scan(&id, &note); err != nil {
+			return fmt.Errorf("scan row: %w", err)
+		}
+		fmt.Printf("list id=%d note.valid=%t note=%q\n", id, note.Valid, note.String)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate rows: %w", err)
+	}
+	return nil
 }
