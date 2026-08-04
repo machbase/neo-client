@@ -321,7 +321,7 @@ go run ./_example/driver_insert.go -s 127.0.0.1:5656 -u sys -p manager
 - `Appender.Close()` returns success and failure counts for the append session.
 - For regular application usage, prefer `machgo` over importing `machnet` directly.
 - Use `machbase` when you need compatibility with `database/sql` and its connection pooling.
-- The standard driver does not support explicit transactions or `LastInsertId`.
+- On servers that support transaction tables, the standard driver supports explicit transactions. `LastInsertId` remains unsupported.
 
 ## See Also
 
@@ -329,3 +329,4 @@ go run ./_example/driver_insert.go -s 127.0.0.1:5656 -u sys -p manager
 - [_example/append.go](./_example/append.go)
 - [_example/driver_query.go](./_example/driver_query.go)
 - [_example/driver_insert.go](./_example/driver_insert.go)
+- [Machbase 8.6 Go client 기능 안내](./docs/machbase-860-upgrade.md)
