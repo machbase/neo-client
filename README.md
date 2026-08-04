@@ -329,4 +329,6 @@ go run ./_example/driver_insert.go -s 127.0.0.1:5656 -u sys -p manager
 - [_example/append.go](./_example/append.go)
 - [_example/driver_query.go](./_example/driver_query.go)
 - [_example/driver_insert.go](./_example/driver_insert.go)
-- [Machbase 8.6 Go client 기능 안내](./docs/machbase-860-upgrade.md)
+- [Machbase 8.6 Go client 초보자 안내서](./docs/machbase-860-upgrade.md)
+- [Machbase 8.6 native 전체 예제](./docs/examples/machbase860-native/main.go)
+- [Machbase 8.6 database/sql 전체 예제](./docs/examples/machbase860-database-sql/main.go)
