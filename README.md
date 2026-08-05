@@ -282,6 +282,26 @@ When connected to Machbase 8.5.x, use positional `?` parameters with the table a
 
 See [Machbase 8.6.0 Go client guide](docs/machbase-860-upgrade.md) for Transaction table edition limits, DECIMAL/NULL scan patterns, transaction and appender usage, prepared statements, and Machbase 8.5.x compatibility.
 
+The native API also exposes primary-key metadata for direct result columns:
+
+```go
+rows, err := conn.Query(ctx, `SELECT ID, VALUE, ID + 1 AS NEXT_ID FROM MY_TABLE`)
+if err != nil {
+	log.Fatal(err)
+}
+defer rows.Close()
+
+columns, err := rows.Columns()
+if err != nil {
+	log.Fatal(err)
+}
+for _, column := range columns {
+	fmt.Printf("%s primary=%v\n", column.Name, column.PrimaryKey)
+}
+```
+
+Machbase 8.6.0 reports `true` only for a direct primary-key column. Expressions, aggregates, and primary-key columns on the nullable side of an outer join report `false`. Machbase 8.5.x does not provide this metadata, so `PrimaryKey` is also `false`. Go's standard `database/sql.ColumnType` has no primary-key metadata method; use the native `api.Rows.Columns()` or `api.Row.Columns()` API when this information is required.
+
 ## Running the Included Examples
 
 Four runnable examples are included under `_example/`.

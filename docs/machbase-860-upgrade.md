@@ -448,7 +448,31 @@ if err := stmt.QueryRowContext(ctx,
 
 애플리케이션은 `Stmt.Close()`를 호출하여 사용이 끝난 statement 자원을 해제해야 한다.
 
-## 11. Machbase 8.5.x 호환
+## 11. Primary key 메타데이터
+
+Native API의 `Rows.Columns()`와 `Row.Columns()`는 각 결과 컬럼의 `PrimaryKey` 값을 제공한다.
+
+```go
+rows, err := conn.Query(ctx, `SELECT ID, AMOUNT, ID + 1 AS NEXT_ID FROM ORDERS`)
+if err != nil {
+	log.Fatal(err)
+}
+defer rows.Close()
+
+columns, err := rows.Columns()
+if err != nil {
+	log.Fatal(err)
+}
+for _, column := range columns {
+	fmt.Printf("name=%s primary=%v\n", column.Name, column.PrimaryKey)
+}
+```
+
+`ID`가 `ORDERS`의 primary key라면 `ID`는 `true`, 일반 컬럼인 `AMOUNT`와 계산식인 `NEXT_ID`는 `false`이다. 집계 결과와 outer join의 nullable 측 컬럼도 `false`이다. Tag table에서는 직접 조회한 `NAME` 컬럼이 primary key로 표시된다.
+
+Go 표준 `database/sql.ColumnType`에는 primary key 여부를 반환하는 메서드가 없다. 이 정보가 필요한 애플리케이션은 `machgo` Native API의 `api.Rows.Columns()` 또는 `api.Row.Columns()`를 사용해야 한다.
+
+## 12. Machbase 8.5.x 호환
 
 Machbase 8.5.x server에 연결할 때는 기존 positional parameter를 사용한다.
 
@@ -469,7 +493,7 @@ err := db.QueryRowContext(ctx,
 
 Machbase 8.5.x에서는 `:id` 형식 대신 `?`를 사용하고 값을 SQL에 나타난 순서대로 전달한다.
 
-## 12. 자주 발생하는 오류와 해결 방법
+## 13. 자주 발생하는 오류와 해결 방법
 
 이 절은 현재 제품 버그 목록이 아니다. 설치된 client 버전, API 사용 방법 또는 server 버전 차이로 발생할 수 있는 일반적인 문제를 설명한다.
 

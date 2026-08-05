@@ -17,7 +17,7 @@ type Column struct {
 	Flag        ColumnFlag  `json:"flag,omitempty"`     // database column flag
 	Nullable    bool        `json:"nullable,omitempty"` // is column nullable
 	Nullability Nullability `json:"nullability,omitempty"`
-	PrimaryKey  bool        `json:"primary_key,omitempty"`
+	PrimaryKey  bool        `json:"primary_key,omitempty"` // direct result column is a primary key (Machbase 8.6.0 or later)
 }
 
 func (col Column) String() string {
