@@ -1,6 +1,12 @@
 package machnet
 
-import "testing"
+import (
+	"bufio"
+	"io"
+	"net"
+	"testing"
+	"time"
+)
 
 func buildStmtResponseBodyForTest(t *testing.T, stmtType StmtType, includeStmtType bool) []byte {
 	t.Helper()
@@ -56,5 +62,57 @@ func TestParseStmtResponseUsesServerStmtTypeWithoutFallback(t *testing.T) {
 	}
 	if res.stmtType.IsExecRollup() {
 		t.Fatalf("stmtType %d should not be classified as rollup", res.stmtType)
+	}
+}
+
+func TestSendPacketsOptionalUsesIndependentWriteAndReadDeadlines(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+
+	readDone := make(chan error, 1)
+	release := make(chan struct{})
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		packet := make([]byte, packetHeaderSize)
+		_, err := io.ReadFull(server, packet)
+		readDone <- err
+		<-release
+		server.Close()
+	}()
+	defer close(release)
+
+	conn := &NativeConn{
+		netConn: client,
+		br:      bufio.NewReader(client),
+		bw:      bufio.NewWriter(client),
+	}
+	packet := buildPacket(cmiAppendDataProtocol, 1, 0, 0, nil)
+	started := time.Now()
+	body, ok, err := conn.sendPacketsOptional([][]byte{packet}, cmiAppendDataProtocol, 200*time.Millisecond, 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("sendPacketsOptional() error = %v", err)
+	}
+	if ok || body != nil {
+		t.Fatalf("sendPacketsOptional() = (%v, %v), want no optional response", body, ok)
+	}
+	if elapsed := time.Since(started); elapsed < 25*time.Millisecond {
+		t.Fatalf("write returned before peer read: elapsed=%v", elapsed)
+	}
+	if err := <-readDone; err != nil {
+		t.Fatalf("server read: %v", err)
+	}
+}
+
+func TestConnHandleSupportsDatabaseMetadata(t *testing.T) {
+	if (*ConnHandle)(nil).SupportsDatabaseMetadata() {
+		t.Fatal("nil connection reports database metadata support")
+	}
+	legacy := &ConnHandle{native: &NativeConn{serverVersion: cmiV403MetadataVersion - 1}}
+	if legacy.SupportsDatabaseMetadata() {
+		t.Fatal("legacy server reports database metadata support")
+	}
+	current := &ConnHandle{native: &NativeConn{serverVersion: cmiV403MetadataVersion}}
+	if !current.SupportsDatabaseMetadata() {
+		t.Fatal("CMI 4.0.3 server does not report database metadata support")
 	}
 }

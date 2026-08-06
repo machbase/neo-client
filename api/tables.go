@@ -64,9 +64,13 @@ func (td *TableDescription) String() string {
 }
 
 func ExistsTable(ctx context.Context, conn Conn, fullTableName string) (bool, error) {
-	_, userName, tableName := TableName(fullTableName).Split()
-	sql := "select count(*) from M$SYS_TABLES T, M$SYS_USERS U where U.NAME = ? and U.USER_ID = T.USER_ID AND T.NAME = ?"
-	r := conn.QueryRow(ctx, sql, strings.ToUpper(userName), strings.ToUpper(tableName))
+	dbName, userName, tableName := TableName(fullTableName).SplitOr("", "SYS")
+	_, dbID, err := databaseInfo(ctx, conn, dbName)
+	if err != nil {
+		return false, err
+	}
+	sql := "select count(*) from M$SYS_TABLES T, M$SYS_USERS U where U.NAME = ? and U.USER_ID = T.USER_ID AND T.DATABASE_ID = ? AND T.NAME = ?"
+	r := conn.QueryRow(ctx, sql, strings.ToUpper(userName), dbID, strings.ToUpper(tableName))
 	if err := r.Err(); err != nil {
 		fmt.Println("error", err.Error())
 		return false, err
@@ -76,6 +80,50 @@ func ExistsTable(ctx context.Context, conn Conn, fullTableName string) (bool, er
 		return false, err
 	}
 	return (count == 1), nil
+}
+
+func DatabaseID(ctx context.Context, conn Conn, dbName string) (int64, error) {
+	_, dbID, err := databaseInfo(ctx, conn, dbName)
+	return dbID, err
+}
+
+func databaseInfo(ctx context.Context, conn Conn, dbName string) (string, int64, error) {
+	if support, ok := conn.(interface{ SupportsDatabaseMetadata() bool }); ok && !support.SupportsDatabaseMetadata() {
+		return legacyDatabaseInfo(ctx, conn, dbName)
+	}
+
+	var row Row
+	var resolvedName string
+	var dbID int64
+
+	if dbName == "" {
+		row = conn.QueryRow(ctx, "select NAME, DATABASE_ID from V$DATABASES where NAME = CURRENT_DATABASE()")
+	} else {
+		row = conn.QueryRow(ctx, "select NAME, DATABASE_ID from V$DATABASES where NAME = ?", dbName)
+	}
+	if row.Err() != nil {
+		return "", 0, row.Err()
+	}
+	if err := row.Scan(&resolvedName, &dbID); err != nil {
+		return "", 0, err
+	}
+	return resolvedName, dbID, nil
+}
+
+func legacyDatabaseInfo(ctx context.Context, conn Conn, dbName string) (string, int64, error) {
+	resolvedName := strings.ToUpper(dbName)
+	if resolvedName == "" || resolvedName == "MACHBASEDB" {
+		return "MACHBASEDB", -1, nil
+	}
+	row := conn.QueryRow(ctx, "select BACKUP_TBSID from V$STORAGE_MOUNT_DATABASES where MOUNTDB = ?", resolvedName)
+	if row.Err() != nil {
+		return "", 0, row.Err()
+	}
+	var dbID int64
+	if err := row.Scan(&dbID); err != nil {
+		return "", 0, err
+	}
+	return resolvedName, dbID, nil
 }
 
 // Describe retrieves the result of 'desc table'.
@@ -97,17 +145,10 @@ func describe(ctx context.Context, conn Conn, name TableName, includeHiddenColum
 	d := &TableDescription{}
 	var colCount int
 
-	dbName, userName, tableName := name.Split()
-	dbId := -1
-
-	if dbName != "" && dbName != "MACHBASEDB" {
-		row := conn.QueryRow(ctx, "select BACKUP_TBSID from V$STORAGE_MOUNT_DATABASES where MOUNTDB = ?", dbName)
-		if row.Err() != nil {
-			return nil, row.Err()
-		}
-		if err := row.Scan(&dbId); err != nil {
-			return nil, err
-		}
+	dbName, userName, tableName := name.SplitOr("", "SYS")
+	resolvedDBName, dbId, err := databaseInfo(ctx, conn, dbName)
+	if err != nil {
+		return nil, err
 	}
 
 	describeSqlText := SqlTidy(
@@ -132,7 +173,7 @@ func describe(ctx context.Context, conn Conn, name TableName, includeHiddenColum
 	if err := r.Scan(&d.Id, &d.Type, &d.Flag, &colCount); err != nil {
 		return nil, err
 	}
-	d.Database = dbName
+	d.Database = resolvedDBName
 	d.User = userName
 	d.Name = tableName
 
@@ -169,7 +210,12 @@ func describe(ctx context.Context, conn Conn, name TableName, includeHiddenColum
 			col.Flag = ColumnFlagBaseDistance
 		}
 	}
-	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
 	rows = nil
 
 	if indexes, err := describe_idx(ctx, conn, d.Id, dbId); err != nil {
@@ -219,10 +265,13 @@ func describe_mv(ctx context.Context, conn Conn, name TableName, includeHiddenCo
 		col.DataType = col.Type.DataType()
 		d.Columns = append(d.Columns, col)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return d, nil
 }
 
-func describe_idx(ctx context.Context, conn Conn, tableId int64, dbId int) ([]*IndexDescription, error) {
+func describe_idx(ctx context.Context, conn Conn, tableId int64, dbId int64) ([]*IndexDescription, error) {
 	rows, err := conn.Query(ctx,
 		`select
 			b.name,
@@ -233,7 +282,7 @@ func describe_idx(ctx context.Context, conn Conn, tableId int64, dbId int) ([]*I
 			b.part_value_count,
 			case b.bitmap_encode
 				when 0 then 'EQUAL'
-				else 'RANGE' end 
+				else 'RANGE' end
 			as bitmap_encode
 		from
 			M$SYS_TABLES  a,
@@ -242,7 +291,9 @@ func describe_idx(ctx context.Context, conn Conn, tableId int64, dbId int) ([]*I
 			a.id = ?
 		AND a.database_id = ?
 		AND a.id = b.table_id
-		`, tableId, dbId)
+		AND a.database_id = b.database_id
+		AND b.database_id = ?
+		`, tableId, dbId, dbId)
 	if err != nil {
 		return nil, err
 	}
@@ -270,8 +321,17 @@ func describe_idx(ctx context.Context, conn Conn, tableId int64, dbId int) ([]*I
 			}
 			d.Cols = append(d.Cols, col)
 		}
-		idxCols.Close()
+		if err := idxCols.Err(); err != nil {
+			idxCols.Close()
+			return nil, err
+		}
+		if err := idxCols.Close(); err != nil {
+			return nil, err
+		}
 		indexes = append(indexes, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return indexes, nil
 }

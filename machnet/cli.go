@@ -152,6 +152,18 @@ func (conn *ConnHandle) IOMetrics() (readBytes uint64, writtenBytes uint64, enab
 	return nc.ioByteMetrics()
 }
 
+// SupportsDatabaseMetadata reports whether the server exposes logical database
+// identifiers through the CMI 4.0.3 metadata contract.
+func (conn *ConnHandle) SupportsDatabaseMetadata() bool {
+	if conn == nil {
+		return false
+	}
+	conn.mu.Lock()
+	nc := conn.native
+	conn.mu.Unlock()
+	return nc != nil && nc.supportsV403()
+}
+
 func (conn *ConnHandle) ResetIOMetrics() (readBytes uint64, writtenBytes uint64, enabled bool) {
 	if conn == nil {
 		return 0, 0, false
