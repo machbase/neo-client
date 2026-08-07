@@ -48,6 +48,17 @@ func WithProxyUser(proxyUser string) ConnectOption {
 
 func (ConnectOptionProxyUser) connectOption() {}
 
+type ConnectOptionDatabase struct {
+	Database string
+}
+
+// WithDatabase selects the initial database for the connection.
+func WithDatabase(database string) ConnectOption {
+	return &ConnectOptionDatabase{Database: database}
+}
+
+func (ConnectOptionDatabase) connectOption() {}
+
 type StatementCacheMode int
 
 const (

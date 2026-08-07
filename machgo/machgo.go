@@ -216,6 +216,7 @@ func (db *Database) Connect(ctx context.Context, opts ...api.ConnectOption) (api
 	var authMode string
 	var authKey crypto.PrivateKey = nil
 	var proxyUser string
+	var database string
 	var timeLocation *time.Location = time.UTC
 
 	for _, opt := range opts {
@@ -236,6 +237,8 @@ func (db *Database) Connect(ctx context.Context, opts ...api.ConnectOption) (api
 			authKey = o.Key
 		case *api.ConnectOptionProxyUser:
 			proxyUser = o.ProxyUser
+		case *api.ConnectOptionDatabase:
+			database = o.Database
 		case *api.ConnectOptionTimeLocation:
 			timeLocation = o.Location
 		default:
@@ -285,6 +288,11 @@ func (db *Database) Connect(ctx context.Context, opts ...api.ConnectOption) (api
 		queryStmtPoolPerKeyCap: defaultQueryStmtPoolPerQueryCap,
 	}
 	tokenAcquired = false
+	if strings.TrimSpace(database) != "" && !strings.EqualFold(database, "MACHBASEDB") {
+		if err := ret.Exec(ctx, "USE "+quoteIdentifier(database)).Err(); err != nil {
+			return nil, errors.Join(err, ret.Close())
+		}
+	}
 	return ret, nil
 }
 

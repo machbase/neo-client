@@ -220,7 +220,7 @@ Supported DSN forms for the standard driver:
 - Server value only:
 	- `host`
 	- `host:port`
-	- URL form such as `tcp://user:password@host:port?as=proxy&fetch_rows=100`
+- URL form such as `tcp://user:password@host:port/database?as=proxy&fetch_rows=100`
 - Key-value pairs separated by `;`:
 	- `key=value;key=value;...`
 	- example: `user=sys;password=manager;server=127.0.0.1:5656`
@@ -245,6 +245,7 @@ Supported DSN keys include:
 
 - `server`: server address such as `tcp://sys:manager@127.0.0.1:5656`
 - `host`, `port`, `user`, `password`: explicit connection fields
+- `database`, `db`: initial database selected for every physical connection
 - `auth_mode`: authentication mode (`password` or `challenge`)
 - `auth_key_file`: private key file path for `auth_mode=challenge`
 - `auth_key_pem`: inline private key PEM content for `auth_mode=challenge`
@@ -254,6 +255,8 @@ When `auth_key_file` or `auth_key_pem` is set and `auth_mode` is omitted, the dr
 - `statement_cache`: `auto`, `on`, or `off`
 - `io_metrics`: `true` or `false`
 - `alternative_servers`: alternative server list such as `127.0.0.2:5656`
+
+The URL path also selects the initial database, for example `tcp://sys:manager@127.0.0.1:5656/DATABASE_A`. The driver selects the configured database on every new physical connection. If application code executes `USE` directly, the driver restores the configured database before that connection is reused from the pool.
 
 The standard driver follows `database/sql` pooling through `sql.DB`. On servers that support transaction tables, `Begin`, `BeginTx`, `Commit`, and `Rollback` execute explicit transactions. Only the default isolation level is accepted; read-only and custom isolation options return an error. `LastInsertId` is not supported.
 
@@ -313,6 +316,7 @@ go run ./_example/driver_insert.go -s 127.0.0.1:5656 -u sys -p manager
 ## Common Connection Options
 
 - `api.WithPassword(user, password)`: connect with explicit credentials
+- `api.WithDatabase(database)`: select the initial database for the connection
 - `api.WithFetchRows(n)`: override the default fetch batch size for a connection
 - `api.WithStatementCache(mode)`: control query statement reuse
 - `api.WithIOMetrics(true)`: enable I/O metrics collection on the connection

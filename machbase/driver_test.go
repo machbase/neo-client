@@ -13,7 +13,7 @@ import (
 )
 
 func TestParseDSNKeyValue(t *testing.T) {
-	cfg, err := ParseDSN("server=tcp://sys:manager@127.0.0.1:5656?as=user&fetch_rows=777&statement_cache=off&io_metrics=true&alternative_servers=127.0.0.2:5657")
+	cfg, err := ParseDSN("server=tcp://sys:manager@127.0.0.1:5656/DB_A?as=user&fetch_rows=777&statement_cache=off&io_metrics=true&alternative_servers=127.0.0.2:5657")
 	if err != nil {
 		t.Fatalf("ParseDSN() error = %v", err)
 	}
@@ -22,6 +22,9 @@ func TestParseDSNKeyValue(t *testing.T) {
 	}
 	if cfg.User != "sys" || cfg.Password != "manager" {
 		t.Fatalf("unexpected credentials: %#v", cfg)
+	}
+	if cfg.Database != "DB_A" {
+		t.Fatalf("unexpected database: %q", cfg.Database)
 	}
 	if cfg.FetchRows != 777 {
 		t.Fatalf("unexpected fetch_rows: %d", cfg.FetchRows)
@@ -37,6 +40,30 @@ func TestParseDSNKeyValue(t *testing.T) {
 	}
 	if cfg.ProxyUser != "user" {
 		t.Fatalf("unexpected proxy user: %q", cfg.ProxyUser)
+	}
+}
+
+func TestParseDSNDatabaseForms(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dsn  string
+		want string
+	}{
+		{name: "key", dsn: "host=127.0.0.1;database=DATABASE_A", want: "DATABASE_A"},
+		{name: "alias", dsn: "host=127.0.0.1;db=DATABASE_B", want: "DATABASE_B"},
+		{name: "quoted", dsn: `host=127.0.0.1;database="Database A"`, want: "Database A"},
+		{name: "url-path", dsn: "tcp://sys:manager@127.0.0.1:5656/Database%20A", want: "Database A"},
+		{name: "url-query", dsn: "tcp://sys:manager@127.0.0.1:5656?database=DATABASE_C", want: "DATABASE_C"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := ParseDSN(tc.dsn)
+			if err != nil {
+				t.Fatalf("ParseDSN() error = %v", err)
+			}
+			if cfg.Database != tc.want {
+				t.Fatalf("database=%q, want %q", cfg.Database, tc.want)
+			}
+		})
 	}
 }
 
@@ -212,7 +239,7 @@ func TestConfigValidateImplicitChallengeWithAuthKeyPEM(t *testing.T) {
 }
 
 func TestDriverOpenConnectorMergesDefaults(t *testing.T) {
-	drv := &Driver{Host: "127.0.0.1", Port: 5656, User: "sys", Password: "manager", StatementCache: api.StatementCacheOn}
+	drv := &Driver{Host: "127.0.0.1", Port: 5656, User: "sys", Password: "manager", Database: "DEFAULT_DB", StatementCache: api.StatementCacheOn}
 	connector, err := drv.OpenConnector("fetch_rows=500")
 	if err != nil {
 		t.Fatalf("OpenConnector() error = %v", err)
@@ -229,6 +256,70 @@ func TestDriverOpenConnectorMergesDefaults(t *testing.T) {
 	}
 	if cn.cfg.StatementCache != api.StatementCacheOn {
 		t.Fatalf("unexpected statement cache: %v", cn.cfg.StatementCache)
+	}
+	if cn.cfg.Database != "DEFAULT_DB" {
+		t.Fatalf("unexpected database: %q", cn.cfg.Database)
+	}
+}
+
+func TestConnectOptionDatabase(t *testing.T) {
+	database := connectOptionDatabase([]api.ConnectOption{
+		api.WithPassword("sys", "manager"),
+		api.WithDatabase("DATABASE_A"),
+	})
+	if database != "DATABASE_A" {
+		t.Fatalf("database=%q, want DATABASE_A", database)
+	}
+	if database := connectOptionDatabase(nil); database != "" {
+		t.Fatalf("database=%q, want empty", database)
+	}
+}
+
+func TestResetSessionRestoresConfiguredDatabase(t *testing.T) {
+	native := &resetTestConn{}
+	conn := &Conn{conn: native, database: `Database "A`, dbDirty: true}
+
+	if err := conn.ResetSession(context.Background()); err != nil {
+		t.Fatalf("ResetSession() error = %v", err)
+	}
+	if len(native.queries) != 1 || native.queries[0] != `USE "Database ""A"` {
+		t.Fatalf("queries=%q", native.queries)
+	}
+	if conn.dbDirty {
+		t.Fatal("database remained dirty")
+	}
+
+	if err := conn.ResetSession(context.Background()); err != nil {
+		t.Fatalf("second ResetSession() error = %v", err)
+	}
+	if len(native.queries) != 1 {
+		t.Fatalf("clean reset executed another USE: %q", native.queries)
+	}
+}
+
+func TestResetSessionDatabaseFailureDiscardsConnection(t *testing.T) {
+	native := &resetTestConn{err: errors.New("database unavailable")}
+	conn := &Conn{conn: native, database: "DATABASE_A", dbDirty: true}
+
+	if err := conn.ResetSession(context.Background()); !errors.Is(err, driver.ErrBadConn) {
+		t.Fatalf("ResetSession() error = %v, want ErrBadConn", err)
+	}
+	if !native.closed || conn.conn != nil {
+		t.Fatal("failed reset did not close the connection")
+	}
+}
+
+func TestSetTransactionStateMarksDatabaseDirty(t *testing.T) {
+	conn := &Conn{database: "DATABASE_A"}
+	conn.setTransactionState("/* select another catalog */ USE DATABASE_B")
+	if !conn.dbDirty {
+		t.Fatal("successful USE was not marked dirty")
+	}
+
+	withoutDefault := &Conn{}
+	withoutDefault.setTransactionState("USE DATABASE_B")
+	if withoutDefault.dbDirty {
+		t.Fatal("connection without configured database should not reset USE")
 	}
 }
 
@@ -310,4 +401,46 @@ func TestNormalizeErrorBadConn(t *testing.T) {
 	if errors.Is(normalizeError(errors.New("other error")), driver.ErrBadConn) {
 		t.Fatalf("did not expect ErrBadConn for generic error")
 	}
+}
+
+type resetTestResult struct {
+	err error
+}
+
+func (r *resetTestResult) Err() error          { return r.err }
+func (r *resetTestResult) RowsAffected() int64 { return 0 }
+func (r *resetTestResult) Message() string     { return "" }
+
+type resetTestConn struct {
+	queries []string
+	err     error
+	closed  bool
+}
+
+func (c *resetTestConn) Close() error {
+	c.closed = true
+	return nil
+}
+
+func (c *resetTestConn) Exec(_ context.Context, query string, _ ...any) api.Result {
+	c.queries = append(c.queries, query)
+	return &resetTestResult{err: c.err}
+}
+
+func (c *resetTestConn) Query(context.Context, string, ...any) (api.Rows, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (c *resetTestConn) QueryRow(context.Context, string, ...any) api.Row { return nil }
+
+func (c *resetTestConn) Prepare(context.Context, string) (api.Stmt, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (c *resetTestConn) Appender(context.Context, string, ...api.AppenderOption) (api.Appender, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (c *resetTestConn) Explain(context.Context, string, bool) (string, error) {
+	return "", errors.New("not implemented")
 }
