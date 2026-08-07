@@ -31,6 +31,10 @@ func Scan(src any, dst any, loc *time.Location) error {
 		if sv.Valid {
 			return scanInt16(sv.Int16, dst)
 		}
+	case *sql.Null[int16]:
+		if sv.Valid {
+			return scanInt16(sv.V, dst)
+		}
 	case *sql.Null[uint16]:
 		if sv.Valid {
 			return scanInt16(int16(sv.V), dst)
@@ -42,6 +46,10 @@ func Scan(src any, dst any, loc *time.Location) error {
 	case *sql.NullInt32:
 		if sv.Valid {
 			return scanInt32(sv.Int32, dst)
+		}
+	case *sql.Null[int32]:
+		if sv.Valid {
+			return scanInt32(sv.V, dst)
 		}
 	case uint32:
 		return scanInt32(int32(sv), dst)
@@ -59,6 +67,10 @@ func Scan(src any, dst any, loc *time.Location) error {
 		if sv.Valid {
 			return scanInt64(sv.Int64, dst)
 		}
+	case *sql.Null[int64]:
+		if sv.Valid {
+			return scanInt64(sv.V, dst)
+		}
 	case uint64:
 		return scanInt64(int64(sv), dst)
 	case *uint64:
@@ -74,6 +86,10 @@ func Scan(src any, dst any, loc *time.Location) error {
 	case *sql.NullFloat64:
 		if sv.Valid {
 			return scanFloat64(sv.Float64, dst)
+		}
+	case *sql.Null[float64]:
+		if sv.Valid {
+			return scanFloat64(sv.V, dst)
 		}
 	case float32:
 		return scanFloat32(sv, dst)
@@ -91,6 +107,10 @@ func Scan(src any, dst any, loc *time.Location) error {
 		if sv.Valid {
 			return scanString(sv.String, dst)
 		}
+	case *sql.Null[string]:
+		if sv.Valid {
+			return scanString(sv.V, dst)
+		}
 	case JSONString:
 		return scanString(string(sv), dst)
 	case *JSONString:
@@ -107,10 +127,24 @@ func Scan(src any, dst any, loc *time.Location) error {
 		if sv.Valid {
 			return scanDatetime(sv.Time, dst, loc)
 		}
+	case *sql.Null[time.Time]:
+		if sv.Valid {
+			return scanDatetime(sv.V, dst, loc)
+		}
 	case []byte:
 		return scanBytes(sv, dst)
 	case *[]byte:
 		return scanBytes(*sv, dst)
+	case sql.RawBytes:
+		return scanBytes([]byte(sv), dst)
+	case *sql.RawBytes:
+		if sv != nil {
+			return scanBytes([]byte(*sv), dst)
+		}
+	case *sql.Null[[]byte]:
+		if sv.Valid {
+			return scanBytes(sv.V, dst)
+		}
 	case net.IP:
 		return scanIP(sv, dst)
 	case *net.IP:
@@ -138,6 +172,10 @@ func Scan(src any, dst any, loc *time.Location) error {
 	case *Decimal:
 		if sv != nil {
 			return Scan(*sv, dst, loc)
+		}
+	case *sql.Null[Decimal]:
+		if sv.Valid {
+			return Scan(sv.V, dst, loc)
 		}
 	}
 	return ErrCannotConvertValue(src, dst)
@@ -238,6 +276,18 @@ func scanInt16(src int16, pDst any) error {
 	case *sql.NullInt16:
 		dst.Valid = true
 		dst.Int16 = src
+	case *sql.Null[int]:
+		dst.Valid = true
+		dst.V = int(src)
+	case *sql.Null[int16]:
+		dst.Valid = true
+		dst.V = src
+	case *sql.Null[int32]:
+		dst.Valid = true
+		dst.V = int32(src)
+	case *sql.Null[int64]:
+		dst.Valid = true
+		dst.V = int64(src)
 	case *sql.NullInt32:
 		dst.Valid = true
 		dst.Int32 = int32(src)
@@ -295,6 +345,15 @@ func scanInt32(src int32, pDst any) error {
 	case *sql.NullInt32:
 		dst.Valid = true
 		dst.Int32 = src
+	case *sql.Null[int]:
+		dst.Valid = true
+		dst.V = int(src)
+	case *sql.Null[int32]:
+		dst.Valid = true
+		dst.V = src
+	case *sql.Null[int64]:
+		dst.Valid = true
+		dst.V = int64(src)
 	case *sql.NullInt64:
 		dst.Valid = true
 		dst.Int64 = int64(src)
@@ -348,6 +407,12 @@ func scanInt64(src int64, pDst any) error {
 	case *sql.NullInt64:
 		dst.Valid = true
 		dst.Int64 = src
+	case *sql.Null[int]:
+		dst.Valid = true
+		dst.V = int(src)
+	case *sql.Null[int64]:
+		dst.Valid = true
+		dst.V = src
 	case *sql.Null[uint64]:
 		dst.Valid = true
 		dst.V = uint64(src)
@@ -370,6 +435,9 @@ func scanDatetime(src time.Time, pDst any, loc *time.Location) error {
 	case *sql.NullTime:
 		dst.Valid = true
 		dst.Time = src
+	case *sql.Null[time.Time]:
+		dst.Valid = true
+		dst.V = src
 	case *driver.Value:
 		*dst = driver.Value(src)
 	default:
@@ -389,6 +457,12 @@ func scanFloat32(src float32, pDst any) error {
 	case *sql.NullFloat64:
 		dst.Valid = true
 		dst.Float64 = float64(src)
+	case *sql.Null[float32]:
+		dst.Valid = true
+		dst.V = src
+	case *sql.Null[float64]:
+		dst.Valid = true
+		dst.V = float64(src)
 	case *driver.Value:
 		*dst = driver.Value(src)
 	case *int:
@@ -414,6 +488,12 @@ func scanFloat64(src float64, pDst any) error {
 	case *sql.NullFloat64:
 		dst.Valid = true
 		dst.Float64 = src
+	case *sql.Null[float32]:
+		dst.Valid = true
+		dst.V = float32(src)
+	case *sql.Null[float64]:
+		dst.Valid = true
+		dst.V = src
 	case *driver.Value:
 		*dst = driver.Value(src)
 	case *int:
@@ -460,6 +540,9 @@ func scanString(src string, pDst any) error {
 	case *sql.NullString:
 		dst.Valid = true
 		dst.String = src
+	case *sql.Null[string]:
+		dst.Valid = true
+		dst.V = src
 	case *driver.Value:
 		*dst = driver.Value(src)
 	case *JSONString:
@@ -481,6 +564,9 @@ func scanBytes(src []byte, pDst any) error {
 		*dst = string(src)
 	case *driver.Value:
 		*dst = driver.Value(src)
+	case *sql.Null[[]byte]:
+		dst.Valid = true
+		dst.V = src
 	default:
 		return ErrDatabaseScanType("BYTES", pDst)
 	}
@@ -495,6 +581,9 @@ func scanIP(src net.IP, pDst any) error {
 		*dst = src.String()
 	case *driver.Value:
 		*dst = driver.Value(src)
+	case *sql.Null[net.IP]:
+		dst.Valid = true
+		dst.V = src
 	default:
 		return ErrDatabaseScanType("IPv4", pDst)
 	}
@@ -652,4 +741,26 @@ func Unbox(val any) any {
 	default:
 		return val
 	}
+}
+
+func NormalizeType(val any, loc *time.Location) any {
+	raw := Unbox(val)
+	if raw == nil {
+		return nil
+	}
+	if loc == nil {
+		loc = time.UTC
+	}
+	var dv driver.Value
+	if err := Scan(raw, &dv, loc); err == nil {
+		return dv
+	}
+	return raw
+}
+
+func NormalizeTypes(values []any, loc *time.Location) []any {
+	for i, val := range values {
+		values[i] = NormalizeType(val, loc)
+	}
+	return values
 }
