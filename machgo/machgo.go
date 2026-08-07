@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"reflect"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/machbase/neo-client/api"
@@ -297,6 +297,7 @@ type Conn struct {
 	usedCount  int64
 	closeOnce  sync.Once
 	returnChan chan struct{}
+	sessionMu  sync.Mutex
 
 	timeLocation           *time.Location
 	queryStmtReuseMode     api.StatementCacheMode
@@ -307,11 +308,18 @@ type Conn struct {
 	queryStmtPoolCount     int
 	queryStmtPoolCap       int
 	queryStmtPoolPerKeyCap int
+	catalogGeneration      atomic.Uint64
 }
 
 var _ api.Conn = (*Conn)(nil)
 
 func (c *Conn) Close() (ret error) {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	return c.close()
+}
+
+func (c *Conn) close() (ret error) {
 	c.closeOnce.Do(func() {
 		defer func() {
 			c.usedAt = time.Now()
@@ -320,6 +328,7 @@ func (c *Conn) Close() (ret error) {
 				c.returnChan <- struct{}{}
 			}
 		}()
+		c.catalogGeneration.Add(1)
 		if err := c.closeQueryStmtPool(); err != nil && ret == nil {
 			ret = err
 		}
@@ -337,6 +346,10 @@ func (c *Conn) IOMetrics() (readBytes uint64, writtenBytes uint64, enabled bool)
 		return 0, 0, false
 	}
 	return c.handle.IOMetrics()
+}
+
+func (c *Conn) SupportsDatabaseMetadata() bool {
+	return c != nil && c.handle != nil && c.handle.SupportsDatabaseMetadata()
 }
 
 func (c *Conn) ResetIOMetrics() (readBytes uint64, writtenBytes uint64, enabled bool) {
@@ -380,6 +393,10 @@ func queryHead(query string) string {
 	return strings.ToUpper(parts[0])
 }
 
+func quoteIdentifier(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
 func (c *Conn) shouldReuseStmtForQuery(query string) bool {
 	switch c.queryStmtReuseMode {
 	case api.StatementCacheOn:
@@ -397,12 +414,14 @@ func (c *Conn) shouldReuseStmtForQuery(query string) bool {
 }
 
 func (c *Conn) acquireQueryStmt(query string) (*Stmt, error) {
+	generation := c.catalogGeneration.Load()
 	if !c.shouldReuseStmtForQuery(query) {
 		stmt, err := c.NewStmt()
 		if err != nil {
 			return nil, err
 		}
 		stmt.sqlHead = queryHead(query)
+		stmt.catalogGeneration = generation
 		if err := stmt.prepare(query); err != nil {
 			_ = stmt.Close()
 			return nil, err
@@ -416,6 +435,10 @@ func (c *Conn) acquireQueryStmt(query string) (*Stmt, error) {
 		c.queryStmtFastKey = ""
 		c.queryStmtPoolMu.Unlock()
 
+		if stmt.catalogGeneration != generation {
+			_ = stmt.Close()
+			return c.acquireQueryStmt(query)
+		}
 		stmt.sqlHead = queryHead(query)
 		stmt.reachEOF = false
 		if stmt.handle.SupportsReprepare() {
@@ -439,6 +462,10 @@ func (c *Conn) acquireQueryStmt(query string) (*Stmt, error) {
 		}
 		c.queryStmtPoolMu.Unlock()
 
+		if stmt.catalogGeneration != generation {
+			_ = stmt.Close()
+			return c.acquireQueryStmt(query)
+		}
 		stmt.sqlHead = queryHead(query)
 		stmt.reachEOF = false
 		if stmt.handle.SupportsReprepare() {
@@ -456,6 +483,7 @@ func (c *Conn) acquireQueryStmt(query string) (*Stmt, error) {
 		return nil, err
 	}
 	stmt.sqlHead = queryHead(query)
+	stmt.catalogGeneration = generation
 	if err := stmt.prepare(query); err != nil {
 		_ = stmt.Close()
 		return nil, err
@@ -481,7 +509,9 @@ func (c *Conn) releaseQueryStmt(query string, stmt *Stmt, reusable bool) error {
 
 	keep := false
 	c.queryStmtPoolMu.Lock()
-	if c.queryStmtFast == nil {
+	if stmt.catalogGeneration != c.catalogGeneration.Load() {
+		keep = false
+	} else if c.queryStmtFast == nil {
 		c.queryStmtFast = stmt
 		c.queryStmtFastKey = query
 		keep = true
@@ -539,6 +569,9 @@ func (c *Conn) closeQueryStmtPool() error {
 }
 
 func (c *Conn) Explain(ctx context.Context, query string, full bool) (string, error) {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+
 	if full {
 		query = "explain full " + query
 	} else {
@@ -579,6 +612,12 @@ func (c *Conn) Explain(ctx context.Context, query string, full bool) (string, er
 }
 
 func (c *Conn) Exec(ctx context.Context, query string, args ...any) api.Result {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	return c.exec(ctx, query, args...)
+}
+
+func (c *Conn) exec(ctx context.Context, query string, args ...any) api.Result {
 	ret := &Result{}
 	if len(args) == 0 {
 		stmt, err := c.NewStmt()
@@ -599,6 +638,13 @@ func (c *Conn) Exec(ctx context.Context, query string, args ...any) api.Result {
 			return ret
 		} else {
 			ret.stmtType = typ
+		}
+		if ret.stmtType == machnet.QPP_STMT_TYPE_ALTER_SESSION_SET ||
+			ret.stmtType == machnet.QPP_STMT_TYPE_CONNECT_USER {
+			c.catalogGeneration.Add(1)
+			if err := c.closeQueryStmtPool(); err != nil {
+				ret.err = err
+			}
 		}
 		return ret
 	}
@@ -630,6 +676,9 @@ func (c *Conn) Exec(ctx context.Context, query string, args ...any) api.Result {
 }
 
 func (c *Conn) Prepare(ctx context.Context, query string) (api.Stmt, error) {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+
 	stmt, err := c.NewStmt()
 	if err != nil {
 		return nil, err
@@ -644,6 +693,12 @@ func (c *Conn) Prepare(ctx context.Context, query string) (api.Stmt, error) {
 }
 
 func (c *Conn) QueryRow(ctx context.Context, query string, args ...any) api.Row {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	return c.queryRow(ctx, query, args...)
+}
+
+func (c *Conn) queryRow(ctx context.Context, query string, args ...any) api.Row {
 	ret := &Row{timeLocation: c.timeLocation}
 	stmt, err := c.acquireQueryStmt(query)
 	if err != nil {
@@ -696,6 +751,12 @@ func (c *Conn) QueryRow(ctx context.Context, query string, args ...any) api.Row 
 }
 
 func (c *Conn) Query(ctx context.Context, query string, args ...any) (api.Rows, error) {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	return c.query(ctx, query, args...)
+}
+
+func (c *Conn) query(ctx context.Context, query string, args ...any) (api.Rows, error) {
 	stmt, err := c.acquireQueryStmt(query)
 	if err != nil {
 		return nil, err
@@ -1148,14 +1209,15 @@ func (c *Conn) NewStmt() (*Stmt, error) {
 }
 
 type Stmt struct {
-	handle     *machnet.StmtHandle
-	conn       *Conn
-	sqlText    string
-	columnDesc []api.ColumnDesc
-	reachEOF   bool
-	sqlHead    string
-	rowCount   int64
-	execCount  int64
+	handle            *machnet.StmtHandle
+	conn              *Conn
+	sqlText           string
+	columnDesc        []api.ColumnDesc
+	reachEOF          bool
+	sqlHead           string
+	rowCount          int64
+	execCount         int64
+	catalogGeneration uint64
 }
 
 func (stmt *Stmt) Close() error {
@@ -1415,13 +1477,7 @@ func (r *Rows) Scan(dest ...any) error {
 		}
 		if r.row[i] == nil {
 			if !api.ScanNull(dest[i]) {
-				// if dest[i] is not a pointer, we cannot set it to nil, so return an error
-				// otherwise, if dest[i] is a pointer, we can set it to nil, so we can continue
-				if reflect.ValueOf(dest[i]).Kind() != reflect.Ptr {
-					return api.ErrDatabaseScanNull(fmt.Sprintf("into %T", dest[i]))
-				}
-				// set the pointer to nil
-				reflect.ValueOf(dest[i]).Elem().Set(reflect.Zero(reflect.TypeOf(dest[i]).Elem()))
+				return api.ErrDatabaseScanNull(fmt.Sprintf("into %T", dest[i]))
 			}
 			continue
 		}
@@ -1433,19 +1489,29 @@ func (r *Rows) Scan(dest ...any) error {
 }
 
 func (c *Conn) Appender(ctx context.Context, tableName string, opts ...api.AppenderOption) (api.Appender, error) {
-	db, user, table := api.TableName(tableName).SplitOr("MACHBASEDB", c.user)
-	dbId := -1
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+
+	db, user, table := api.TableName(tableName).SplitOr("", c.user)
 	tableId := int64(-1)
 	var tableType api.TableType = api.TableType(-1)
 	var tableFlag api.TableFlag
 	var tableColCount int
 
-	if db != "" && db != "MACHBASEDB" {
-		row := c.QueryRow(ctx, "select BACKUP_TBSID from V$STORAGE_MOUNT_DATABASES where MOUNTDB = ?", db)
-		if row.Err() != nil {
-			return nil, row.Err()
+	dbId := int64(-1)
+	if c.handle.SupportsDatabaseMetadata() {
+		var dbRow api.Row
+		if db == "" {
+			dbRow = c.queryRow(ctx, "select DATABASE_ID from V$DATABASES where NAME = CURRENT_DATABASE()")
+		} else {
+			dbRow = c.queryRow(ctx, "select DATABASE_ID from V$DATABASES where NAME = ?", db)
 		}
-		if err := row.Scan(&dbId); err != nil {
+		if err := dbRow.Scan(&dbId); err != nil {
+			return nil, err
+		}
+	} else if db != "" && db != "MACHBASEDB" {
+		dbRow := c.queryRow(ctx, "select BACKUP_TBSID from V$STORAGE_MOUNT_DATABASES where MOUNTDB = ?", db)
+		if err := dbRow.Scan(&dbId); err != nil {
 			return nil, err
 		}
 	}
@@ -1468,7 +1534,7 @@ func (c *Conn) Appender(ctx context.Context, tableName string, opts ...api.Appen
 		and j.DATABASE_ID = ?
 		and j.NAME = ?`
 
-	r := c.QueryRow(ctx, describeSqlText, user, dbId, table)
+	r := c.queryRow(ctx, describeSqlText, user, dbId, table)
 	if r.Err() != nil {
 		if r.Err() == sql.ErrNoRows {
 			return nil, fmt.Errorf("table '%s' does not exist", tableName)
@@ -1481,7 +1547,7 @@ func (c *Conn) Appender(ctx context.Context, tableName string, opts ...api.Appen
 	if tableType != api.TableTypeLog && tableType != api.TableTypeTag && tableType != api.TableTypeTransaction {
 		return nil, fmt.Errorf("%s '%s' doesn't support append", tableType, tableName)
 	}
-	rows, err := c.Query(ctx, "select name, type, length, id, flag from M$SYS_COLUMNS where table_id = ? and database_id = ? order by id", tableId, dbId)
+	rows, err := c.query(ctx, "select name, type, length, id, flag from M$SYS_COLUMNS where table_id = ? and database_id = ? order by id", tableId, dbId)
 	if err != nil {
 		return nil, err
 	}
@@ -1512,6 +1578,12 @@ func (c *Conn) Appender(ctx context.Context, tableName string, opts ...api.Appen
 		ret.columnNames = append(ret.columnNames, col.Name)
 		ret.columnTypes = append(ret.columnTypes, col.Type.ToSqlType())
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
 
 	stmt, err := c.NewStmt()
 	if err != nil {
@@ -1519,8 +1591,54 @@ func (c *Conn) Appender(ctx context.Context, tableName string, opts ...api.Appen
 	}
 	ret.stmt = stmt
 
-	if err := stmt.handle.AppendOpen(table, ret.errCheckCount); err != nil {
-		err = stmt.ErrorOf(err)
+	openName := ret.tableName
+	restoreDB := ""
+	if db != "" {
+		var currentDB string
+		row := c.queryRow(ctx, "SELECT CURRENT_DATABASE()")
+		if row.Err() != nil {
+			stmt.Close()
+			return nil, row.Err()
+		}
+		if err := row.Scan(&currentDB); err != nil {
+			stmt.Close()
+			return nil, err
+		}
+		if !strings.EqualFold(currentDB, db) {
+			if err := c.exec(ctx, "USE "+quoteIdentifier(db)).Err(); err != nil {
+				stmt.Close()
+				return nil, err
+			}
+			restoreDB = currentDB
+		}
+		openName = user + "." + table
+	}
+
+	openErr := stmt.handle.AppendOpen(openName, ret.errCheckCount)
+	if restoreDB != "" {
+		if restoreErr := c.exec(ctx, "USE "+quoteIdentifier(restoreDB)).Err(); restoreErr != nil {
+			var cleanupErr error
+			var appendOpenErr error
+			if openErr != nil {
+				appendOpenErr = stmt.ErrorOf(openErr)
+			}
+			if openErr == nil {
+				if _, _, err := stmt.handle.AppendClose(); err != nil {
+					cleanupErr = stmt.ErrorOf(err)
+				}
+			}
+			if err := stmt.Close(); err != nil {
+				cleanupErr = errors.Join(cleanupErr, err)
+			}
+			if err := c.close(); err != nil {
+				cleanupErr = errors.Join(cleanupErr, err)
+			}
+			restoreErr = fmt.Errorf("restore current database %s: %w", restoreDB, restoreErr)
+			return nil, errors.Join(appendOpenErr, restoreErr, cleanupErr)
+		}
+	}
+	if openErr != nil {
+		err := stmt.ErrorOf(openErr)
 		stmt.Close()
 		return nil, err
 	}
