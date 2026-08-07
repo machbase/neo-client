@@ -35,6 +35,7 @@ type Config struct {
 	Port            int
 	User            string
 	Password        string
+	Database        string
 	ProxyUser       string
 	AuthMode        string
 	AuthKeyFile     string
@@ -96,6 +97,7 @@ type Driver struct {
 	Port            int
 	User            string
 	Password        string
+	Database        string
 	AuthMode        string
 	AuthKeyFile     string
 	AuthKeyPEM      string
@@ -120,6 +122,7 @@ func (drv *Driver) baseConfig() Config {
 		Port:            drv.Port,
 		User:            drv.User,
 		Password:        drv.Password,
+		Database:        drv.Database,
 		AuthMode:        drv.AuthMode,
 		AuthKeyFile:     drv.AuthKeyFile,
 		AuthKeyPEM:      drv.AuthKeyPEM,
@@ -195,6 +198,9 @@ func (cn *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	if cn.cfg.ProxyUser != "" && cn.cfg.User != cn.cfg.ProxyUser {
 		opts = append(opts, api.WithProxyUser(cn.cfg.ProxyUser))
 	}
+	if strings.TrimSpace(cn.cfg.Database) != "" {
+		opts = append(opts, api.WithDatabase(cn.cfg.Database))
+	}
 	conn, err := cn.db.Connect(ctx, opts...)
 	if err != nil {
 		return nil, normalizeError(err)
@@ -204,7 +210,7 @@ func (cn *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("unexpected connection type %T", conn)
 	}
-	return &Conn{connector: cn, conn: concrete}, nil
+	return &Conn{connector: cn, conn: concrete, database: cn.cfg.Database}, nil
 }
 
 func (cn *Connector) Driver() driver.Driver {
@@ -259,7 +265,7 @@ func (cn *DatabaseConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	if err != nil {
 		return nil, normalizeError(err)
 	}
-	return &Conn{connector: nil, conn: conn}, nil
+	return &Conn{connector: nil, conn: conn, database: connectOptionDatabase(opts)}, nil
 }
 
 func (cn *DatabaseConnector) Driver() driver.Driver {
@@ -274,6 +280,8 @@ type Conn struct {
 	conn      api.Conn
 	txMu      sync.Mutex
 	inTx      bool
+	database  string
+	dbDirty   bool
 }
 
 var _ driver.Conn = (*Conn)(nil)
@@ -385,6 +393,20 @@ func (c *Conn) ResetSession(ctx context.Context) error {
 		}
 		c.setTransactionState("ROLLBACK")
 	}
+	c.txMu.Lock()
+	database := c.database
+	dbDirty := c.dbDirty
+	c.txMu.Unlock()
+	if dbDirty && strings.TrimSpace(database) != "" {
+		result := c.conn.Exec(ctx, "USE "+quoteIdentifier(database))
+		if err := normalizeError(result.Err()); err != nil {
+			_ = c.Close()
+			return driver.ErrBadConn
+		}
+		c.txMu.Lock()
+		c.dbDirty = false
+		c.txMu.Unlock()
+	}
 	return nil
 }
 
@@ -425,11 +447,15 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 
 func (c *Conn) setTransactionState(query string) {
 	verb := leadingSQLKeyword(query)
-	if verb != "BEGIN" && verb != "COMMIT" && verb != "ROLLBACK" {
+	if verb != "BEGIN" && verb != "COMMIT" && verb != "ROLLBACK" && verb != "USE" {
 		return
 	}
 	c.txMu.Lock()
-	c.inTx = verb == "BEGIN"
+	if verb == "USE" {
+		c.dbDirty = strings.TrimSpace(c.database) != ""
+	} else {
+		c.inTx = verb == "BEGIN"
+	}
 	c.txMu.Unlock()
 }
 
@@ -794,7 +820,7 @@ func (r *Rows) column(index int) (*api.Column, bool) {
 //  1. Server value only
 //     - host
 //     - host:port
-//     - tcp://user:password@host:port?as=proxy&fetch_rows=100
+//     - tcp://user:password@host:port/database?as=proxy&fetch_rows=100
 //
 //  2. Key-value pairs separated by semicolon
 //     - key=value;key=value;...
@@ -814,14 +840,16 @@ func ParseDSN(dsn string) (Config, error) {
 	if dsn == "" {
 		return cfg, nil
 	}
-	if strings.Contains(dsn, "=") {
-		return parseKeyValueDSN(dsn)
-	}
-	if strings.Contains(dsn, "://") {
+	scheme := strings.Index(dsn, "://")
+	separator := strings.IndexByte(dsn, '=')
+	if scheme >= 0 && (separator < 0 || separator > scheme) {
 		if err := applyServerValue(&cfg, dsn); err != nil {
 			return Config{}, err
 		}
 		return cfg.normalize(), nil
+	}
+	if strings.Contains(dsn, "=") {
+		return parseKeyValueDSN(dsn)
 	}
 	if err := applyServerValue(&cfg, dsn); err != nil {
 		return Config{}, err
@@ -871,6 +899,8 @@ func parseKeyValueDSN(dsn string) (Config, error) {
 			}
 		case "password", "pwd":
 			cfg.Password = value
+		case "database", "db":
+			cfg.Database = value
 		case "auth_mode":
 			cfg.AuthMode = value
 		case "auth_key_file":
@@ -1044,11 +1074,18 @@ func applyServerValue(cfg *Config, value string) error {
 				cfg.Password = pass
 			}
 		}
+		if u.Path != "" && u.Path != "/" {
+			cfg.Database = strings.TrimPrefix(u.Path, "/")
+		}
 		for key, values := range u.Query() {
 			switch strings.ToLower(key) {
 			case "as":
 				if len(values) > 0 {
 					cfg.ProxyUser = values[0]
+				}
+			case "database", "db":
+				if len(values) > 0 {
+					cfg.Database = values[0]
 				}
 			case "auth_mode":
 				cfg.AuthMode = values[0]
@@ -1148,6 +1185,9 @@ func mergeConfig(base Config, override Config) Config {
 	if override.Password != "" {
 		base.Password = override.Password
 	}
+	if override.Database != "" {
+		base.Database = override.Database
+	}
 	if override.AuthMode != "" {
 		base.AuthMode = override.AuthMode
 	}
@@ -1176,6 +1216,19 @@ func mergeConfig(base Config, override Config) Config {
 		base.IOMetrics = true
 	}
 	return base
+}
+
+func connectOptionDatabase(opts []api.ConnectOption) string {
+	for _, opt := range opts {
+		if database, ok := opt.(*api.ConnectOptionDatabase); ok {
+			return database.Database
+		}
+	}
+	return ""
+}
+
+func quoteIdentifier(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 func namedValuesToAny(args []driver.NamedValue) ([]any, error) {
