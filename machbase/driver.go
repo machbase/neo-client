@@ -306,6 +306,10 @@ func (c *Conn) Close() error {
 	return normalizeError(err)
 }
 
+func (c *Conn) Appender(ctx context.Context, tableName string, opts ...api.AppenderOption) (api.Appender, error) {
+	return c.conn.Appender(ctx, tableName, opts...)
+}
+
 func (c *Conn) Begin() (driver.Tx, error) {
 	return c.BeginTx(context.Background(), driver.TxOptions{})
 }

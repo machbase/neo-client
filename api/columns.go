@@ -86,6 +86,55 @@ func (col *Column) Width() int {
 	return col.Length
 }
 
+func NewColumnWithType(colType *sql.ColumnType) *Column {
+	var dataType DataType = DataTypeAny
+	switch colType.DatabaseTypeName() {
+	case "VARCHAR", "TEXT", "NCHAR", "NVARCHAR":
+		dataType = DataTypeString
+	case "JSON":
+		dataType = DataTypeJSON
+	case "IPV4":
+		dataType = DataTypeIPv4
+	case "IPV6":
+		dataType = DataTypeIPv6
+	default:
+		switch colType.ScanType().String() {
+		case "bool", "sql.NullBool":
+			dataType = DataTypeBoolean
+		case "int8", "sql.NullByte":
+			dataType = DataTypeInt16
+		case "int16", "sql.NullInt16":
+			dataType = DataTypeInt16
+		case "uint16":
+			dataType = DataTypeUInt16
+		case "int32", "sql.NullInt32":
+			dataType = DataTypeInt32
+		case "uint32":
+			dataType = DataTypeUInt32
+		case "int64", "sql.NullInt64":
+			dataType = DataTypeInt64
+		case "uint64":
+			dataType = DataTypeUInt64
+		case "float32":
+			dataType = DataTypeFloat32
+		case "float64", "sql.NullFloat64":
+			dataType = DataTypeFloat64
+		case "string", "sql.NullString":
+			dataType = DataTypeString
+		case "time.Time", "sql.NullTime":
+			dataType = DataTypeDatetime
+		case "[]byte", "[]uint8", "sql.RawBytes":
+			dataType = DataTypeBinary
+		case "*interface {}":
+			// FIXME: SQLite binds `count(*)` field as `*interface {}`
+			dataType = DataTypeString
+		default:
+			dataType = DataTypeAny
+		}
+	}
+	return &Column{Name: colType.Name(), DataType: dataType}
+}
+
 type Columns []*Column
 
 func (cols Columns) String() string {
