@@ -9,6 +9,85 @@ import (
 	"time"
 )
 
+/**
+# scan.go Type Mapping Matrix
+
+This document summarizes the type-handling matrix in scan.go for:
+- Scan(src, dst, loc)
+- ScanNull(dst)
+- Unbox(val)
+
+## Legend
+
+- Scan src: type is accepted as source in Scan.
+- ScanNull dst: type is reset to NULL state in ScanNull.
+- Unbox: type is unwrapped to raw value or nil in Unbox.
+- Y: supported
+- N: not supported
+
+## Null Wrapper Matrix
+
+| Type                 | Scan src | ScanNull dst | Unbox | Notes                                   |
+| -------------------- | -------- | ------------ | ----- | --------------------------------------- |
+| *sql.NullBool        | Y        | Y            | Y     | Routed to scanBool                      |
+| *sql.Null[bool]      | Y        | Y            | Y     | Routed to scanBool                      |
+| *sql.NullByte        | Y        | Y            | Y     | Routed to scanInt16                     |
+| *sql.Null[uint8]     | Y        | Y            | Y     | Routed to scanInt16                     |
+| *sql.Null[int]       | Y        | Y            | Y     | Routed to scanInt64                     |
+| *sql.NullInt16       | Y        | Y            | Y     |                                         |
+| *sql.Null[int16]     | Y        | Y            | Y     |                                         |
+| *sql.Null[uint16]    | Y        | Y            | Y     |                                         |
+| *sql.NullInt32       | Y        | Y            | Y     |                                         |
+| *sql.Null[int32]     | Y        | Y            | Y     |                                         |
+| *sql.Null[uint32]    | Y        | Y            | Y     |                                         |
+| *sql.NullInt64       | Y        | Y            | Y     |                                         |
+| *sql.Null[int64]     | Y        | Y            | Y     |                                         |
+| *sql.Null[uint64]    | Y        | Y            | Y     |                                         |
+| *sql.NullFloat64     | Y        | Y            | Y     |                                         |
+| *sql.Null[float32]   | Y        | Y            | Y     |                                         |
+| *sql.Null[float64]   | Y        | Y            | Y     |                                         |
+| *sql.NullString      | Y        | Y            | Y     |                                         |
+| *sql.Null[string]    | Y        | Y            | Y     |                                         |
+| *sql.NullTime        | Y        | Y            | Y     |                                         |
+| *sql.Null[time.Time] | Y        | Y            | Y     |                                         |
+| *sql.Null[net.IP]    | Y        | Y            | Y     |                                         |
+| *sql.Null[[]byte]    | Y        | Y            | Y     |                                         |
+| *sql.Null[JSONString] | Y       | Y            | Y     |                                         |
+| *sql.Null[Decimal]    | Y       | Y            | Y     | Source via recursive Scan(sv.V, dst, loc) |
+| *sql.Null[any]       | N        | Y            | Y     | Reset V=nil, Valid=false                |
+
+## Other NULL Reset Targets in ScanNull
+
+| Type          | ScanNull dst | Notes        |
+| ------------- | ------------ | ------------ |
+| *[]byte       | Y            | Reset to nil |
+| *driver.Value | Y            | Reset to nil |
+
+## Non-Wrapper Source Types in Scan
+
+| Source type accepted by Scan                 | Notes                          |
+| -------------------------------------------- | ------------------------------ |
+| int, *int, uint, *uint                       | Routed to scanInt32            |
+| bool, *bool                                  | Routed to scanBool             |
+| int16, *int16, uint16, *uint16               | Routed to scanInt16            |
+| int32, *int32, uint32, *uint32               | Routed to scanInt32            |
+| int64, *int64, uint64, *uint64               | Routed to scanInt64            |
+| float32, *float32, float64, *float64         | Routed to scanFloat32/scanFloat64 |
+| string, *string, JSONString, *JSONString     | Routed to scanString           |
+| time.Time, *time.Time                        | Routed to scanDatetime         |
+| []byte, *[]byte, sql.RawBytes, *sql.RawBytes | Routed to scanBytes            |
+| net.IP, *net.IP                              | Routed to scanIP               |
+| Decimal, *Decimal                            | Decimal-specific path          |
+
+## Review Summary
+
+After adding missing Scan src wrappers (excluding sql.Null[any]), ScanNull reset cases, and generic unboxing gaps, practical coverage is aligned for the listed wrappers.
+
+One intentional asymmetry remains in Scan src:
+- *sql.Null[any] is not accepted as a source type in top-level Scan switch.
+
+**/
+
 func Scan(src any, dst any, loc *time.Location) error {
 	switch sv := src.(type) {
 	case int:
@@ -19,6 +98,30 @@ func Scan(src any, dst any, loc *time.Location) error {
 		return scanInt32(int32(sv), dst)
 	case *uint:
 		return scanInt32(int32(*sv), dst)
+	case bool:
+		return scanBool(sv, dst)
+	case *bool:
+		return scanBool(*sv, dst)
+	case *sql.NullBool:
+		if sv.Valid {
+			return scanBool(sv.Bool, dst)
+		}
+	case *sql.Null[bool]:
+		if sv.Valid {
+			return scanBool(sv.V, dst)
+		}
+	case *sql.NullByte:
+		if sv.Valid {
+			return scanInt16(int16(sv.Byte), dst)
+		}
+	case *sql.Null[uint8]:
+		if sv.Valid {
+			return scanInt16(int16(sv.V), dst)
+		}
+	case *sql.Null[int]:
+		if sv.Valid {
+			return scanInt64(int64(sv.V), dst)
+		}
 	case int16:
 		return scanInt16(sv, dst)
 	case *int16:
@@ -186,6 +289,15 @@ func ScanNull(dst any) bool {
 	case *sql.NullBool:
 		d.Bool = false
 		d.Valid = false
+	case *sql.Null[bool]:
+		d.V = false
+		d.Valid = false
+	case *sql.NullByte:
+		d.Byte = 0
+		d.Valid = false
+	case *sql.Null[uint8]:
+		d.V = 0
+		d.Valid = false
 	case *sql.Null[int]:
 		d.V = 0
 		d.Valid = false
@@ -195,16 +307,25 @@ func ScanNull(dst any) bool {
 	case *sql.Null[int16]:
 		d.V = 0
 		d.Valid = false
+	case *sql.Null[uint16]:
+		d.V = 0
+		d.Valid = false
 	case *sql.NullInt32:
 		d.Int32 = 0
 		d.Valid = false
 	case *sql.Null[int32]:
 		d.V = 0
 		d.Valid = false
+	case *sql.Null[uint32]:
+		d.V = 0
+		d.Valid = false
 	case *sql.NullInt64:
 		d.Int64 = 0
 		d.Valid = false
 	case *sql.Null[int64]:
+		d.V = 0
+		d.Valid = false
+	case *sql.Null[uint64]:
 		d.V = 0
 		d.Valid = false
 	case *sql.Null[float32]:
@@ -239,6 +360,9 @@ func ScanNull(dst any) bool {
 		d.Valid = false
 	case *sql.Null[Decimal]:
 		d.V = Decimal{}
+		d.Valid = false
+	case *sql.Null[any]:
+		d.V = nil
 		d.Valid = false
 	case *[]byte:
 		*d = nil
@@ -590,6 +714,26 @@ func scanIP(src net.IP, pDst any) error {
 	return nil
 }
 
+func scanBool(src bool, pDst any) error {
+	switch dst := pDst.(type) {
+	case *bool:
+		*dst = src
+	case *string:
+		*dst = strconv.FormatBool(src)
+	case *sql.NullBool:
+		dst.Valid = true
+		dst.Bool = src
+	case *sql.Null[bool]:
+		dst.Valid = true
+		dst.V = src
+	case *driver.Value:
+		*dst = driver.Value(src)
+	default:
+		return ErrDatabaseScanType("BOOL", pDst)
+	}
+	return nil
+}
+
 func Unbox(val any) any {
 	switch v := val.(type) {
 	case *int:
@@ -636,6 +780,12 @@ func Unbox(val any) any {
 		} else {
 			return nil
 		}
+	case *sql.Null[bool]:
+		if v.Valid {
+			return v.V
+		} else {
+			return nil
+		}
 	case *sql.NullByte:
 		if v.Valid {
 			return v.Byte
@@ -648,9 +798,21 @@ func Unbox(val any) any {
 		} else {
 			return nil
 		}
+	case *sql.Null[int]:
+		if v.Valid {
+			return v.V
+		} else {
+			return nil
+		}
 	case *sql.NullInt16:
 		if v.Valid {
 			return v.Int16
+		} else {
+			return nil
+		}
+	case *sql.Null[int16]:
+		if v.Valid {
+			return v.V
 		} else {
 			return nil
 		}
@@ -666,6 +828,12 @@ func Unbox(val any) any {
 		} else {
 			return nil
 		}
+	case *sql.Null[int32]:
+		if v.Valid {
+			return v.V
+		} else {
+			return nil
+		}
 	case *sql.Null[uint32]:
 		if v.Valid {
 			return v.V
@@ -675,6 +843,12 @@ func Unbox(val any) any {
 	case *sql.NullInt64:
 		if v.Valid {
 			return v.Int64
+		} else {
+			return nil
+		}
+	case *sql.Null[int64]:
+		if v.Valid {
+			return v.V
 		} else {
 			return nil
 		}
@@ -696,9 +870,21 @@ func Unbox(val any) any {
 		} else {
 			return nil
 		}
+	case *sql.Null[string]:
+		if v.Valid {
+			return v.V
+		} else {
+			return nil
+		}
 	case *sql.NullTime:
 		if v.Valid {
 			return v.Time
+		} else {
+			return nil
+		}
+	case *sql.Null[time.Time]:
+		if v.Valid {
+			return v.V
 		} else {
 			return nil
 		}
@@ -727,6 +913,12 @@ func Unbox(val any) any {
 			return nil
 		}
 	case *sql.Null[JSONString]:
+		if v.Valid {
+			return v.V
+		} else {
+			return nil
+		}
+	case *sql.Null[Decimal]:
 		if v.Valid {
 			return v.V
 		} else {
