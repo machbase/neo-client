@@ -10,14 +10,15 @@ import (
 	"github.com/machbase/neo-client/api"
 )
 
-// cmi protocol version: 4.0.3
+// cmi protocol version: 4.0.4
 const (
 	cmiProtocolMajor = 4
 	cmiProtocolMinor = 0
-	cmiProtocolFix   = 3
+	cmiProtocolFix   = 4
 )
 
 const cmiV403MetadataVersion uint64 = (4 << 48) | 3
+const cmiV404GeneratedRowIDVersion uint64 = (4 << 48) | 4
 
 const (
 	cmiPacketMaxBody = 64 * 1024
@@ -64,16 +65,17 @@ const (
 	cmiRMessageID  = 0x00000011
 	cmiREMessageID = 0x00000012
 
-	cmiPStatementID   = 0x00000020
-	cmiPBindsID       = 0x00000021
-	cmiPIDID          = 0x00000022
-	cmiPRowsID        = 0x00000023
-	cmiPColumnsID     = 0x00000024
-	cmiPTableID       = 0x00000025
-	cmiPColNameID     = 0x00000026
-	cmiPColTypeID     = 0x00000027
-	cmiPParamTypeID   = 0x00000029
-	cmiPParamMetaV2ID = 0x0000002A
+	cmiPStatementID      = 0x00000020
+	cmiPBindsID          = 0x00000021
+	cmiPIDID             = 0x00000022
+	cmiPRowsID           = 0x00000023
+	cmiPColumnsID        = 0x00000024
+	cmiPTableID          = 0x00000025
+	cmiPColNameID        = 0x00000026
+	cmiPColTypeID        = 0x00000027
+	cmiPParamTypeID      = 0x00000029
+	cmiPParamMetaV2ID    = 0x0000002A
+	cmiPGeneratedRowIDID = 0x0000002C
 
 	cmiEParamID   = 0x00000031
 	cmiEParamV2ID = 0x00000033

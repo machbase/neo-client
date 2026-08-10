@@ -594,6 +594,11 @@ type Result struct {
 var _ driver.Result = (*Result)(nil)
 
 func (r *Result) LastInsertId() (int64, error) {
+	if r != nil && r.result != nil {
+		if provider, ok := r.result.(interface{ LastInsertId() (int64, error) }); ok {
+			return provider.LastInsertId()
+		}
+	}
 	return 0, api.ErrNotImplemented("LastInsertId")
 }
 

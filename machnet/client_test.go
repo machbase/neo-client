@@ -23,6 +23,49 @@ func buildStmtResponseBodyForTest(t *testing.T, stmtType StmtType, includeStmtTy
 	return append([]byte(nil), w.bodies[0]...)
 }
 
+func buildGeneratedRowIDResponseBodyForTest(t *testing.T, rowID uint64) []byte {
+	t.Helper()
+
+	w := newMarshalWriter(0, 0, 0)
+	w.addUInt64(cmiRResultID, cmiOKResult)
+	w.addUInt64(cmiPGeneratedRowIDID, rowID)
+	w.flushCurrent()
+	if len(w.bodies) != 1 {
+		t.Fatalf("unexpected response body count: got %d, want 1", len(w.bodies))
+	}
+	return append([]byte(nil), w.bodies[0]...)
+}
+
+func TestParseGeneratedRowIDVersionGateAndBits(t *testing.T) {
+	for _, value := range []uint64{0, 1, 0x8000000000000000, 0xfffffffffffffffe} {
+		body := buildGeneratedRowIDResponseBodyForTest(t, value)
+		modern, err := parseStmtResponseVersion(body, "INSERT", nil, true, true, true)
+		if err != nil {
+			t.Fatalf("parse modern generated ROWID %#x: %v", value, err)
+		}
+		if !modern.hasRowID || modern.rowID != value {
+			t.Fatalf("modern generated ROWID = (%#x, %v), want (%#x, true)", modern.rowID, modern.hasRowID, value)
+		}
+
+		legacy, err := parseStmtResponseVersion(body, "INSERT", nil, true, true, false)
+		if err != nil {
+			t.Fatalf("parse legacy generated ROWID %#x: %v", value, err)
+		}
+		if legacy.hasRowID || legacy.rowID != 0 {
+			t.Fatalf("legacy decoder exposed generated ROWID (%#x, %v)", legacy.rowID, legacy.hasRowID)
+		}
+	}
+
+	body := buildStmtResponseBodyForTest(t, 0, false)
+	result, err := parseStmtResponseVersion(body, "SELECT", nil, true, true, true)
+	if err != nil {
+		t.Fatalf("parse missing generated ROWID: %v", err)
+	}
+	if result.hasRowID {
+		t.Fatal("missing generated ROWID metadata was reported present")
+	}
+}
+
 func TestParseStmtResponsePreparedExecuteDoesNotInferStmtType(t *testing.T) {
 	body := buildStmtResponseBodyForTest(t, 0, false)
 

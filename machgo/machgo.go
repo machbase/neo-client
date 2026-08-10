@@ -641,6 +641,7 @@ func (c *Conn) exec(ctx context.Context, query string, args ...any) api.Result {
 			return ret
 		}
 		ret.rowCount, ret.err = stmt.handle.RowCount()
+		ret.rowID, ret.hasRowID = stmt.handle.GeneratedRowID()
 		if typ, err := stmt.handle.GetStmtType(); err != nil {
 			ret.err = err
 			return ret
@@ -674,6 +675,7 @@ func (c *Conn) exec(ctx context.Context, query string, args ...any) api.Result {
 	}
 	ret.err = stmt.execute()
 	ret.rowCount = stmt.rowCount
+	ret.rowID, ret.hasRowID = stmt.handle.GeneratedRowID()
 	if typ, err := stmt.handle.GetStmtType(); err != nil {
 		ret.err = err
 		return ret
@@ -832,6 +834,7 @@ func (pStmt *PreparedStmt) Exec(ctx context.Context, params ...any) api.Result {
 		return ret
 	}
 	ret.rowCount = pStmt.stmt.rowCount
+	ret.rowID, ret.hasRowID = pStmt.stmt.handle.GeneratedRowID()
 	if typ, err := pStmt.stmt.handle.GetStmtType(); err != nil {
 		ret.err = err
 		return ret
@@ -1185,6 +1188,8 @@ type Result struct {
 	err      error
 	rowCount int64
 	stmtType machnet.StmtType
+	rowID    uint64
+	hasRowID bool
 }
 
 var _ api.Result = (*Result)(nil)
@@ -1198,6 +1203,9 @@ func (rs *Result) Err() error {
 }
 
 func (rs *Result) LastInsertId() (int64, error) {
+	if rs != nil && rs.hasRowID {
+		return int64(rs.rowID), nil
+	}
 	return 0, api.ErrNotImplemented("LastInsertId")
 }
 

@@ -61,6 +61,8 @@ type StmtHandle struct {
 	sql       string
 	stmtType  StmtType
 	rowCount  int64
+	rowID     uint64
+	hasRowID  bool
 	columns   []ColumnMeta
 	paramDesc []ParamDesc
 	rows      [][]any
@@ -265,6 +267,8 @@ func (stmt *StmtHandle) Prepare(query string) error {
 	}
 	stmt.mu.Lock()
 	defer stmt.mu.Unlock()
+	stmt.rowID = 0
+	stmt.hasRowID = false
 	if stmt.closed || stmt.conn == nil || stmt.conn.native == nil {
 		err := makeClientErr("statement closed")
 		stmt.lastErr.setErr(err)
@@ -304,6 +308,8 @@ func (stmt *StmtHandle) Execute() error {
 	}
 	stmt.mu.Lock()
 	defer stmt.mu.Unlock()
+	stmt.rowID = 0
+	stmt.hasRowID = false
 	if stmt.closed || stmt.conn == nil || stmt.conn.native == nil {
 		err := makeClientErr("statement closed")
 		stmt.lastErr.setErr(err)
@@ -340,6 +346,8 @@ func (stmt *StmtHandle) Execute() error {
 		stmt.stmtType = res.stmtType
 	}
 	stmt.rowCount = res.rowCount
+	stmt.rowID = res.rowID
+	stmt.hasRowID = res.hasRowID
 	if len(res.columns) > 0 {
 		stmt.columns = res.columns
 	}
@@ -361,6 +369,8 @@ func (stmt *StmtHandle) ExecDirect(query string) error {
 	}
 	stmt.mu.Lock()
 	defer stmt.mu.Unlock()
+	stmt.rowID = 0
+	stmt.hasRowID = false
 	if stmt.closed || stmt.conn == nil || stmt.conn.native == nil {
 		err := makeClientErr("statement closed")
 		stmt.lastErr.setErr(err)
@@ -376,6 +386,8 @@ func (stmt *StmtHandle) ExecDirect(query string) error {
 	stmt.sql = query
 	stmt.stmtType = res.stmtType
 	stmt.rowCount = res.rowCount
+	stmt.rowID = res.rowID
+	stmt.hasRowID = res.hasRowID
 	stmt.columns = res.columns
 	stmt.paramDesc = res.paramDesc
 	stmt.rows = res.rows
@@ -396,6 +408,8 @@ func (stmt *StmtHandle) ExecuteClean() error {
 	stmt.rows = nil
 	stmt.rowPos = 0
 	stmt.fetchLast = true
+	stmt.rowID = 0
+	stmt.hasRowID = false
 	return nil
 }
 
@@ -444,6 +458,16 @@ func (stmt *StmtHandle) RowCount() (int64, error) {
 	stmt.mu.Lock()
 	defer stmt.mu.Unlock()
 	return stmt.rowCount, nil
+}
+
+// GeneratedRowID returns the generated ROWID for the most recent scalar INSERT.
+func (stmt *StmtHandle) GeneratedRowID() (uint64, bool) {
+	if stmt == nil {
+		return 0, false
+	}
+	stmt.mu.Lock()
+	defer stmt.mu.Unlock()
+	return stmt.rowID, stmt.hasRowID
 }
 
 func (stmt *StmtHandle) GetStmtType() (StmtType, error) {
