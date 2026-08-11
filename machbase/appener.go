@@ -99,6 +99,32 @@ func (ap *Appender) Close() (successCount int64, failCount int64, err error) {
 	return
 }
 
+func (ap *Appender) TableType() (api.TableType, error) {
+	if ap.raw == nil {
+		return -1, errors.New("appender is not connected")
+	}
+	return ap.raw.TableType(), nil
+}
+
+func (ap *Appender) TableName() string {
+	if ap.raw == nil {
+		return ""
+	}
+	return ap.raw.TableName()
+}
+
+// ApiColumns() returns the columns of the appender in api.Columns format
+// This is just for the compatibility with the api.Appender interface,
+// and it is not recommended to use this method directly.
+// Use Columns() and ColumnTypes() method instead.
+// This will be removed in the future.
+func (ap *Appender) ApiColumns() (api.Columns, error) {
+	if ap.raw == nil {
+		return nil, errors.New("appender is not connected")
+	}
+	return ap.raw.Columns()
+}
+
 func (ap *Appender) Columns() ([]string, error) {
 	if ap.columns != nil {
 		return ap.columns, nil

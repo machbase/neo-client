@@ -12,13 +12,13 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"flag"
 	"fmt"
 	"net"
-	"strconv"
+	"strings"
 
-	"github.com/machbase/neo-client/api"
-	"github.com/machbase/neo-client/machgo"
+	_ "github.com/machbase/neo-client"
 )
 
 func main() {
@@ -33,42 +33,31 @@ func main() {
 	flag.StringVar(&proxyUser, "as", proxyUser, "proxy user, connect as other user (this option only works when login user is sys)")
 	flag.Parse()
 
-	host, portStr, err := net.SplitHostPort(server)
-	if err != nil {
-		panic(err)
-	}
-	port, err := strconv.Atoi(portStr)
+	host, port, err := net.SplitHostPort(server)
 	if err != nil {
 		panic(err)
 	}
 
-	db, err := machgo.NewDatabase(&machgo.Config{
-		Host:         host,
-		Port:         port,
-		MaxOpenConn:  -1,
-		MaxOpenQuery: -1,
-	})
+	fields := []string{}
+	fields = append(fields, "host="+host)
+	fields = append(fields, "port="+port)
+	fields = append(fields, "user="+user)
+	fields = append(fields, "auth_key_file="+keyFile)
+
+	db, err := sql.Open("machbase", strings.Join(fields, ";"))
 	if err != nil {
 		panic(err)
 	}
 	defer db.Close()
 
-	key, err := machgo.LoadPrivateKeyFromFile(keyFile)
-	if err != nil {
-		panic(err)
-	}
-	opts := []api.ConnectOption{api.WithAuthKey(user, key)}
-	if proxyUser != "" {
-		opts = append(opts, api.WithProxyUser(proxyUser))
-	}
 	ctx := context.Background()
-	conn, err := db.Connect(ctx, opts...)
+	conn, err := db.Conn(ctx)
 	if err != nil {
 		panic(err)
 	}
 	defer conn.Close()
 
-	row := conn.QueryRow(ctx, "select 1")
+	row := conn.QueryRowContext(ctx, "select 1")
 	if row.Err() != nil {
 		panic(row.Err())
 	}

@@ -303,6 +303,49 @@ func (typ ColumnType) String() string {
 	}
 }
 
+func ParseColumnType(typeName string) ColumnType {
+	switch strings.ToLower(typeName) {
+	case COLUMN_TYPE_SHORT:
+		return ColumnTypeShort
+	case COLUMN_TYPE_USHORT:
+		return ColumnTypeUShort
+	case COLUMN_TYPE_INTEGER:
+		return ColumnTypeInteger
+	case COLUMN_TYPE_UINTEGER:
+		return ColumnTypeUInteger
+	case COLUMN_TYPE_LONG:
+		return ColumnTypeLong
+	case COLUMN_TYPE_ULONG:
+		return ColumnTypeULong
+	case COLUMN_TYPE_FLOAT:
+		return ColumnTypeFloat
+	case COLUMN_TYPE_DOUBLE:
+		return ColumnTypeDouble
+	case COLUMN_TYPE_VARCHAR:
+		return ColumnTypeVarchar
+	case COLUMN_TYPE_TEXT:
+		return ColumnTypeText
+	case COLUMN_TYPE_CLOB:
+		return ColumnTypeClob
+	case COLUMN_TYPE_BLOB:
+		return ColumnTypeBlob
+	case COLUMN_TYPE_BINARY:
+		return ColumnTypeBinary
+	case COLUMN_TYPE_DATETIME:
+		return ColumnTypeDatetime
+	case COLUMN_TYPE_IPV4:
+		return ColumnTypeIPv4
+	case COLUMN_TYPE_IPV6:
+		return ColumnTypeIPv6
+	case COLUMN_TYPE_JSON:
+		return ColumnTypeJSON
+	case COLUMN_TYPE_DECIMAL:
+		return ColumnTypeDecimal
+	default:
+		return ColumnTypeUnknown
+	}
+}
+
 func (typ ColumnType) ToSqlType() SqlType {
 	switch typ {
 	case ColumnTypeShort:
