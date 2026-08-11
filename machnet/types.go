@@ -10,15 +10,15 @@ import (
 	"github.com/machbase/neo-client/api"
 )
 
-// cmi protocol version: 4.0.4
+// cmi protocol version: 4.0.3
 const (
 	cmiProtocolMajor = 4
 	cmiProtocolMinor = 0
-	cmiProtocolFix   = 4
+	cmiProtocolFix   = 3
 )
 
 const cmiV403MetadataVersion uint64 = (4 << 48) | 3
-const cmiV404GeneratedRowIDVersion uint64 = (4 << 48) | 4
+const cmiGeneratedRowIDVersion uint64 = (4 << 48) | 3
 
 const (
 	cmiPacketMaxBody = 64 * 1024

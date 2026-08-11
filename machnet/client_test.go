@@ -66,6 +66,22 @@ func TestParseGeneratedRowIDVersionGateAndBits(t *testing.T) {
 	}
 }
 
+func TestGeneratedRowIDVersionGate(t *testing.T) {
+	if got := protocolVersion(); got != cmiGeneratedRowIDVersion {
+		t.Fatalf("client protocol version = %#x, want %#x", got, cmiGeneratedRowIDVersion)
+	}
+
+	legacy := &NativeConn{serverVersion: (4 << 48) | 2}
+	if legacy.supportsGeneratedRowID() {
+		t.Fatal("CMI 4.0.2 server must not advertise generated ROWID")
+	}
+
+	current := &NativeConn{serverVersion: cmiGeneratedRowIDVersion}
+	if !current.supportsGeneratedRowID() {
+		t.Fatal("CMI 4.0.3 server must advertise generated ROWID")
+	}
+}
+
 func TestParseStmtResponsePreparedExecuteDoesNotInferStmtType(t *testing.T) {
 	body := buildStmtResponseBodyForTest(t, 0, false)
 
