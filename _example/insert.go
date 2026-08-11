@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"net"
-	"strconv"
 	"strings"
 	"time"
 
@@ -25,21 +24,18 @@ func main() {
 	flag.StringVar(&password, "p", password, "password")
 	flag.Parse()
 
-	host, portStr, err := net.SplitHostPort(server)
-	if err != nil {
-		panic(err)
-	}
-	port, err := strconv.Atoi(portStr)
+	host, port, err := net.SplitHostPort(server)
 	if err != nil {
 		panic(err)
 	}
 
 	fields := []string{}
-	fields = append(fields, fmt.Sprintf("server=tcp://%s:%s@%s:%d", user, password, host, port))
-	fields = append(fields, "fetch_rows=777")
-	fields = append(fields, "statement_cache=off")
-	fields = append(fields, "io_metrics=true")
-	//fields = append(fields, "alternative_servers=127.0.0.2:5656")
+	fields = append(fields, fmt.Sprintf("server=tcp://%s:%s@%s:%s", user, password, host, port))
+	// other options
+	// fields = append(fields, "fetch_rows=777")
+	// fields = append(fields, "statement_cache=off")
+	// fields = append(fields, "io_metrics=true")
+	// fields = append(fields, "alternative_servers=127.0.0.2:5656")
 
 	db, err := sql.Open("machbase", strings.Join(fields, ";"))
 	if err != nil {
@@ -49,6 +45,14 @@ func main() {
 
 	ctx := context.Background()
 
+	_, err = db.ExecContext(ctx, `CREATE TAG TABLE IF NOT EXISTS EXAMPLE (
+		NAME   VARCHAR(100)  PRIMARY KEY,
+		TIME   DATETIME      BASE TIME,
+		VALUE  DOUBLE
+	)`)
+	if err != nil {
+		panic(err)
+	}
 	ts := time.Now()
 	for i := 0; i < 10; i++ {
 		// NAME, TIME, VALUE

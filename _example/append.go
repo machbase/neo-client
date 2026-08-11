@@ -3,14 +3,13 @@
 package main
 
 import (
-	"context"
 	"flag"
+	"fmt"
 	"net"
-	"strconv"
+	"strings"
 	"time"
 
-	"github.com/machbase/neo-client/api"
-	"github.com/machbase/neo-client/machgo"
+	client "github.com/machbase/neo-client"
 )
 
 var server = "127.0.0.1:5656"
@@ -23,36 +22,39 @@ func main() {
 	flag.StringVar(&password, "p", password, "password")
 	flag.Parse()
 
-	host, portStr, err := net.SplitHostPort(server)
+	host, port, err := net.SplitHostPort(server)
 	if err != nil {
 		panic(err)
 	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		panic(err)
-	}
-	db, err := machgo.NewDatabase(&machgo.Config{
-		Host:         host,
-		Port:         port,
-		MaxOpenConn:  -1,
-		MaxOpenQuery: -1,
-	})
-	if err != nil {
-		panic(err)
-	}
-	defer db.Close()
+	fields := []string{}
+	fields = append(fields, fmt.Sprintf("server=tcp://%s:%s@%s:%s", user, password, host, port))
+	// other options
+	// fields = append(fields, "fetch_rows=777")
+	// fields = append(fields, "statement_cache=off")
+	// fields = append(fields, "io_metrics=true")
+	// fields = append(fields, "alternative_servers=127.0.0.2:5656")
 
-	ctx := context.Background()
-	conn, err := db.Connect(ctx, api.WithPassword(user, password))
-	if err != nil {
-		panic(err)
-	}
-	defer conn.Close()
+	// dsn is the data source name for connecting to the database.
+	dsn := strings.Join(fields, ";")
 
-	appender, err := conn.Appender(ctx, "EXAMPLE")
-	if err != nil {
+	appender := client.NewAppender(nil)
+	// The columns are optional, if not specified, the columns will be retrieved from the table.
+	// So, the below example is equivalent to `appender.Connect(dsn, "EXAMPLE")`
+	if err := appender.Connect(dsn, "EXAMPLE", "NAME", "TIME", "VALUE"); err != nil {
 		panic(err)
 	}
+	defer func() {
+		successCount, failCount, err := appender.Close()
+		if err != nil {
+			panic(err)
+		}
+		println("Append finished. Success:", successCount, "Fail:", failCount)
+	}()
+
+	cols, _ := appender.Columns()
+	typs, _ := appender.ColumnTypes()
+	println("Columns:", strings.Join(cols, ", "))
+	println("Column Types:", strings.Join(typs, ", "))
 
 	ts := time.Now()
 	for i := 0; i < 10; i++ {
@@ -66,9 +68,4 @@ func main() {
 			panic(err)
 		}
 	}
-	success, fail, err := appender.Close()
-	if err != nil {
-		panic(err)
-	}
-	println("Append finished. Success:", success, "Fail:", fail)
 }

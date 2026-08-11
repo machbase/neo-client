@@ -4,13 +4,13 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"flag"
 	"fmt"
 	"net"
-	"strconv"
+	"strings"
 
-	"github.com/machbase/neo-client/api"
-	"github.com/machbase/neo-client/machgo"
+	_ "github.com/machbase/neo-client"
 )
 
 var server = "127.0.0.1:5656"
@@ -23,33 +23,36 @@ func main() {
 	flag.StringVar(&password, "p", password, "password")
 	flag.Parse()
 
-	host, portStr, err := net.SplitHostPort(server)
+	host, port, err := net.SplitHostPort(server)
 	if err != nil {
 		panic(err)
 	}
-	port, err := strconv.Atoi(portStr)
+
+	fields := []string{}
+	fields = append(fields, "host="+host)
+	fields = append(fields, "port="+port)
+	fields = append(fields, "user="+user)
+	fields = append(fields, "password="+password)
+	// other options
+	// fields = append(fields, "fetch_rows=777")
+	// fields = append(fields, "statement_cache=off")
+	// fields = append(fields, "io_metrics=true")
+	// fields = append(fields, "alternative_servers=other_host:port")
+
+	pool, err := sql.Open("machbase", fmt.Sprintf("%s", strings.Join(fields, "; ")))
 	if err != nil {
 		panic(err)
 	}
-	db, err := machgo.NewDatabase(&machgo.Config{
-		Host:         host,
-		Port:         port,
-		MaxOpenConn:  -1,
-		MaxOpenQuery: -1,
-	})
-	if err != nil {
-		panic(err)
-	}
-	defer db.Close()
+	defer pool.Close()
 
 	ctx := context.Background()
-	conn, err := db.Connect(ctx, api.WithPassword(user, password))
+	conn, err := pool.Conn(ctx)
 	if err != nil {
 		panic(err)
 	}
 	defer conn.Close()
 
-	rows, err := conn.Query(ctx, `SELECT * FROM M$SYS_TABLES ORDER BY NAME`)
+	rows, err := conn.QueryContext(ctx, `SELECT * FROM M$SYS_TABLES ORDER BY NAME`)
 	if err != nil {
 		panic(err)
 	}
