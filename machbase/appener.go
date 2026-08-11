@@ -20,16 +20,12 @@ type Appender struct {
 	columnTypes []string
 }
 
-func NewAppender(ctx context.Context) *Appender {
+func (ap *Appender) Connect(ctx context.Context, dsn string, table string, columns ...string) error {
 	if ctx == nil {
-		ctx = context.Background()
+		ap.ctx = context.Background()
+	} else {
+		ap.ctx = ctx
 	}
-	return &Appender{
-		ctx: ctx,
-	}
-}
-
-func (ap *Appender) Connect(dsn string, table string, columns ...string) error {
 	cfg, err := ParseDSN(dsn)
 	if err != nil {
 		return err
