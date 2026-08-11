@@ -47,38 +47,28 @@ This is the lower-level client implementation used internally by `machgo`. Most 
 
 ### Connect and Query
 
-The following example connects to a server and reads from the `M$SYS_TABLES` system table.
+The following example uses the standard `database/sql` package and reads from the `M$SYS_TABLES` system table.
 
 ```go
 package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
-	"github.com/machbase/neo-client/api"
-	"github.com/machbase/neo-client/machgo"
+	_ "github.com/machbase/neo-client"
 )
 
 func main() {
-	db, err := machgo.NewDatabase(&machgo.Config{
-		Host:        "127.0.0.1",
-		Port:        5656,
-		MaxOpenConn: -1,
-	})
+	db, err := sql.Open("machbase", "server=tcp://sys:manager@127.0.0.1:5656")
 	if err != nil {
 		panic(err)
 	}
 	defer db.Close()
 
 	ctx := context.Background()
-	conn, err := db.Connect(ctx, api.WithPassword("sys", "manager"))
-	if err != nil {
-		panic(err)
-	}
-	defer conn.Close()
-
-	rows, err := conn.Query(ctx, `SELECT NAME, ID, TYPE FROM M$SYS_TABLES ORDER BY NAME`)
+	rows, err := db.QueryContext(ctx, `SELECT NAME, ID, TYPE FROM M$SYS_TABLES ORDER BY NAME`)
 	if err != nil {
 		panic(err)
 	}
@@ -87,7 +77,7 @@ func main() {
 	for rows.Next() {
 		var (
 			name string
-			id   int64
+			id          int64
 			typ  int
 		)
 		if err := rows.Scan(&name, &id, &typ); err != nil {
@@ -102,73 +92,75 @@ func main() {
 }
 ```
 
-### Append Rows
+### Create Table and Insert Rows
 
-The append example assumes a tag table named `EXAMPLE` exists with `NAME`, `TIME`, and `VALUE` columns.
+The following example uses `database/sql` to create a tag table and insert records with `ExecContext`.
 
 ```sql
 CREATE TAG TABLE IF NOT EXISTS example (
     name VARCHAR(100) PRIMARY KEY,
-    time DATETIME BASETIME,
+	time DATETIME BASE TIME,
     value DOUBLE
 );
 ```
 
-Then append rows with `conn.Appender`:
+Then insert rows:
 
 ```go
 package main
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"time"
 
-	"github.com/machbase/neo-client/api"
-	"github.com/machbase/neo-client/machgo"
+	_ "github.com/machbase/neo-client"
 )
 
 func main() {
-	db, err := machgo.NewDatabase(&machgo.Config{
-		Host:        "127.0.0.1",
-		Port:        5656,
-		MaxOpenConn: -1,
-	})
+	dsn := "server=tcp://sys:manager@127.0.0.1:5656"
+
+	db, err := sql.Open("machbase", dsn)
 	if err != nil {
 		panic(err)
 	}
 	defer db.Close()
 
 	ctx := context.Background()
-	conn, err := db.Connect(ctx, api.WithPassword("sys", "manager"))
-	if err != nil {
-		panic(err)
-	}
-	defer conn.Close()
 
-	appender, err := conn.Appender(ctx, "EXAMPLE")
+	_, err = db.ExecContext(ctx, `CREATE TAG TABLE IF NOT EXISTS EXAMPLE (
+		NAME   VARCHAR(100)  PRIMARY KEY,
+		TIME   DATETIME      BASE TIME,
+		VALUE  DOUBLE
+	)`)
 	if err != nil {
 		panic(err)
 	}
 
 	ts := time.Now()
 	for i := 0; i < 10; i++ {
-		if err := appender.Append(
+		rec := []any{
 			"example-client",
 			ts.Add(time.Duration(i)*time.Second),
 			3.14*float64(i),
-		); err != nil {
+		}
+		result, err := db.ExecContext(ctx, `INSERT INTO EXAMPLE VALUES (?, ?, ?)`, rec...)
+		if err != nil {
 			panic(err)
 		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println("Rows affected:", affected)
 	}
-
-	success, fail, err := appender.Close()
-	if err != nil {
-		panic(err)
-	}
-
-	println("Append finished.", "success:", success, "fail:", fail)
 }
 ```
+
+### Append Rows with Appender API
+
+For high-throughput time-series ingestion, you can use the dedicated appender API shown in `_example/append.go`.
 
 ### Use the Standard `database/sql` Driver
 
@@ -269,12 +261,12 @@ amount, err := api.ParseDecimal("1234567890.125", 30, 3)
 if err != nil {
 	panic(err)
 }
-result := conn.Exec(ctx,
+result, err := conn.ExecContext(ctx,
 	"INSERT INTO payments(id, amount) VALUES (:id, :amount)",
 	api.Named("id", int32(1)),
 	api.Named("amount", amount),
 )
-if err := result.Err(); err != nil {
+if err != nil {
 	panic(err)
 }
 ```
@@ -287,7 +279,7 @@ See [Machbase 8.6.0 Go client guide](docs/machbase-860-upgrade.md) for Transacti
 
 ## Running the Included Examples
 
-Four runnable examples are included under `_example/`.
+Runnable examples are included under `_example/`.
 
 Run the query example:
 
@@ -301,29 +293,24 @@ Run the append example:
 go run ./_example/append.go -s 127.0.0.1:5656 -u sys -p manager
 ```
 
-Run the standard driver query example:
+Run the insert example:
 
 ```sh
-go run ./_example/driver_query.go -s 127.0.0.1:5656 -u sys -p manager
+go run ./_example/insert.go -s 127.0.0.1:5656 -u sys -p manager
 ```
 
-Run the standard driver insert example:
+## Common DSN Options
 
-```sh
-go run ./_example/driver_insert.go -s 127.0.0.1:5656 -u sys -p manager
-```
-
-## Common Connection Options
-
-- `api.WithPassword(user, password)`: connect with explicit credentials
-- `api.WithDatabase(database)`: select the initial database for the connection
-- `api.WithFetchRows(n)`: override the default fetch batch size for a connection
-- `api.WithStatementCache(mode)`: control query statement reuse
-- `api.WithIOMetrics(true)`: enable I/O metrics collection on the connection
+- `server=tcp://user:password@host:port`: full server URL
+- `database=DB_NAME` (or URL path): initial database for each physical connection
+- `fetch_rows=777`: override fetch batch size
+- `statement_cache=auto|on|off`: control statement reuse
+- `io_metrics=true|false`: enable or disable I/O metrics
+- `alternative_servers=host1:port1,host2:port2`: failover server list
 
 ## Notes
 
-- Always close `Rows`, `Stmt`, `Appender`, and `Conn` objects after use.
+- Always close `Rows`, `Stmt`, `sql.Conn`, and `sql.DB` objects after use.
 - `Appender.Close()` returns success and failure counts for the append session.
 - For regular application usage, prefer `machgo` over importing `machnet` directly.
 - Use `machbase` when you need compatibility with `database/sql` and its connection pooling.
@@ -332,9 +319,8 @@ go run ./_example/driver_insert.go -s 127.0.0.1:5656 -u sys -p manager
 ## See Also
 
 - [_example/query.go](./_example/query.go)
+- [_example/insert.go](./_example/insert.go)
 - [_example/append.go](./_example/append.go)
-- [_example/driver_query.go](./_example/driver_query.go)
-- [_example/driver_insert.go](./_example/driver_insert.go)
-- [Machbase 8.6.0 Go client 사용 안내서](./docs/machbase-860-upgrade.md)
-- [Machbase 8.6.0 native 전체 예제](./docs/examples/machbase860-native/main.go)
-- [Machbase 8.6.0 database/sql 전체 예제](./docs/examples/machbase860-database-sql/main.go)
+- [Machbase 8.6.0 Go client](./docs/machbase-860-upgrade.md)
+- [Machbase 8.6.0 native full example](./docs/examples/machbase860-native/main.go)
+- [Machbase 8.6.0 database/sql full example](./docs/examples/machbase860-database-sql/main.go)
