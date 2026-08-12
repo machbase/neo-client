@@ -25,12 +25,8 @@ password manager
 
 실행 가능한 전체 예제는 다음 위치에 있다.
 
-- [native API 예제](examples/machbase860-native/main.go)
-- [`database/sql` 예제](examples/machbase860-database-sql/main.go)
-
 ```bash
-go run ./docs/examples/machbase860-native
-go run ./docs/examples/machbase860-database-sql
+go run ../_docs/_example/v860.go
 ```
 
 ## 2. API 선택
@@ -46,28 +42,7 @@ go run ./docs/examples/machbase860-database-sql
 
 ## 3. 연결
 
-### 3.1 native API
-
-```go
-ctx := context.Background()
-
-database, err := machgo.NewDatabase(&machgo.Config{
-    Host: "127.0.0.1",
-    Port: 5656,
-})
-if err != nil {
-    return err
-}
-defer database.Close()
-
-conn, err := database.Connect(ctx, api.WithPassword("sys", "manager"))
-if err != nil {
-    return err
-}
-defer conn.Close()
-```
-
-### 3.2 database/sql
+### 3.1 database/sql
 
 root package를 blank import하면 `machbase` driver가 등록된다.
 
@@ -95,7 +70,7 @@ if err := db.PingContext(ctx); err != nil {
 ## 4. Transaction table
 
 ```go
-result := conn.Exec(ctx, `CREATE TRANSACTION TABLE ACCOUNT (
+result := conn.Exec(ctx, `CREATE TABLE ACCOUNT (
     ID      INTEGER PRIMARY KEY,
     AMOUNT  DECIMAL(30,12),
     NOTE    VARCHAR(80)

@@ -19,18 +19,18 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/machbase/neo-client/machgo"
+	"github.com/machbase/neo-client/api"
 )
 
 func main() {
 	outDir := "./"
-	prefix := machgo.DefaultAuthKeyPrefix
+	prefix := api.DefaultAuthKeyPrefix
 
 	flag.StringVar(&outDir, "out", outDir, "output directory")
 	flag.StringVar(&prefix, "name", prefix, "output file name prefix")
 	flag.Parse()
 
-	pair, err := machgo.GenerateAuthKeyPair()
+	pair, err := api.GenerateAuthKeyPair()
 	if err != nil {
 		panic(err)
 	}

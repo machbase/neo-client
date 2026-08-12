@@ -321,6 +321,5 @@ go run ./_example/insert.go -s 127.0.0.1:5656 -u sys -p manager
 - [_example/query.go](./_example/query.go)
 - [_example/insert.go](./_example/insert.go)
 - [_example/append.go](./_example/append.go)
-- [Machbase 8.6.0 Go client](./docs/machbase-860-upgrade.md)
-- [Machbase 8.6.0 native full example](./docs/examples/machbase860-native/main.go)
-- [Machbase 8.6.0 database/sql full example](./docs/examples/machbase860-database-sql/main.go)
+- [_example/v860.go v8.6.x example](./_example/v860.go)
+- [Machbase 8.6.0 Changes](./docs/machbase-860-upgrade.md)
