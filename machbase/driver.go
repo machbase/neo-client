@@ -184,9 +184,9 @@ func (cn *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 		var key crypto.PrivateKey
 		var err error
 		if strings.TrimSpace(cn.cfg.AuthKeyPEM) != "" {
-			key, err = machgo.LoadPrivateKeyFromPEM([]byte(cn.cfg.AuthKeyPEM))
+			key, err = api.LoadPrivateKeyFromPEM([]byte(cn.cfg.AuthKeyPEM))
 		} else {
-			key, err = machgo.LoadPrivateKeyFromFile(cn.cfg.AuthKeyFile)
+			key, err = api.LoadPrivateKeyFromFile(cn.cfg.AuthKeyFile)
 		}
 		if err != nil {
 			return nil, err

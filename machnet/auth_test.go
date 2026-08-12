@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/machbase/neo-client/api"
 )
 
 func readPrivateKeyPEM(t *testing.T, path string) []byte {
@@ -106,7 +108,7 @@ func TestFinalizeAuthConnectOptions(t *testing.T) {
 	t.Run("auto challenge detects rsa scheme", func(t *testing.T) {
 		dir := t.TempDir()
 		keyFile := writeRSAPrivateKeyPEM(t, dir)
-		key, err := LoadPrivateKeyFromFile(keyFile)
+		key, err := api.LoadPrivateKeyFromFile(keyFile)
 		if err != nil {
 			t.Fatalf("ReadFile(%s) error = %v", keyFile, err)
 		}

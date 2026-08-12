@@ -112,7 +112,7 @@ func (env *EnvHandle) Connect(connStr string, key crypto.PrivateKey) (*ConnHandl
 		return nil, err
 	}
 	if key == nil && authKeyFile != "" {
-		key, err = LoadPrivateKeyFromFile(authKeyFile)
+		key, err = api.LoadPrivateKeyFromFile(authKeyFile)
 		if err != nil {
 			env.lastErr.setErr(err)
 			return nil, err

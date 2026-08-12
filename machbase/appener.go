@@ -41,9 +41,9 @@ func (ap *Appender) Connect(ctx context.Context, dsn string, table string, colum
 		var key crypto.PrivateKey
 		var err error
 		if strings.TrimSpace(cfg.AuthKeyPEM) != "" {
-			key, err = machgo.LoadPrivateKeyFromPEM([]byte(cfg.AuthKeyPEM))
+			key, err = api.LoadPrivateKeyFromPEM([]byte(cfg.AuthKeyPEM))
 		} else {
-			key, err = machgo.LoadPrivateKeyFromFile(cfg.AuthKeyFile)
+			key, err = api.LoadPrivateKeyFromFile(cfg.AuthKeyFile)
 		}
 		if err != nil {
 			return err

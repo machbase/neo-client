@@ -1,4 +1,4 @@
-package machgo
+package api
 
 import (
 	"context"
@@ -15,9 +15,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/machbase/neo-client/api"
-	"github.com/machbase/neo-client/machnet"
 )
 
 const DefaultAuthKeyPrefix = "machbase_authkey_p256"
@@ -159,7 +156,36 @@ func (pair *AuthKeyPair) PrivateKey() (crypto.PrivateKey, error) {
 }
 
 func LoadPrivateKeyFromFile(keyFile string) (crypto.PrivateKey, error) {
-	return machnet.LoadPrivateKeyFromFile(keyFile)
+	privateKeyPEM, err := os.ReadFile(keyFile)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(privateKeyPEM)
+	if block == nil {
+		return nil, fmt.Errorf("invalid AUTH_KEY")
+	}
+	switch block.Type {
+	case "PRIVATE KEY":
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		return key, nil
+	case "RSA PRIVATE KEY":
+		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		return key, nil
+	case "EC PRIVATE KEY":
+		key, err := x509.ParseECPrivateKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		return key, nil
+	default:
+		return nil, fmt.Errorf("invalid auth key type %s", block.Type)
+	}
 }
 
 func LoadPrivateKeyFromPEM(privateKeyPEM []byte) (crypto.PrivateKey, error) {
@@ -199,7 +225,7 @@ type RegisteredAuthKey struct {
 	Activated int
 }
 
-func GetRegisteredAuthKey(ctx context.Context, conn api.Conn, user string, pubKey []byte) (RegisteredAuthKey, error) {
+func GetRegisteredAuthKey(ctx context.Context, conn Conn, user string, pubKey []byte) (RegisteredAuthKey, error) {
 	//var pubKeyStr = strings.TrimSpace(string(pubKey))
 	var ret RegisteredAuthKey
 	row := conn.QueryRow(ctx, `SELECT 
@@ -226,7 +252,7 @@ func GetRegisteredAuthKey(ctx context.Context, conn api.Conn, user string, pubKe
 }
 
 // RegisterAuthKey registers the public key as an auth key of the user, and returns the key ID.
-func RegisterAuthKey(ctx context.Context, sysConn api.Conn, user string, pubKey []byte, comment string) (int, error) {
+func RegisterAuthKey(ctx context.Context, sysConn Conn, user string, pubKey []byte, comment string) (int, error) {
 	user = strings.ToUpper(user)
 	pubKeyStr := strings.TrimSpace(string(pubKey))
 	comment = strings.ReplaceAll(comment, `'`, `''`)

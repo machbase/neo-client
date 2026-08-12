@@ -232,36 +232,3 @@ func readChallengeFields(units map[uint32][]MarshalUnit) ([]byte, uint32, error)
 	copy(nonce, nonceUnit.data)
 	return nonce, uint32(validMs), nil
 }
-
-func LoadPrivateKeyFromFile(keyFile string) (crypto.PrivateKey, error) {
-	privateKeyPEM, err := os.ReadFile(keyFile)
-	if err != nil {
-		return nil, err
-	}
-	block, _ := pem.Decode(privateKeyPEM)
-	if block == nil {
-		return nil, fmt.Errorf("invalid AUTH_KEY")
-	}
-	switch block.Type {
-	case "PRIVATE KEY":
-		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-		if err != nil {
-			return nil, err
-		}
-		return key, nil
-	case "RSA PRIVATE KEY":
-		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-		if err != nil {
-			return nil, err
-		}
-		return key, nil
-	case "EC PRIVATE KEY":
-		key, err := x509.ParseECPrivateKey(block.Bytes)
-		if err != nil {
-			return nil, err
-		}
-		return key, nil
-	default:
-		return nil, fmt.Errorf("invalid auth key type %s", block.Type)
-	}
-}

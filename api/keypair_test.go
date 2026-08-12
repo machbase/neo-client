@@ -1,4 +1,4 @@
-package machgo
+package api
 
 import (
 	"crypto/ecdsa"
