@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,31 +24,6 @@ const (
 	defaultFetchRows                = 1000
 )
 
-type ClientConfig struct {
-	Host string
-	Port int
-
-	AlternativeHost string
-	AlternativePort int
-
-	MaxOpenConn        int     // deprecated
-	MaxOpenConnFactor  float64 // deprecated
-	MaxOpenQuery       int     // deprecated
-	MaxOpenQueryFactor float64 // deprecated
-
-	// StatementCache controls the statement cache mode for the connection.
-	// Statement cache can improve performance by reusing prepared statements for identical queries.
-	// It can be set for each connection using the ConnectOptionStatementCache option in the Connect method.
-	StatementCache api.StatementCacheMode
-
-	// FetchRows is used to the default fetch rows if the option is not specified in Connect options.
-	// If the value is not specified or less than or equal to 0, the defaultFetchRows is used.
-	FetchRows int64
-
-	// unused
-	ConType int
-}
-
 type ClientDatabase struct {
 	handle *machnet.EnvHandle
 	host   string
@@ -57,16 +32,11 @@ type ClientDatabase struct {
 	alternativeHost string
 	alternativePort int
 
-	maxConnsMutex sync.RWMutex
-	maxConnsChan  chan struct{}
-
-	statementCache api.StatementCacheMode
+	statementCache StatementCacheMode
 	fetchRows      int64
 }
 
-var _ api.Database = (*ClientDatabase)(nil)
-
-func NewDatabase(conf *ClientConfig) (*ClientDatabase, error) {
+func NewDatabase(conf *Config) (*ClientDatabase, error) {
 	var handle *machnet.EnvHandle
 	if h, err := machnet.Initialize(); err != nil {
 		return nil, err
@@ -85,8 +55,6 @@ func NewDatabase(conf *ClientConfig) (*ClientDatabase, error) {
 	if ret.fetchRows <= 0 {
 		ret.fetchRows = defaultFetchRows
 	}
-
-	ret.SetMaxOpenConns(-1)
 	return ret, nil
 }
 
@@ -120,51 +88,9 @@ func (db *ClientDatabase) ErrorOf(cause error) error {
 	}
 }
 
-// MaxOpenConns returns the maximum number of open connections
-// and the current remains capacity.
-func (db *ClientDatabase) MaxOpenConns() (int, int) {
-	db.maxConnsMutex.RLock()
-	defer db.maxConnsMutex.RUnlock()
-	if db.maxConnsChan == nil {
-		// unlimited
-		return -1, -1
-	}
-	limit := cap(db.maxConnsChan)
-	remains := len(db.maxConnsChan)
-	return limit, remains
-}
-
-func (db *ClientDatabase) SetMaxOpenConns(desiredMaxOpenConns int) {
-	if desiredMaxOpenConns < 0 {
-		desiredMaxOpenConns = -1
-	}
-	if desiredMaxOpenConns == 0 {
-		desiredMaxOpenConns = int(float64(runtime.NumCPU()) * 1.5)
-	}
-
-	currentCap := cap(db.maxConnsChan)
-	if currentCap == desiredMaxOpenConns {
-		return
-	}
-
-	var newChan chan struct{}
-	db.maxConnsMutex.Lock()
-	defer func() {
-		db.maxConnsChan = newChan
-		db.maxConnsMutex.Unlock()
-	}()
-
-	if desiredMaxOpenConns > 0 {
-		newChan = make(chan struct{}, desiredMaxOpenConns)
-		for i := 0; i < desiredMaxOpenConns; i++ {
-			newChan <- struct{}{}
-		}
-	}
-}
-
 func (db *ClientDatabase) Ping(ctx context.Context) (time.Duration, error) {
 	tick := time.Now()
-	if conn, err := db.Connect(ctx, api.WithPassword("sys", "manager")); err != nil {
+	if conn, err := db.Connect(ctx, "user=sys;password=manager"); err != nil {
 		if !strings.Contains(err.Error(), "Invalid username/password") {
 			return time.Since(tick), err
 		}
@@ -177,7 +103,8 @@ func (db *ClientDatabase) Ping(ctx context.Context) (time.Duration, error) {
 }
 
 func (db *ClientDatabase) UserAuth(ctx context.Context, user, password string) (bool, string, error) {
-	conn, err := db.Connect(ctx, api.WithPassword(user, password))
+	cfg := Config{User: user, Password: password}
+	conn, err := db.ConnectConfig(ctx, &cfg)
 	if err != nil {
 		return false, "invalid username or password", nil
 	}
@@ -208,68 +135,75 @@ func (db *ClientDatabase) connectionString(user string, password string, fetchRo
 	return strings.Join(entries, ";")
 }
 
-func (db *ClientDatabase) Connect(ctx context.Context, opts ...api.ConnectOption) (api.Conn, error) {
-	var user, password string
-	var stmtReuse = db.statementCache
-	var fetchRows = db.fetchRows
-	var enabledIOMetrics bool = false
-	var authMode string
-	var authKey crypto.PrivateKey = nil
-	var proxyUser string
-	var database string
-	var timeLocation *time.Location = time.UTC
+// connectParams holds the resolved connection settings shared by every
+// Connect entry point, regardless of how the caller supplied them.
+type connectParams struct {
+	user             string
+	password         string
+	stmtReuse        StatementCacheMode
+	fetchRows        int64
+	enabledIOMetrics bool
+	authMode         string
+	authKey          crypto.PrivateKey
+	proxyUser        string
+	database         string
+	timeLocation     *time.Location
+}
 
-	for _, opt := range opts {
-		switch o := opt.(type) {
-		case *api.ConnectOptionPassword:
-			user = o.User
-			password = o.Password
-			authMode = "PASSWORD"
-		case *api.ConnectOptionStatementCache:
-			stmtReuse = o.Mode
-		case *api.ConnectOptionFetchRows:
-			fetchRows = o.Rows
-		case *api.ConnectOptionIOMetrics:
-			enabledIOMetrics = o.Enabled
-		case *api.ConnectOptionAuthKey:
-			user = o.User
-			authMode = o.AuthMode
-			authKey = o.Key
-		case *api.ConnectOptionProxyUser:
-			proxyUser = o.ProxyUser
-		case *api.ConnectOptionDatabase:
-			database = o.Database
-		case *api.ConnectOptionTimeLocation:
-			timeLocation = o.Location
-		default:
-			return nil, fmt.Errorf("unknown option type-%T", o)
-		}
+// Connect parses dsn and connects to the database, without going through api.ConnectOption.
+func (db *ClientDatabase) Connect(ctx context.Context, dsn string) (*ClientConn, error) {
+	cfg, err := ParseDSN(dsn)
+	if err != nil {
+		return nil, err
 	}
+	return db.ConnectConfig(ctx, &cfg)
+}
 
-	if strings.EqualFold(user, "sys") && proxyUser != "" && !strings.EqualFold(proxyUser, "sys") {
+// ConnectConfig connects using Config fields directly.
+func (db *ClientDatabase) ConnectConfig(ctx context.Context, cfg *Config) (*ClientConn, error) {
+	p := connectParams{
+		user:             cfg.User,
+		password:         cfg.Password,
+		authMode:         "PASSWORD",
+		stmtReuse:        db.statementCache,
+		fetchRows:        db.fetchRows,
+		enabledIOMetrics: cfg.IOMetrics,
+		proxyUser:        cfg.ProxyUser,
+		database:         cfg.Database,
+		timeLocation:     time.UTC,
+	}
+	if cfg.statementCacheSet {
+		p.stmtReuse = cfg.StatementCache
+	}
+	if cfg.FetchRows > 0 {
+		p.fetchRows = cfg.FetchRows
+	}
+	if strings.TrimSpace(cfg.AuthKeyFile) != "" || strings.TrimSpace(cfg.AuthKeyPEM) != "" || strings.EqualFold(strings.TrimSpace(cfg.AuthMode), "CHALLENGE") {
+		var key crypto.PrivateKey
+		var err error
+		if strings.TrimSpace(cfg.AuthKeyPEM) != "" {
+			key, err = api.LoadPrivateKeyFromPEM([]byte(cfg.AuthKeyPEM))
+		} else {
+			key, err = api.LoadPrivateKeyFromFile(cfg.AuthKeyFile)
+		}
+		if err != nil {
+			return nil, err
+		}
+		p.authMode = "CHALLENGE"
+		p.authKey = key
+	}
+	return db.connect(ctx, p)
+}
+
+func (db *ClientDatabase) connect(ctx context.Context, p connectParams) (*ClientConn, error) {
+	if strings.EqualFold(p.user, "sys") && p.proxyUser != "" && !strings.EqualFold(p.proxyUser, "sys") {
 		// "SYS AS PROXY_USER" format is required for proxy user authentication,
 		// and the proxy user cannot be "SYS" ('sys as sys' is 'sys').
-		user = fmt.Sprintf("SYS AS %s", strings.ToUpper(proxyUser))
+		p.user = fmt.Sprintf("SYS AS %s", strings.ToUpper(p.proxyUser))
 	}
 
-	returnChan := db.maxConnsChan
-	tokenAcquired := false
-
-	if returnChan != nil {
-		select {
-		case <-returnChan:
-			tokenAcquired = true
-		case <-ctx.Done():
-			return nil, api.NewError("connect canceled")
-		}
-	}
-	defer func() {
-		if tokenAcquired && returnChan != nil {
-			returnChan <- struct{}{}
-		}
-	}()
 	var handle *machnet.ConnHandle
-	if c, err := db.handle.Connect(db.connectionString(user, password, fetchRows, enabledIOMetrics, authMode), authKey); err != nil {
+	if c, err := db.handle.Connect(db.connectionString(p.user, p.password, p.fetchRows, p.enabledIOMetrics, p.authMode), p.authKey); err != nil {
 		return nil, db.ErrorOf(err)
 	} else {
 		handle = c
@@ -278,18 +212,16 @@ func (db *ClientDatabase) Connect(ctx context.Context, opts ...api.ConnectOption
 	ret := &ClientConn{
 		db:                     db,
 		handle:                 handle,
-		user:                   strings.ToUpper(user),
+		user:                   strings.ToUpper(p.user),
 		usedAt:                 time.Now(),
-		returnChan:             returnChan,
-		timeLocation:           timeLocation,
-		queryStmtReuseMode:     stmtReuse,
+		timeLocation:           p.timeLocation,
+		queryStmtReuseMode:     p.stmtReuse,
 		queryStmtPool:          map[string][]*ClientStmt{},
 		queryStmtPoolCap:       defaultQueryStmtPoolCap,
 		queryStmtPoolPerKeyCap: defaultQueryStmtPoolPerQueryCap,
 	}
-	tokenAcquired = false
-	if strings.TrimSpace(database) != "" && !strings.EqualFold(database, "MACHBASEDB") {
-		if err := ret.Exec(ctx, "USE "+quoteClientIdentifier(database)).Err(); err != nil {
+	if strings.TrimSpace(p.database) != "" && !strings.EqualFold(p.database, "MACHBASEDB") {
+		if err := ret.Exec(ctx, "USE "+quoteClientIdentifier(p.database)).Err(); err != nil {
 			return nil, errors.Join(err, ret.Close())
 		}
 	}
@@ -300,15 +232,14 @@ type ClientConn struct {
 	handle *machnet.ConnHandle
 	db     *ClientDatabase
 
-	user       string
-	usedAt     time.Time
-	usedCount  int64
-	closeOnce  sync.Once
-	returnChan chan struct{}
-	sessionMu  sync.Mutex
+	user      string
+	usedAt    time.Time
+	usedCount int64
+	closeOnce sync.Once
+	sessionMu sync.Mutex
 
 	timeLocation           *time.Location
-	queryStmtReuseMode     api.StatementCacheMode
+	queryStmtReuseMode     StatementCacheMode
 	queryStmtPoolMu        sync.Mutex
 	queryStmtFastKey       string
 	queryStmtFast          *ClientStmt
@@ -318,8 +249,6 @@ type ClientConn struct {
 	queryStmtPoolPerKeyCap int
 	catalogGeneration      atomic.Uint64
 }
-
-var _ api.Conn = (*ClientConn)(nil)
 
 func (c *ClientConn) Close() (ret error) {
 	c.sessionMu.Lock()
@@ -332,9 +261,6 @@ func (c *ClientConn) close() (ret error) {
 		defer func() {
 			c.usedAt = time.Now()
 			c.usedCount++
-			if c.returnChan != nil {
-				c.returnChan <- struct{}{}
-			}
 		}()
 		c.catalogGeneration.Add(1)
 		if err := c.closeQueryStmtPool(); err != nil && ret == nil {
@@ -403,9 +329,9 @@ func quoteClientIdentifier(name string) string {
 
 func (c *ClientConn) shouldReuseStmtForQuery(query string) bool {
 	switch c.queryStmtReuseMode {
-	case api.StatementCacheOn:
+	case StatementCacheOn:
 		return true
-	case api.StatementCacheOff:
+	case StatementCacheOff:
 		return false
 	default:
 		switch queryHead(query) {
@@ -535,7 +461,7 @@ func (c *ClientConn) releaseQueryStmt(query string, stmt *ClientStmt, reusable b
 }
 
 func (c *ClientConn) closeQueryStmtPool() error {
-	if c.queryStmtReuseMode == api.StatementCacheOff {
+	if c.queryStmtReuseMode == StatementCacheOff {
 		return nil
 	}
 	c.queryStmtPoolMu.Lock()
@@ -615,13 +541,13 @@ func (c *ClientConn) Explain(ctx context.Context, query string, full bool) (stri
 	return strings.Join(ret, "\n"), nil
 }
 
-func (c *ClientConn) Exec(ctx context.Context, query string, args ...any) api.Result {
+func (c *ClientConn) Exec(ctx context.Context, query string, args ...any) *ClientResult {
 	c.sessionMu.Lock()
 	defer c.sessionMu.Unlock()
 	return c.exec(ctx, query, args...)
 }
 
-func (c *ClientConn) exec(ctx context.Context, query string, args ...any) api.Result {
+func (c *ClientConn) exec(ctx context.Context, query string, args ...any) *ClientResult {
 	ret := &ClientResult{}
 	if len(args) == 0 {
 		stmt, err := c.NewStmt()
@@ -681,7 +607,7 @@ func (c *ClientConn) exec(ctx context.Context, query string, args ...any) api.Re
 	return ret
 }
 
-func (c *ClientConn) Prepare(ctx context.Context, query string) (api.Stmt, error) {
+func (c *ClientConn) Prepare(ctx context.Context, query string) (*ClientPreparedStmt, error) {
 	c.sessionMu.Lock()
 	defer c.sessionMu.Unlock()
 
@@ -698,13 +624,13 @@ func (c *ClientConn) Prepare(ctx context.Context, query string) (api.Stmt, error
 	return &ClientPreparedStmt{stmt: stmt}, nil
 }
 
-func (c *ClientConn) QueryRow(ctx context.Context, query string, args ...any) api.Row {
+func (c *ClientConn) QueryRow(ctx context.Context, query string, args ...any) *ClientRow {
 	c.sessionMu.Lock()
 	defer c.sessionMu.Unlock()
 	return c.queryRow(ctx, query, args...)
 }
 
-func (c *ClientConn) queryRow(ctx context.Context, query string, args ...any) api.Row {
+func (c *ClientConn) queryRow(ctx context.Context, query string, args ...any) *ClientRow {
 	ret := &ClientRow{timeLocation: c.timeLocation}
 	stmt, err := c.acquireQueryStmt(query)
 	if err != nil {
@@ -730,9 +656,9 @@ func (c *ClientConn) queryRow(ctx context.Context, query string, args ...any) ap
 		ret.stmtType = typ
 	}
 	ret.rowCount = stmt.rowCount
-	ret.columns = make(api.Columns, len(stmt.columnDesc))
+	ret.columns = make(Columns, len(stmt.columnDesc))
 	for i, desc := range stmt.columnDesc {
-		ret.columns[i] = &api.Column{
+		ret.columns[i] = &Column{
 			Name:        desc.Name,
 			Length:      desc.Size,
 			Type:        desc.Type.ColumnType(),
@@ -756,13 +682,13 @@ func (c *ClientConn) queryRow(ctx context.Context, query string, args ...any) ap
 	return ret
 }
 
-func (c *ClientConn) Query(ctx context.Context, query string, args ...any) (api.Rows, error) {
+func (c *ClientConn) Query(ctx context.Context, query string, args ...any) (*ClientRows, error) {
 	c.sessionMu.Lock()
 	defer c.sessionMu.Unlock()
 	return c.query(ctx, query, args...)
 }
 
-func (c *ClientConn) query(ctx context.Context, query string, args ...any) (api.Rows, error) {
+func (c *ClientConn) query(ctx context.Context, query string, args ...any) (*ClientRows, error) {
 	stmt, err := c.acquireQueryStmt(query)
 	if err != nil {
 		return nil, err
@@ -814,7 +740,7 @@ func (pStmt *ClientPreparedStmt) Close() error {
 	return err
 }
 
-func (pStmt *ClientPreparedStmt) Exec(ctx context.Context, params ...any) api.Result {
+func (pStmt *ClientPreparedStmt) Exec(ctx context.Context, params ...any) *ClientResult {
 	ret := &ClientResult{}
 	if err := pStmt.stmt.reprepareIfSupported(); err != nil {
 		ret.err = err
@@ -840,7 +766,7 @@ func (pStmt *ClientPreparedStmt) Exec(ctx context.Context, params ...any) api.Re
 	return ret
 }
 
-func (pStmt *ClientPreparedStmt) Query(ctx context.Context, params ...any) (api.Rows, error) {
+func (pStmt *ClientPreparedStmt) Query(ctx context.Context, params ...any) (*ClientRows, error) {
 	if err := pStmt.stmt.reprepareIfSupported(); err != nil {
 		return nil, err
 	}
@@ -868,7 +794,7 @@ func (pStmt *ClientPreparedStmt) Query(ctx context.Context, params ...any) (api.
 	return ret, nil
 }
 
-func (pStmt *ClientPreparedStmt) QueryRow(ctx context.Context, params ...any) api.Row {
+func (pStmt *ClientPreparedStmt) QueryRow(ctx context.Context, params ...any) *ClientRow {
 	ret := &ClientRow{timeLocation: pStmt.stmt.conn.timeLocation}
 	if err := pStmt.stmt.reprepareIfSupported(); err != nil {
 		ret.err = err
@@ -894,9 +820,9 @@ func (pStmt *ClientPreparedStmt) QueryRow(ctx context.Context, params ...any) ap
 	} else {
 		ret.values = values
 	}
-	ret.columns = make(api.Columns, len(pStmt.stmt.columnDesc))
+	ret.columns = make(Columns, len(pStmt.stmt.columnDesc))
 	for i, desc := range pStmt.stmt.columnDesc {
-		ret.columns[i] = &api.Column{
+		ret.columns[i] = &Column{
 			Name:        desc.Name,
 			Length:      desc.Size,
 			Type:        desc.Type.ColumnType(),
@@ -938,7 +864,7 @@ func (stmt *ClientStmt) bindParams(args ...any) error {
 		return err
 	}
 	if len(args) != numParam {
-		return api.ErrParamCount(numParam, len(args))
+		return fmt.Errorf("params required %d, but got %d", numParam, len(args))
 	}
 
 	for idx, arg := range args {
@@ -954,7 +880,7 @@ func (stmt *ClientStmt) bindParams(args ...any) error {
 				sqlType = pd.Type
 				value = nil
 			} else {
-				return api.ErrDatabaseBindUnknownType(idx, fmt.Sprintf("%T, expect: %d", val, pd.Type))
+				return fmt.Errorf("bind unknown type at column %d %T, expect: %d", idx, val, pd.Type)
 			}
 		case int16:
 			sqlType = api.SqlTypeInt16
@@ -1056,7 +982,7 @@ func (stmt *ClientStmt) mapNamedParams(args []any, numParam int) ([]any, error) 
 	hasNamed := false
 	for _, arg := range args {
 		switch arg.(type) {
-		case api.NamedParam, *api.NamedParam:
+		case NamedParam, *NamedParam:
 			hasNamed = true
 		}
 	}
@@ -1065,23 +991,23 @@ func (stmt *ClientStmt) mapNamedParams(args []any, numParam int) ([]any, error) 
 	}
 	provided := make(map[string]any, len(args))
 	for _, arg := range args {
-		var named api.NamedParam
+		var named NamedParam
 		switch value := arg.(type) {
-		case api.NamedParam:
+		case NamedParam:
 			named = value
-		case *api.NamedParam:
+		case *NamedParam:
 			if value == nil {
-				return nil, api.NewError("named parameter is nil")
+				return nil, fmt.Errorf("named parameter is nil")
 			}
 			named = *value
 		default:
-			return nil, api.NewError("named and positional parameters cannot be mixed")
+			return nil, fmt.Errorf("named and positional parameters cannot be mixed")
 		}
 		if named.Name == "" {
-			return nil, api.NewError("named parameter name is empty")
+			return nil, fmt.Errorf("named parameter name is empty")
 		}
 		if _, exists := provided[named.Name]; exists {
-			return nil, api.NewErrorf("duplicate named parameter %q", named.Name)
+			return nil, fmt.Errorf("duplicate named parameter %q", named.Name)
 		}
 		provided[named.Name] = named.Value
 	}
@@ -1093,18 +1019,18 @@ func (stmt *ClientStmt) mapNamedParams(args []any, numParam int) ([]any, error) 
 			return nil, stmt.ErrorOf(err)
 		}
 		if desc.Name == "" {
-			return nil, api.NewError("named parameters require Machbase protocol 4.0.3 metadata and cannot be mixed with anonymous markers")
+			return nil, fmt.Errorf("named parameters require Machbase protocol 4.0.3 metadata and cannot be mixed with anonymous markers")
 		}
 		value, exists := provided[desc.Name]
 		if !exists {
-			return nil, api.NewErrorf("missing named parameter %q", desc.Name)
+			return nil, fmt.Errorf("missing named parameter %q", desc.Name)
 		}
 		ret[idx] = value
 		required[desc.Name] = struct{}{}
 	}
 	for name := range provided {
 		if _, exists := required[name]; !exists {
-			return nil, api.NewErrorf("unexpected named parameter %q", name)
+			return nil, fmt.Errorf("unexpected named parameter %q", name)
 		}
 	}
 	return ret, nil
@@ -1176,8 +1102,36 @@ func formatResultMessage(err error, stmtType machnet.StmtType, rowCount int64) s
 	case 1:
 		return "a row " + verb
 	default:
-		return api.FormatIntWithCommas(rowCount) + " rows " + verb
+		return formatIntWithCommas(rowCount) + " rows " + verb
 	}
+}
+
+func formatIntWithCommas(value int64) string {
+	digits := strconv.FormatInt(value, 10)
+	start := 0
+	if digits[0] == '-' {
+		start = 1
+	}
+	if len(digits)-start <= 3 {
+		return digits
+	}
+
+	var builder strings.Builder
+	builder.Grow(len(digits) + (len(digits)-start-1)/3)
+	if start == 1 {
+		builder.WriteByte('-')
+	}
+
+	head := (len(digits) - start) % 3
+	if head == 0 {
+		head = 3
+	}
+	builder.WriteString(digits[start : start+head])
+	for index := start + head; index < len(digits); index += 3 {
+		builder.WriteByte(',')
+		builder.WriteString(digits[index : index+3])
+	}
+	return builder.String()
 }
 
 type ClientResult struct {
@@ -1187,8 +1141,6 @@ type ClientResult struct {
 	rowID    uint64
 	hasRowID bool
 }
-
-var _ api.Result = (*ClientResult)(nil)
 
 func (rs *ClientResult) Message() string {
 	return formatResultMessage(rs.err, rs.stmtType, rs.rowCount)
@@ -1202,7 +1154,7 @@ func (rs *ClientResult) LastInsertId() (int64, error) {
 	if rs != nil && rs.hasRowID {
 		return int64(rs.rowID), nil
 	}
-	return 0, api.ErrNotImplemented("LastInsertId")
+	return 0, errors.New("not implemented LastInsertId")
 }
 
 func (rs *ClientResult) RowsAffected() int64 {
@@ -1224,7 +1176,7 @@ type ClientStmt struct {
 	handle            *machnet.StmtHandle
 	conn              *ClientConn
 	sqlText           string
-	columnDesc        []api.ColumnDesc
+	columnDesc        []ColumnDesc
 	reachEOF          bool
 	sqlHead           string
 	rowCount          int64
@@ -1290,9 +1242,9 @@ func (stmt *ClientStmt) execute() error {
 	if err != nil {
 		return stmt.ErrorOf(err)
 	}
-	stmt.columnDesc = make([]api.ColumnDesc, num)
+	stmt.columnDesc = make([]ColumnDesc, num)
 	for i := 0; i < num; i++ {
-		d := api.ColumnDesc{}
+		d := ColumnDesc{}
 		if err := stmt.handle.DescribeColEx(i, &d.Name, (*api.SqlType)(&d.Type), &d.Size, &d.Scale, &d.Nullable, &d.Nullability, &d.PrimaryKey); err != nil {
 			return stmt.ErrorOf(err)
 		}
@@ -1305,7 +1257,7 @@ func (stmt *ClientStmt) execute() error {
 // It returns true if it reaches end of the result, otherwise false.
 func (stmt *ClientStmt) fetch() ([]any, error) {
 	if stmt.reachEOF {
-		return nil, api.ErrDatabaseFetch(fmt.Errorf("reached end of the result set"))
+		return nil, errors.New("fetch reached end of the result set")
 	}
 	row, err := stmt.handle.Fetch()
 	if err != nil {
@@ -1324,13 +1276,11 @@ func (stmt *ClientStmt) fetch() ([]any, error) {
 type ClientRow struct {
 	err          error
 	values       []any
-	columns      api.Columns
+	columns      Columns
 	rowCount     int64
 	stmtType     machnet.StmtType
 	timeLocation *time.Location
 }
-
-var _ api.Row = (*ClientRow)(nil)
 
 func (r *ClientRow) Success() bool {
 	return r.err == nil
@@ -1340,7 +1290,7 @@ func (r *ClientRow) Err() error {
 	return r.err
 }
 
-func (r *ClientRow) Columns() (api.Columns, error) {
+func (r *ClientRow) Columns() (Columns, error) {
 	return r.columns, nil
 }
 
@@ -1349,16 +1299,16 @@ func (r *ClientRow) Scan(dest ...any) error {
 		return r.err
 	}
 	if len(dest) > len(r.values) {
-		return api.ErrParamCount(len(r.values), len(dest))
+		return fmt.Errorf("params required %d, but got %d", len(r.values), len(dest))
 	}
 	for i, d := range dest {
 		if r.values[i] == nil {
-			if !api.ScanNull(d) {
-				return api.ErrDatabaseScanNull(fmt.Sprintf("VALUE into %T", d))
+			if !ScanNull(d) {
+				return fmt.Errorf("scan NULL VALUE into %T", d)
 			}
 			continue
 		}
-		if err := api.Scan(r.values[i], d, r.timeLocation); err != nil {
+		if err := Scan(r.values[i], d, r.timeLocation); err != nil {
 			return err
 		}
 	}
@@ -1389,8 +1339,6 @@ type ClientRows struct {
 	timeLocation    *time.Location
 }
 
-var _ api.Rows = (*ClientRows)(nil)
-
 func (r *ClientRows) Err() error {
 	return r.err
 }
@@ -1419,13 +1367,13 @@ func (r *ClientRows) IsFetchable() bool {
 	return typ.IsSelect()
 }
 
-func (r *ClientRows) Columns() (api.Columns, error) {
+func (r *ClientRows) Columns() (Columns, error) {
 	if r.stmt == nil {
 		return nil, nil
 	}
-	ret := make(api.Columns, len(r.stmt.columnDesc))
+	ret := make(Columns, len(r.stmt.columnDesc))
 	for i, desc := range r.stmt.columnDesc {
-		ret[i] = &api.Column{
+		ret[i] = &Column{
 			Name:        desc.Name,
 			Length:      desc.Size,
 			Type:        desc.Type.ColumnType(),
@@ -1469,7 +1417,7 @@ func (r *ClientRows) Row() []any {
 	return r.row
 }
 
-func (r *ClientRows) ColumnDescriptions() []api.ColumnDesc {
+func (r *ClientRows) ColumnDescriptions() []ColumnDesc {
 	if r.stmt == nil {
 		return nil
 	}
@@ -1481,38 +1429,38 @@ func (r *ClientRows) Scan(dest ...any) error {
 		return r.err
 	}
 	if len(dest) > len(r.row) {
-		return api.ErrParamCount(len(r.row), len(dest))
+		return fmt.Errorf("params required %d, but got %d", len(r.row), len(dest))
 	}
 	for i, d := range dest {
 		if d == nil {
 			continue
 		}
 		if r.row[i] == nil {
-			if !api.ScanNull(dest[i]) {
-				return api.ErrDatabaseScanNull(fmt.Sprintf("into %T", dest[i]))
+			if !ScanNull(dest[i]) {
+				return fmt.Errorf("scan NULL into %T", dest[i])
 			}
 			continue
 		}
-		if err := api.Scan(r.row[i], d, r.timeLocation); err != nil {
+		if err := Scan(r.row[i], d, r.timeLocation); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (c *ClientConn) Appender(ctx context.Context, tableName string, opts ...api.AppenderOption) (api.Appender, error) {
+func (c *ClientConn) Appender(ctx context.Context, tableName string) (*ClientAppender, error) {
 	c.sessionMu.Lock()
 	defer c.sessionMu.Unlock()
 
-	db, user, table := api.TableName(tableName).SplitOr("", c.user)
+	db, user, table := parseTableName(tableName, "", c.user)
 	tableId := int64(-1)
-	var tableType api.TableType = api.TableType(-1)
-	var tableFlag api.TableFlag
+	var tableType TableType = TableType(-1)
+	var tableFlag TableFlag
 	var tableColCount int
 
 	dbId := int64(-1)
 	if c.handle.SupportsDatabaseMetadata() {
-		var dbRow api.Row
+		var dbRow *ClientRow
 		if db == "" {
 			dbRow = c.queryRow(ctx, "select DATABASE_ID from V$DATABASES where NAME = CURRENT_DATABASE()")
 		} else {
@@ -1556,7 +1504,7 @@ func (c *ClientConn) Appender(ctx context.Context, tableName string, opts ...api
 	if err := r.Scan(&tableId, &tableType, &tableFlag, &tableColCount); err != nil {
 		return nil, err
 	}
-	if tableType != api.TableTypeLog && tableType != api.TableTypeTag && tableType != api.TableTypeTransaction {
+	if tableType != TableTypeLog && tableType != TableTypeTag && tableType != TableTypeTransaction {
 		return nil, fmt.Errorf("%s '%s' doesn't support append", tableType, tableName)
 	}
 	rows, err := c.query(ctx, "select name, type, length, id, flag from M$SYS_COLUMNS where table_id = ? and database_id = ? order by id", tableId, dbId)
@@ -1566,22 +1514,15 @@ func (c *ClientConn) Appender(ctx context.Context, tableName string, opts ...api
 	defer rows.Close()
 
 	ret := &ClientAppender{tableName: strings.ToUpper(tableName), tableType: tableType}
-	for _, opt := range opts {
-		switch o := opt.(type) {
-		case *api.AppenderOptionBuffer:
-			ret.errCheckCount = o.Threshold
-		default:
-			return nil, fmt.Errorf("unknown option type-%T", o)
-		}
-	}
+	ret.errCheckCount = 0
 	for rows.Next() {
-		col := &api.Column{}
+		col := &Column{}
 		err = rows.Scan(&col.Name, &col.Type, &col.Length, &col.Id, &col.Flag)
 		if err != nil {
 			return nil, err
 		}
 		if strings.HasPrefix(col.Name, "_") {
-			if tableType != api.TableTypeLog || col.Name != "_ARRIVAL_TIME" {
+			if tableType != TableTypeLog || col.Name != "_ARRIVAL_TIME" {
 				continue
 			}
 		}
@@ -1660,9 +1601,9 @@ func (c *ClientConn) Appender(ctx context.Context, tableName string, opts ...api
 type ClientAppender struct {
 	stmt          *ClientStmt
 	tableName     string
-	tableType     api.TableType
+	tableType     TableType
 	errCheckCount int
-	columns       api.Columns
+	columns       Columns
 	columnNames   []string
 	columnTypes   []api.SqlType
 	inputColumns  []ClientAppenderInputColumn
@@ -1671,9 +1612,6 @@ type ClientAppender struct {
 	successCount  int64
 	failCount     int64
 }
-
-var _ api.Appender = (*ClientAppender)(nil)
-var _ api.Flusher = (*ClientAppender)(nil)
 
 type ClientAppenderInputColumn struct {
 	Name string
@@ -1697,7 +1635,7 @@ func (a *ClientAppender) Close() (int64, int64, error) {
 	return a.successCount, a.failCount, err
 }
 
-func (a *ClientAppender) WithInputColumns(columns ...string) api.Appender {
+func (a *ClientAppender) WithInputColumns(columns ...string) *ClientAppender {
 	a.inputColumns = nil
 	for _, col := range columns {
 		a.inputColumns = append(a.inputColumns, ClientAppenderInputColumn{Name: strings.ToUpper(col), Idx: -1})
@@ -1714,14 +1652,14 @@ func (a *ClientAppender) WithInputColumns(columns ...string) api.Appender {
 	return a
 }
 
-func (a *ClientAppender) WithInputFormats(formats ...string) api.Appender {
+func (a *ClientAppender) WithInputFormats(formats ...string) *ClientAppender {
 	a.inputFormats = formats
 	return a
 }
 
 // WithBatchMaxRows sets the maximum batch size in rows for batch append. If the batch size exceeds the limit, it will be flushed immediately.
 // The default value is 512 rows. The minimum value is 1 row.
-func (a *ClientAppender) WithBatchMaxRows(rows int) api.Appender {
+func (a *ClientAppender) WithBatchMaxRows(rows int) *ClientAppender {
 	if a.stmt == nil || a.stmt.handle == nil {
 		return a
 	}
@@ -1734,7 +1672,7 @@ func (a *ClientAppender) WithBatchMaxRows(rows int) api.Appender {
 
 // WithBatchMaxBytes sets the maximum batch size in bytes for batch append. If the batch size exceeds the limit, it will be flushed immediately.
 // The default value is 512KB. The minimum value is 4KB.
-func (a *ClientAppender) WithBatchMaxBytes(bytes int) api.Appender {
+func (a *ClientAppender) WithBatchMaxBytes(bytes int) *ClientAppender {
 	if a.stmt == nil || a.stmt.handle == nil {
 		return a
 	}
@@ -1749,7 +1687,7 @@ func (a *ClientAppender) WithBatchMaxBytes(bytes int) api.Appender {
 // The default value is 5 milliseconds.
 // The minimum value is 1ms.
 // 0 means no delay-based flush.
-func (a *ClientAppender) WithBatchMaxDelay(duration time.Duration) api.Appender {
+func (a *ClientAppender) WithBatchMaxDelay(duration time.Duration) *ClientAppender {
 	if a.stmt == nil || a.stmt.handle == nil {
 		return a
 	}
@@ -1766,11 +1704,11 @@ func (a *ClientAppender) TableName() string {
 	return a.tableName
 }
 
-func (a *ClientAppender) TableType() api.TableType {
+func (a *ClientAppender) TableType() TableType {
 	return a.tableType
 }
 
-func (a *ClientAppender) Columns() (api.Columns, error) {
+func (a *ClientAppender) Columns() (Columns, error) {
 	return a.columns, nil
 }
 
@@ -1784,9 +1722,9 @@ func (a *ClientAppender) Flush() error {
 
 func (a *ClientAppender) Append(values ...any) error {
 	switch a.tableType {
-	case api.TableTypeTag, api.TableTypeTransaction:
+	case TableTypeTag, TableTypeTransaction:
 		return a.append(values...)
-	case api.TableTypeLog:
+	case TableTypeLog:
 		var valuesWithTime []any
 		if len(values) == len(a.columns) {
 			valuesWithTime = values
@@ -1800,7 +1738,7 @@ func (a *ClientAppender) Append(values ...any) error {
 }
 
 func (a *ClientAppender) AppendLogTime(ts time.Time, values ...any) error {
-	if a.tableType != api.TableTypeLog {
+	if a.tableType != TableTypeLog {
 		return fmt.Errorf("%s is not a log table, use Append() instead", a.tableName)
 	}
 	values = append([]any{ts}, values...)
@@ -1809,11 +1747,11 @@ func (a *ClientAppender) AppendLogTime(ts time.Time, values ...any) error {
 
 func (a *ClientAppender) append(values ...any) error {
 	if len(a.columns) == 0 {
-		return api.ErrDatabaseNoColumns(a.tableName)
+		return fmt.Errorf("table '%s' has no columns", a.tableName)
 	}
 	if len(a.inputColumns) > 0 {
 		if len(a.inputColumns) != len(values) {
-			return api.ErrDatabaseLengthOfColumns(a.tableName, len(a.columns), len(values))
+			return fmt.Errorf("value count %d, table '%s' requires %d columns to append", len(values), a.tableName, len(a.columns))
 		}
 		newValues := make([]any, len(a.columns))
 		for i, inputCol := range a.inputColumns {
@@ -1822,14 +1760,14 @@ func (a *ClientAppender) append(values ...any) error {
 		values = newValues
 	} else {
 		if len(a.columns) != len(values) {
-			return api.ErrDatabaseLengthOfColumns(a.tableName, len(a.columns), len(values))
+			return fmt.Errorf("value count %d, table '%s' requires %d columns to append", len(values), a.tableName, len(a.columns))
 		}
 	}
 	if a.closed {
-		return api.ErrDatabaseClosedAppender
+		return errors.New("closed appender")
 	}
 	if a.stmt == nil || a.stmt.conn == nil {
-		return api.ErrDatabaseNoConnection
+		return errors.New("invalid connection")
 	}
 
 	if err := a.stmt.handle.AppendData(a.columnTypes, a.columnNames, values, a.inputFormats); err != nil {

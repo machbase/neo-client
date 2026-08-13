@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -13,8 +12,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
-	"time"
 )
 
 const DefaultAuthKeyPrefix = "machbase_authkey_p256"
@@ -215,69 +212,4 @@ func LoadPrivateKeyFromPEM(privateKeyPEM []byte) (crypto.PrivateKey, error) {
 	default:
 		return nil, fmt.Errorf("invalid auth key type %s", block.Type)
 	}
-}
-
-type RegisteredAuthKey struct {
-	KeyID     int
-	User      string
-	PubKey    string
-	Comment   string
-	Activated int
-}
-
-func GetRegisteredAuthKey(ctx context.Context, conn Conn, user string, pubKey []byte) (RegisteredAuthKey, error) {
-	//var pubKeyStr = strings.TrimSpace(string(pubKey))
-	var ret RegisteredAuthKey
-	row := conn.QueryRow(ctx, `SELECT 
-			KEY_ID, 
-			USER_NAME,
-			PUBKEY,
-			COMMENT,
-			ACTIVATED 
-		FROM
-			V$USER_AUTH_KEYS
-		WHERE
-			USER_NAME=? 
-		AND PUBKEY=?
-		ORDER BY
-			KEY_ID DESC LIMIT 1`,
-		strings.ToUpper(user), strings.TrimSpace(string(pubKey)))
-	if row.Err() != nil {
-		return ret, row.Err()
-	}
-	if err := row.Scan(&ret.KeyID, &ret.User, &ret.PubKey, &ret.Comment, &ret.Activated); err != nil {
-		return ret, err
-	}
-	return ret, nil
-}
-
-// RegisterAuthKey registers the public key as an auth key of the user, and returns the key ID.
-func RegisterAuthKey(ctx context.Context, sysConn Conn, user string, pubKey []byte, comment string) (int, error) {
-	user = strings.ToUpper(user)
-	pubKeyStr := strings.TrimSpace(string(pubKey))
-	comment = strings.ReplaceAll(comment, `'`, `''`)
-
-	validBefore := time.Now().Add(24 * time.Hour * 365 * 30).Format("2006-01-02")
-	result := sysConn.Exec(ctx,
-		fmt.Sprintf("ALTER USER %s ADD AUTH KEY (KEY = '%s', VALID_BEFORE = '%s', COMMENT = '%s')",
-			user, pubKeyStr, validBefore, comment),
-	)
-	if result.Err() != nil {
-		return 0, result.Err()
-	}
-
-	reg, err := GetRegisteredAuthKey(ctx, sysConn, user, pubKey)
-	if err != nil {
-		return 0, err
-	}
-	if reg.KeyID == 0 {
-		return 0, fmt.Errorf("failed to get registered auth key")
-	}
-	if reg.Activated != 1 {
-		result := sysConn.Exec(ctx, fmt.Sprintf("ALTER USER %s ACTIVATE AUTH KEY ID %d", user, reg.KeyID))
-		if result.Err() != nil {
-			return 0, result.Err()
-		}
-	}
-	return reg.KeyID, nil
 }

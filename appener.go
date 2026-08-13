@@ -2,11 +2,7 @@ package client
 
 import (
 	"context"
-	"crypto"
 	"errors"
-	"strings"
-
-	"github.com/machbase/neo-client/v2/api"
 )
 
 type Appender struct {
@@ -29,42 +25,16 @@ func (ap *Appender) Connect(ctx context.Context, dsn string, table string, colum
 	if err != nil {
 		return err
 	}
-	if db, err := NewDatabase(cfg.clientConfig()); err != nil {
+	if db, err := NewDatabase(&cfg); err != nil {
 		return err
 	} else {
 		ap.db = db
 	}
 
-	opts := []api.ConnectOption{}
-	if strings.TrimSpace(cfg.AuthKeyFile) != "" || strings.TrimSpace(cfg.AuthKeyPEM) != "" || strings.EqualFold(strings.TrimSpace(cfg.AuthMode), "CHALLENGE") {
-		var key crypto.PrivateKey
-		var err error
-		if strings.TrimSpace(cfg.AuthKeyPEM) != "" {
-			key, err = api.LoadPrivateKeyFromPEM([]byte(cfg.AuthKeyPEM))
-		} else {
-			key, err = api.LoadPrivateKeyFromFile(cfg.AuthKeyFile)
-		}
-		if err != nil {
-			return err
-		}
-		opts = append(opts, api.WithAuthKey(cfg.User, key))
-	} else {
-		opts = append(opts, api.WithPassword(cfg.User, cfg.Password))
-	}
-	if cfg.ProxyUser != "" && cfg.User != cfg.ProxyUser {
-		opts = append(opts, api.WithProxyUser(cfg.ProxyUser))
-	}
-	if strings.TrimSpace(cfg.Database) != "" {
-		opts = append(opts, api.WithDatabase(cfg.Database))
-	}
-	if cfg.IOMetrics {
-		opts = append(opts, api.WithIOMetrics(true))
-	}
-
-	if conn, err := ap.db.Connect(ap.ctx, opts...); err != nil {
+	if conn, err := ap.db.ConnectConfig(ap.ctx, &cfg); err != nil {
 		return err
 	} else {
-		ap.conn = conn.(*ClientConn)
+		ap.conn = conn
 	}
 
 	if meta, ok := ap.ctx.Value(MetaKey).(*Meta); ok && meta != nil {
@@ -75,10 +45,8 @@ func (ap *Appender) Connect(ctx context.Context, dsn string, table string, colum
 	} else {
 		if len(columns) > 0 {
 			raw = raw.WithInputColumns(columns...)
-			ap.raw = raw.(*ClientAppender)
-		} else {
-			ap.raw = raw.(*ClientAppender)
 		}
+		ap.raw = raw
 	}
 	return nil
 }
@@ -104,7 +72,7 @@ func (ap *Appender) Flush() error {
 	return ap.raw.Flush()
 }
 
-func (ap *Appender) TableType() (api.TableType, error) {
+func (ap *Appender) TableType() (TableType, error) {
 	if ap.raw == nil {
 		return -1, errors.New("appender is not connected")
 	}
@@ -123,7 +91,7 @@ func (ap *Appender) TableName() string {
 // and it is not recommended to use this method directly.
 // Use Columns() and ColumnTypes() method instead.
 // This will be removed in the future.
-func (ap *Appender) ApiColumns() (api.Columns, error) {
+func (ap *Appender) ApiColumns() (Columns, error) {
 	if ap.raw == nil {
 		return nil, errors.New("appender is not connected")
 	}

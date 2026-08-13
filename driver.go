@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"crypto"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
@@ -10,9 +9,7 @@ import (
 	"io"
 	"math"
 	"net"
-	"net/url"
 	"reflect"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,68 +26,6 @@ func init() {
 	sql.Register(DefaultDriverName, &Driver{})
 }
 
-type Config struct {
-	Host            string
-	Port            int
-	User            string
-	Password        string
-	Database        string
-	ProxyUser       string
-	AuthMode        string
-	AuthKeyFile     string
-	AuthKeyPEM      string
-	AuthSigScheme   string
-	AlternativeHost string
-	AlternativePort int
-	FetchRows       int64
-	StatementCache  api.StatementCacheMode
-	IOMetrics       bool
-
-	statementCacheSet bool
-}
-
-func (cfg Config) normalize() Config {
-	if cfg.Port == 0 {
-		cfg.Port = defaultPort
-	}
-	return cfg
-}
-
-func (cfg Config) validate() error {
-	if cfg.Host == "" {
-		return errors.New("machbase dsn requires host or server")
-	}
-	if cfg.User == "" {
-		return errors.New("machbase dsn requires user")
-	}
-	authMode := strings.ToUpper(strings.TrimSpace(cfg.AuthMode))
-	hasAuthKey := strings.TrimSpace(cfg.AuthKeyFile) != "" || strings.TrimSpace(cfg.AuthKeyPEM) != ""
-	if cfg.Password == "" && authMode == "PASSWORD" {
-		return errors.New("machbase dsn requires password")
-	}
-	if cfg.Password == "" && authMode == "" && !hasAuthKey {
-		return errors.New("machbase dsn requires password")
-	}
-	if authMode == "CHALLENGE" && strings.TrimSpace(cfg.AuthKeyFile) == "" && strings.TrimSpace(cfg.AuthKeyPEM) == "" {
-		return errors.New("machbase dsn requires auth_key_file or auth_key_pem for auth_mode=CHALLENGE")
-	}
-	if cfg.Port <= 0 {
-		return fmt.Errorf("machbase dsn has invalid port %d", cfg.Port)
-	}
-	return nil
-}
-
-func (cfg Config) clientConfig() *ClientConfig {
-	return &ClientConfig{
-		Host:            cfg.Host,
-		Port:            cfg.Port,
-		AlternativeHost: cfg.AlternativeHost,
-		AlternativePort: cfg.AlternativePort,
-		StatementCache:  cfg.StatementCache,
-		FetchRows:       cfg.FetchRows,
-	}
-}
-
 type Driver struct {
 	Host            string
 	Port            int
@@ -104,7 +39,7 @@ type Driver struct {
 	AlternativeHost string
 	AlternativePort int
 	FetchRows       int64
-	StatementCache  api.StatementCacheMode
+	StatementCache  StatementCacheMode
 	IOMetrics       bool
 }
 
@@ -113,8 +48,8 @@ var _ driver.DriverContext = (*Driver)(nil)
 
 func (drv *Driver) baseConfig() Config {
 	statementCache := drv.StatementCache
-	if statementCache != api.StatementCacheOn && statementCache != api.StatementCacheOff {
-		statementCache = api.StatementCacheAuto
+	if statementCache != StatementCacheOn && statementCache != StatementCacheOff {
+		statementCache = StatementCacheAuto
 	}
 	return Config{
 		Host:            drv.Host,
@@ -151,7 +86,7 @@ func (drv *Driver) OpenConnector(dsn string) (driver.Connector, error) {
 	if err := effective.validate(); err != nil {
 		return nil, err
 	}
-	db, err := NewDatabase(effective.clientConfig())
+	db, err := NewDatabase(&effective)
 	if err != nil {
 		return nil, err
 	}
@@ -170,50 +105,14 @@ func (cn *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	if cn == nil || cn.db == nil {
 		return nil, driver.ErrBadConn
 	}
-	opts := []api.ConnectOption{
-		api.WithIOMetrics(cn.cfg.IOMetrics),
-	}
-	if cn.cfg.statementCacheSet {
-		opts = append(opts, api.WithStatementCache(cn.cfg.StatementCache))
-	}
-	if cn.cfg.FetchRows > 0 {
-		opts = append(opts, api.WithFetchRows(cn.cfg.FetchRows))
-	}
-	if strings.TrimSpace(cn.cfg.AuthKeyFile) != "" || strings.TrimSpace(cn.cfg.AuthKeyPEM) != "" || strings.EqualFold(strings.TrimSpace(cn.cfg.AuthMode), "CHALLENGE") {
-		var key crypto.PrivateKey
-		var err error
-		if strings.TrimSpace(cn.cfg.AuthKeyPEM) != "" {
-			key, err = api.LoadPrivateKeyFromPEM([]byte(cn.cfg.AuthKeyPEM))
-		} else {
-			key, err = api.LoadPrivateKeyFromFile(cn.cfg.AuthKeyFile)
-		}
-		if err != nil {
-			return nil, err
-		}
-		opts = append(opts, api.WithAuthKey(cn.cfg.User, key))
-	} else {
-		opts = append(opts, api.WithPassword(cn.cfg.User, cn.cfg.Password))
-	}
-	if cn.cfg.ProxyUser != "" && cn.cfg.User != cn.cfg.ProxyUser {
-		opts = append(opts, api.WithProxyUser(cn.cfg.ProxyUser))
-	}
-	if strings.TrimSpace(cn.cfg.Database) != "" {
-		opts = append(opts, api.WithDatabase(cn.cfg.Database))
-	}
-	conn, err := cn.db.Connect(ctx, opts...)
+	conn, err := cn.db.ConnectConfig(ctx, &cn.cfg)
 	if err != nil {
 		return nil, normalizeError(err)
 	}
-	concrete, ok := conn.(*ClientConn)
-	if !ok {
-		_ = conn.Close()
-		return nil, fmt.Errorf("unexpected connection type %T", conn)
-	}
 	if meta, ok := ctx.Value(MetaKey).(*Meta); ok && meta != nil {
-		meta.cbIOMetrics = concrete.IOMetrics
+		meta.cbIOMetrics = conn.IOMetrics
 	}
-
-	return &Conn{connector: cn, conn: concrete, database: cn.cfg.Database}, nil
+	return &Conn{conn: conn, database: cn.cfg.Database}, nil
 }
 
 func (cn *Connector) Driver() driver.Driver {
@@ -223,69 +122,12 @@ func (cn *Connector) Driver() driver.Driver {
 	return cn.driver
 }
 
-type ConnectOptionsProvider func(context.Context) ([]api.ConnectOption, error)
-
-type DatabaseConnector struct {
-	driver          *Driver
-	db              *ClientDatabase
-	optionsProvider ConnectOptionsProvider
-}
-
-var _ driver.Connector = (*DatabaseConnector)(nil)
-
-func NewDatabaseConnector(db *ClientDatabase, optionsProvider ConnectOptionsProvider) (*DatabaseConnector, error) {
-	if db == nil {
-		return nil, errors.New("database is nil")
-	}
-	return &DatabaseConnector{
-		driver:          &Driver{},
-		db:              db,
-		optionsProvider: optionsProvider,
-	}, nil
-}
-
-func OpenDBWithConnector(db *ClientDatabase, optionsProvider ConnectOptionsProvider) (*sql.DB, error) {
-	cn, err := NewDatabaseConnector(db, optionsProvider)
-	if err != nil {
-		return nil, err
-	}
-	return sql.OpenDB(cn), nil
-}
-
-func (cn *DatabaseConnector) Connect(ctx context.Context) (driver.Conn, error) {
-	if cn == nil || cn.db == nil {
-		return nil, driver.ErrBadConn
-	}
-	var opts []api.ConnectOption
-	if cn.optionsProvider != nil {
-		provided, err := cn.optionsProvider(ctx)
-		if err != nil {
-			return nil, err
-		}
-		opts = provided
-	}
-	conn, err := cn.db.Connect(ctx, opts...)
-	if err != nil {
-		return nil, normalizeError(err)
-	}
-	concrete := conn.(*ClientConn)
-	return &Conn{connector: nil, conn: concrete, database: connectOptionDatabase(opts)}, nil
-}
-
-func (cn *DatabaseConnector) Driver() driver.Driver {
-	if cn == nil {
-		return nil
-	}
-	return cn.driver
-}
-
 type resetSessionConn interface {
 	Close() error
-	Exec(context.Context, string, ...any) api.Result
+	Exec(context.Context, string, ...any) *ClientResult
 }
 
 type Conn struct {
-	connector *Connector
 	conn      *ClientConn
 	resetConn resetSessionConn
 	txMu      sync.Mutex
@@ -336,8 +178,8 @@ func (c *Conn) Close() error {
 	return c.closeUnderlying()
 }
 
-func (c *Conn) Appender(ctx context.Context, tableName string, opts ...api.AppenderOption) (api.Appender, error) {
-	return c.conn.Appender(ctx, tableName, opts...)
+func (c *Conn) Appender(ctx context.Context, tableName string) (*ClientAppender, error) {
+	return c.conn.Appender(ctx, tableName)
 }
 
 func (c *Conn) Begin() (driver.Tx, error) {
@@ -400,7 +242,7 @@ func (c *Conn) Ping(ctx context.Context) error {
 	return nil
 }
 
-func (c *Conn) resetExec(ctx context.Context, query string) api.Result {
+func (c *Conn) resetExec(ctx context.Context, query string) *ClientResult {
 	if c == nil {
 		return nil
 	}
@@ -461,8 +303,7 @@ func (c *Conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, e
 	if err != nil {
 		return nil, normalizeError(err)
 	}
-	concrete := stmt.(*ClientPreparedStmt)
-	return &Stmt{conn: c, stmt: concrete, query: query}, nil
+	return &Stmt{conn: c, stmt: stmt, query: query}, nil
 }
 
 func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
@@ -478,11 +319,10 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		return nil, err
 	}
 	c.setTransactionState(query)
-	concrete := result.(*ClientResult)
 	if meta, ok := ctx.Value(MetaKey).(*Meta); ok {
-		meta.cbMessage = concrete.Message
+		meta.cbMessage = result.Message
 	}
-	return &Result{result: concrete}, nil
+	return &Result{result: result}, nil
 }
 
 func (c *Conn) setTransactionState(query string) {
@@ -544,12 +384,11 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		return nil, normalizeError(err)
 	}
 	c.setTransactionState(query)
-	concrete := rows.(*ClientRows)
 	if meta, ok := ctx.Value(MetaKey).(*Meta); ok {
-		meta.cbMessage = concrete.Message
-		meta.cbFetchable = concrete.IsFetchable
+		meta.cbMessage = rows.Message
+		meta.cbFetchable = rows.IsFetchable
 	}
-	return newRows(concrete)
+	return newRows(rows)
 }
 
 type Stmt struct {
@@ -615,11 +454,10 @@ func (s *Stmt) exec(ctx context.Context, vals []any) (driver.Result, error) {
 	if s.conn != nil {
 		s.conn.setTransactionState(s.query)
 	}
-	concrete := result.(*ClientResult)
 	if meta, ok := ctx.Value(MetaKey).(*Meta); ok {
-		meta.cbMessage = concrete.Message
+		meta.cbMessage = result.Message
 	}
-	return &Result{result: concrete}, nil
+	return &Result{result: result}, nil
 }
 
 func (s *Stmt) queryRows(ctx context.Context, vals []any) (driver.Rows, error) {
@@ -633,11 +471,10 @@ func (s *Stmt) queryRows(ctx context.Context, vals []any) (driver.Rows, error) {
 	if s.conn != nil {
 		s.conn.setTransactionState(s.query)
 	}
-	concrete := rows.(*ClientRows)
 	if meta, ok := ctx.Value(MetaKey).(*Meta); ok {
-		meta.cbMessage = concrete.Message
+		meta.cbMessage = rows.Message
 	}
-	return newRows(concrete)
+	return newRows(rows)
 }
 
 type Result struct {
@@ -650,7 +487,7 @@ func (r *Result) LastInsertId() (int64, error) {
 	if r != nil && r.result != nil {
 		return r.result.LastInsertId()
 	}
-	return 0, api.ErrNotImplemented("LastInsertId")
+	return 0, errors.New("not implemented LastInsertId")
 }
 
 func (r *Result) RowsAffected() (int64, error) {
@@ -662,8 +499,8 @@ func (r *Result) RowsAffected() (int64, error) {
 
 type Rows struct {
 	rows    *ClientRows
-	columns api.Columns
-	desc    []api.ColumnDesc
+	columns Columns
+	desc    []ColumnDesc
 	buffer  []any
 }
 
@@ -845,425 +682,11 @@ func (r *Rows) ColumnTypeScanType(index int) reflect.Type {
 	}
 }
 
-func (r *Rows) column(index int) (*api.Column, bool) {
+func (r *Rows) column(index int) (*Column, bool) {
 	if r == nil || index < 0 || index >= len(r.columns) {
 		return nil, false
 	}
 	return r.columns[index], true
-}
-
-// ParseDSN parses a Machbase DSN string and returns connection config.
-//
-// Supported syntax:
-//
-//  1. Server value only
-//     - host
-//     - host:port
-//     - tcp://user:password@host:port/database?as=proxy&fetch_rows=100
-//
-//  2. Key-value pairs separated by semicolon
-//     - key=value;key=value;...
-//     - Example: user=sys;password=manager;host=127.0.0.1;port=5656
-//
-// For key-value syntax, value may be quoted with single or double quotes.
-// A semicolon inside quotes is treated as a literal character, not a separator.
-// Quotes can be escaped inside quoted values with backslash.
-// Examples:
-//   - user="sys as demo";password="12;34";host=127.0.0.1;
-//   - user='sys as demo';password='12;34';host=127.0.0.1;
-//   - password="a\"b";password2='a\'b';
-//   - auth_mode=challenge;user=sys;auth_key_pem="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----";
-func ParseDSN(dsn string) (Config, error) {
-	var cfg Config
-	dsn = strings.TrimSpace(dsn)
-	if dsn == "" {
-		return cfg, nil
-	}
-	scheme := strings.Index(dsn, "://")
-	separator := strings.IndexByte(dsn, '=')
-	if scheme >= 0 && (separator < 0 || separator > scheme) {
-		if err := applyServerValue(&cfg, dsn); err != nil {
-			return Config{}, err
-		}
-		return cfg.normalize(), nil
-	}
-	if strings.Contains(dsn, "=") {
-		return parseKeyValueDSN(dsn)
-	}
-	if err := applyServerValue(&cfg, dsn); err != nil {
-		return Config{}, err
-	}
-	return cfg.normalize(), nil
-}
-
-func parseKeyValueDSN(dsn string) (Config, error) {
-	var cfg Config
-	parts, err := splitDSNSegments(dsn)
-	if err != nil {
-		return Config{}, err
-	}
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		key, value, ok := strings.Cut(part, "=")
-		if !ok {
-			return Config{}, fmt.Errorf("invalid dsn segment %q", part)
-		}
-		key = strings.ToLower(strings.TrimSpace(key))
-		value = strings.TrimSpace(value)
-		value, err = unquoteDSNValue(value)
-		if err != nil {
-			return Config{}, fmt.Errorf("invalid value for %q: %w", key, err)
-		}
-		switch key {
-		case "server":
-			if err := applyServerValue(&cfg, value); err != nil {
-				return Config{}, err
-			}
-		case "host":
-			cfg.Host = value
-		case "port":
-			port, err := strconv.Atoi(value)
-			if err != nil {
-				return Config{}, fmt.Errorf("invalid port %q", value)
-			}
-			cfg.Port = port
-		case "user", "uid":
-			username, proxyed := api.ParseUserName(value)
-			cfg.User = username.Login
-			if proxyed && username.Proxy != "" {
-				cfg.ProxyUser = username.Proxy
-			}
-		case "password", "pwd":
-			cfg.Password = value
-		case "database", "db":
-			cfg.Database = value
-		case "auth_mode":
-			cfg.AuthMode = value
-		case "auth_key_file":
-			cfg.AuthKeyFile = value
-		case "auth_key_pem":
-			cfg.AuthKeyPEM = value
-		case "auth_sig_scheme":
-			cfg.AuthSigScheme = value
-		case "fetch_rows", "fetchrows":
-			rows, err := strconv.ParseInt(value, 10, 64)
-			if err != nil {
-				return Config{}, fmt.Errorf("invalid fetch_rows %q", value)
-			}
-			cfg.FetchRows = rows
-		case "statement_cache", "statementcache":
-			mode, err := parseStatementCacheMode(value)
-			if err != nil {
-				return Config{}, err
-			}
-			cfg.StatementCache = mode
-			cfg.statementCacheSet = true
-		case "io_metrics", "iometrics":
-			enabled, err := strconv.ParseBool(value)
-			if err != nil {
-				return Config{}, fmt.Errorf("invalid io_metrics %q", value)
-			}
-			cfg.IOMetrics = enabled
-		case "alternative_servers":
-			if err := applyAlternativeServers(&cfg, value); err != nil {
-				return Config{}, err
-			}
-		case "alternative_host":
-			cfg.AlternativeHost = value
-		case "alternative_port":
-			port, err := strconv.Atoi(value)
-			if err != nil {
-				return Config{}, fmt.Errorf("invalid alternative_port %q", value)
-			}
-			cfg.AlternativePort = port
-		default:
-			return Config{}, fmt.Errorf("unsupported dsn key %q", key)
-		}
-	}
-	return cfg.normalize(), nil
-}
-
-func splitDSNSegments(dsn string) ([]string, error) {
-	parts := make([]string, 0)
-	var current strings.Builder
-	var quote rune
-	escaped := false
-
-	for _, ch := range dsn {
-		if escaped {
-			current.WriteRune(ch)
-			escaped = false
-			continue
-		}
-		switch ch {
-		case '\\':
-			current.WriteRune(ch)
-			if quote != 0 {
-				escaped = true
-			}
-		case '\'', '"':
-			switch quote {
-			case 0:
-				quote = ch
-			case ch:
-				quote = 0
-			}
-			current.WriteRune(ch)
-		case ';':
-			if quote != 0 {
-				current.WriteRune(ch)
-				continue
-			}
-			parts = append(parts, current.String())
-			current.Reset()
-		default:
-			current.WriteRune(ch)
-		}
-	}
-
-	if quote != 0 {
-		return nil, errors.New("unterminated quoted value")
-	}
-	if escaped {
-		return nil, errors.New("unterminated escape in quoted value")
-	}
-	parts = append(parts, current.String())
-	return parts, nil
-}
-
-func unquoteDSNValue(value string) (string, error) {
-	if len(value) < 2 {
-		return value, nil
-	}
-	if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
-		quote := rune(value[0])
-		content := value[1 : len(value)-1]
-		var out strings.Builder
-		escaped := false
-		for _, ch := range content {
-			if escaped {
-				if ch == quote || ch == '\\' {
-					out.WriteRune(ch)
-				} else {
-					out.WriteRune('\\')
-					out.WriteRune(ch)
-				}
-				escaped = false
-				continue
-			}
-			if ch == '\\' {
-				escaped = true
-				continue
-			}
-			out.WriteRune(ch)
-		}
-		if escaped {
-			return "", errors.New("unterminated escape sequence")
-		}
-		return out.String(), nil
-	}
-	if value[0] == '"' || value[0] == '\'' || value[len(value)-1] == '"' || value[len(value)-1] == '\'' {
-		return "", errors.New("mismatched quotes")
-	}
-	return value, nil
-}
-
-func parseStatementCacheMode(value string) (api.StatementCacheMode, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "auto":
-		return api.StatementCacheAuto, nil
-	case "on", "true", "1":
-		return api.StatementCacheOn, nil
-	case "off", "false", "0":
-		return api.StatementCacheOff, nil
-	default:
-		return api.StatementCacheAuto, fmt.Errorf("invalid statement_cache %q", value)
-	}
-}
-
-func applyServerValue(cfg *Config, value string) error {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return errors.New("server value is empty")
-	}
-	if strings.Contains(value, "://") {
-		u, err := url.Parse(value)
-		if err != nil {
-			return fmt.Errorf("invalid server %q", value)
-		}
-		if u.Host == "" {
-			return fmt.Errorf("invalid server %q", value)
-		}
-		cfg.Host = u.Hostname()
-		if port := u.Port(); port != "" {
-			parsedPort, err := strconv.Atoi(port)
-			if err != nil {
-				return fmt.Errorf("invalid server port %q", port)
-			}
-			cfg.Port = parsedPort
-		}
-		if u.User != nil {
-			if user := u.User.Username(); user != "" {
-				cfg.User = user
-			}
-			if pass, ok := u.User.Password(); ok {
-				cfg.Password = pass
-			}
-		}
-		if u.Path != "" && u.Path != "/" {
-			cfg.Database = strings.TrimPrefix(u.Path, "/")
-		}
-		for key, values := range u.Query() {
-			switch strings.ToLower(key) {
-			case "as":
-				if len(values) > 0 {
-					cfg.ProxyUser = values[0]
-				}
-			case "database", "db":
-				if len(values) > 0 {
-					cfg.Database = values[0]
-				}
-			case "auth_mode":
-				cfg.AuthMode = values[0]
-			case "auth_key_file":
-				cfg.AuthKeyFile = values[0]
-			case "auth_key_pem":
-				cfg.AuthKeyPEM = values[0]
-			case "auth_sig_scheme":
-				cfg.AuthSigScheme = values[0]
-			case "fetch_rows", "fetchrows":
-				rows, err := strconv.ParseInt(values[0], 10, 64)
-				if err != nil {
-					return fmt.Errorf("invalid fetch_rows %q", values[0])
-				}
-				cfg.FetchRows = rows
-			case "statement_cache", "statementcache":
-				mode, err := parseStatementCacheMode(values[0])
-				if err != nil {
-					return err
-				}
-				cfg.StatementCache = mode
-				cfg.statementCacheSet = true
-			case "io_metrics", "iometrics":
-				enabled, err := strconv.ParseBool(values[0])
-				if err != nil {
-					return fmt.Errorf("invalid io_metrics %q", values[0])
-				}
-				cfg.IOMetrics = enabled
-			case "alternative_servers":
-				if err := applyAlternativeServers(cfg, values[0]); err != nil {
-					return err
-				}
-			case "alternative_host":
-				cfg.AlternativeHost = values[0]
-			case "alternative_port":
-				port, err := strconv.Atoi(values[0])
-				if err != nil {
-					return fmt.Errorf("invalid alternative_port %q", values[0])
-				}
-				cfg.AlternativePort = port
-			}
-		}
-		return nil
-	}
-	host, port, err := net.SplitHostPort(value)
-	if err == nil {
-		cfg.Host = host
-		parsedPort, convErr := strconv.Atoi(port)
-		if convErr != nil {
-			return fmt.Errorf("invalid server port %q", port)
-		}
-		cfg.Port = parsedPort
-		return nil
-	}
-	if strings.Contains(err.Error(), "missing port in address") {
-		cfg.Host = value
-		return nil
-	}
-	return fmt.Errorf("invalid server %q", value)
-}
-
-func applyAlternativeServers(cfg *Config, value string) error {
-	entries := strings.Split(value, ",")
-	for _, entry := range entries {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		host, port, err := net.SplitHostPort(entry)
-		if err != nil {
-			return fmt.Errorf("invalid alternative server %q", entry)
-		}
-		parsedPort, err := strconv.Atoi(port)
-		if err != nil {
-			return fmt.Errorf("invalid alternative server port %q", port)
-		}
-		cfg.AlternativeHost = host
-		cfg.AlternativePort = parsedPort
-		return nil
-	}
-	return nil
-}
-
-func mergeConfig(base Config, override Config) Config {
-	if override.Host != "" {
-		base.Host = override.Host
-	}
-	if override.Port != 0 {
-		base.Port = override.Port
-	}
-	if override.User != "" {
-		base.User = override.User
-	}
-	if override.ProxyUser != "" {
-		base.ProxyUser = override.ProxyUser
-	}
-	if override.Password != "" {
-		base.Password = override.Password
-	}
-	if override.Database != "" {
-		base.Database = override.Database
-	}
-	if override.AuthMode != "" {
-		base.AuthMode = override.AuthMode
-	}
-	if override.AuthKeyFile != "" {
-		base.AuthKeyFile = override.AuthKeyFile
-	}
-	if override.AuthKeyPEM != "" {
-		base.AuthKeyPEM = override.AuthKeyPEM
-	}
-	if override.AuthSigScheme != "" {
-		base.AuthSigScheme = override.AuthSigScheme
-	}
-	if override.AlternativeHost != "" {
-		base.AlternativeHost = override.AlternativeHost
-	}
-	if override.AlternativePort != 0 {
-		base.AlternativePort = override.AlternativePort
-	}
-	if override.FetchRows != 0 {
-		base.FetchRows = override.FetchRows
-	}
-	if override.statementCacheSet {
-		base.StatementCache = override.StatementCache
-	}
-	if override.IOMetrics {
-		base.IOMetrics = true
-	}
-	return base
-}
-
-func connectOptionDatabase(opts []api.ConnectOption) string {
-	for _, opt := range opts {
-		if database, ok := opt.(*api.ConnectOptionDatabase); ok {
-			return database.Database
-		}
-	}
-	return ""
 }
 
 func quoteIdentifier(name string) string {
@@ -1278,7 +701,7 @@ func namedValuesToAny(args []driver.NamedValue) ([]any, error) {
 			return nil, err
 		}
 		if arg.Name != "" {
-			vals[i] = api.Named(arg.Name, arg.Value)
+			vals[i] = Named(arg.Name, arg.Value)
 		} else {
 			vals[i] = arg.Value
 		}
@@ -1528,4 +951,15 @@ func (m *Meta) IOMetrics(reset bool) (readBytes uint64, writtenBytes uint64, ena
 		return m.cbIOMetrics(reset)
 	}
 	return 0, 0, false
+}
+
+// NamedParam represents one named bind argument.
+type NamedParam struct {
+	Name  string
+	Value any
+}
+
+// Named creates a named bind argument for native APIs.
+func Named(name string, value any) NamedParam {
+	return NamedParam{Name: name, Value: value}
 }

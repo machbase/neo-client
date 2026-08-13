@@ -1,291 +1,443 @@
 package api
 
 import (
-	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"strconv"
+	"strings"
 	"time"
 )
 
-type Database interface {
-	// Connect creates a new connection to the database.
-	Connect(ctx context.Context, options ...ConnectOption) (Conn, error)
-	// UserAuth checks user authentication.
-	// If user is authenticated, it returns true and no error
-	// If user is not authenticated, it returns false and the reason of failure.
-	// If error occurred, it returns error.
-	UserAuth(ctx context.Context, user string, password string) (bool, string, error)
-	// Ping checks if the database is alive and returns the round-trip time.
-	Ping(ctx context.Context) (time.Duration, error)
+type JSONString string
+
+func (j JSONString) String() string {
+	return string(j)
 }
 
-type Conn interface {
-	// Close closes the connection.
-	Close() error
-
-	// ExecContext executes SQL statements that do not return results,
-	// such as 'ALTER', 'CREATE TABLE', 'DROP TABLE', etc.
-	Exec(ctx context.Context, sqlText string, params ...any) Result
-
-	// Query executes SQL statements that are expected to return multiple rows.
-	// Commonly used to execute 'SELECT * FROM <TABLE>'.
-	//
-	// Rows returned by Query() must be closed to prevent server-side resource leaks.
-	//
-	// Example:
-	//	ctx, cancelFunc := context.WithTimeout(context.Background(), 5*time.Second)
-	//	defer cancelFunc()
-	//
-	//	rows, err := conn.Query(ctx, "SELECT * FROM my_table WHERE name = ?", my_name)
-	//	if err != nil {
-	//		panic(err)
-	//	}
-	//	defer rows.Close()
-	Query(ctx context.Context, sqlText string, params ...any) (Rows, error)
-
-	// QueryRow executes a SQL statement that expects a single row result.
-	//
-	// Example:
-	//	ctx, cancelFunc := context.WithTimeout(context.Background(), 5*time.Second)
-	//	defer cancelFunc()
-	//
-	//	var cnt int
-	//	row := conn.QueryRow(ctx, "SELECT count(*) FROM my_table WHERE name = ?", "my_name")
-	//	row.Scan(&cnt)
-	QueryRow(ctx context.Context, sqlText string, params ...any) Row
-
-	// Prepare creates a prepared statement for later executions.
-	//
-	// Caution: Only machcli.Conn supports prepared statements. The other implementations panic when this method is called.
-	//
-	// Caution: Prepared statements must be closed as soon as the work is finished to prevent server-side resource leaks.
-	//
-	// Example:
-	//	ctx, cancelFunc := context.WithTimeout(context.Background(), 5*time.Second)
-	//	defer cancelFunc()
-	//
-	//	stmt, err := conn.Prepare(ctx, "SELECT * FROM my_table WHERE name = ?")
-	//	if err != nil {
-	//		panic(err)
-	//	}
-	//	defer stmt.Close()
-	//
-	//	rows, err := stmt.Query(ctx, "my_name")
-	//	if err != nil {
-	//		panic(err)
-	//	}
-	//	defer rows.Close()
-	Prepare(ctx context.Context, query string) (Stmt, error)
-
-	// Appender creates a new Appender for the given table.
-	// The Appender should be closed as soon as the work is finished to prevent server-side resource leaks.
-	//
-	// Example:
-	//	ctx, cancelFunc := context.WithTimeout(context.Background(), 5*time.Second)
-	//	defer cancelFunc()
-	//
-	//	app, _ := conn.Appender(ctx, "MY_TABLE")
-	//	defer app.Close()
-	//	app.Append("name", time.Now(), 3.14)
-	Appender(ctx context.Context, tableName string, opts ...AppenderOption) (Appender, error)
-
-	// Explain returns the execution plan for the given SQL statement.
-	// If full is true, it returns a detailed execution plan.
-	Explain(ctx context.Context, sqlText string, full bool) (string, error)
+func ErrIncompatible(dstType string, src any) error {
+	return fmt.Errorf("incompatible conv '%v' (%T) to %s", src, src, dstType)
 }
 
-type Stmt interface {
-	// Close closes the prepared statement.
-	Close() error
-
-	// ExecContext executes a prepared statement that does not return results,
-	// such as 'ALTER', 'CREATE TABLE', 'DROP TABLE', etc.
-	Exec(ctx context.Context, params ...any) Result
-	// Query executes a prepared statement that is expected to return multiple rows.
-	// Commonly used to execute 'SELECT * FROM <TABLE>'.
-	//
-	// Rows returned by Query() must be closed to prevent server-side resource leaks.
-	//
-	// Example:
-	//	ctx, cancelFunc := context.WithTimeout(context.Background(), 5*time.Second)
-	//	defer cancelFunc()
-	//
-	//	rows, err := stmt.Query(ctx, my_name)
-	//	if err != nil {
-	//		panic(err)
-	//	}
-	//	defer rows.Close()
-	Query(ctx context.Context, params ...any) (Rows, error)
-
-	// QueryRow executes a prepared statement that expects a single row result.
-	//
-	// Example:
-	//	ctx, cancelFunc := context.WithTimeout(context.Background(), 5*time.Second)
-	//	defer cancelFunc()
-	//
-	//	var cnt int
-	//	row := stmt.QueryRow(ctx, "my_name")
-	//	row.Scan(&cnt)
-	QueryRow(ctx context.Context, params ...any) Row
+func ToInt8(one any) (int8, error) {
+	v, err := ToInt64(one)
+	if err != nil {
+		return 0, err
+	}
+	return int8(v), nil
 }
 
-type Rows interface {
-	// Next prepares the next row for reading. It returns true if there is another row available.
-	// It must be called before any Scan operations.
-	//
-	// Example:
-	//	rows, _ := db.Query("SELECT name, value FROM my_table")
-	//	for rows.Next() {
-	//		var name string
-	//		var value float64
-	//		rows.Scan(&name, &value)
-	//	}
-	Next() bool
-
-	// Scan copies the columns from the current row into the values pointed at by cols.
-	// The number of values in cols must be the same as the number of columns in the result set.
-	//
-	// Example:
-	//	for rows.Next() {
-	//		var name string
-	//		var value float64
-	//		rows.Scan(&name, &value)
-	//	}
-	Scan(cols ...any) error
-
-	// Close releases any resources associated with the Rows. It is important to call Close
-	// after finishing with the Rows to prevent resource leaks.
-	//
-	// Example:
-	//	rows, _ := db.Query("SELECT name, value FROM my_table")
-	//	defer rows.Close()
-	Close() error
-
-	// Err returns the error, if any, that was encountered during the execution of the query.
-	Err() error
-
-	// IsFetchable returns true if the statement that produced this Rows is fetchable (e.g., a SELECT statement).
-	IsFetchable() bool
-
-	// RowsAffected returns the number of rows affected by the query.
-	RowsAffected() int64
-
-	// Message returns a message associated with the result of the query.
-	Message() string
-
-	// Columns returns a list of column information for the result set.
-	//
-	// Example:
-	//	columns, err := rows.Columns()
-	//	if err != nil {
-	//		log.Fatal(err)
-	//	}
-	//	for _, col := range columns {
-	//		fmt.Println(col.Name)
-	//	}
-	Columns() (Columns, error)
+func ToInt16(one any) (int16, error) {
+	v, err := ToInt64(one)
+	if err != nil {
+		return 0, err
+	}
+	return int16(v), nil
 }
 
-type Result interface {
-	// Err returns the error, if any, that was encountered during the execution of the query.
-	Err() error
-
-	// RowsAffected returns the number of rows affected by the query.
-	RowsAffected() int64
-
-	// Message returns a message associated with the result of the query.
-	Message() string
+func ToUint16(one any) (uint16, error) {
+	v, err := ToInt64(one)
+	if err != nil {
+		return 0, err
+	}
+	return uint16(v), nil
 }
 
-type Row interface {
-	// Err returns the error, if any, that was encountered during the execution of the query.
-	Err() error
-
-	// RowsAffected returns the number of rows affected by the query.
-	RowsAffected() int64
-
-	// Message returns a message associated with the result of the query.
-	Message() string
-
-	// Scan copies the columns from the current row into the values pointed at by cols.
-	// The number of values in cols must be the same as the number of columns in the result set.
-	//
-	// Example:
-	//	var name string
-	//	var value float64
-	//	row.Scan(&name, &value)
-	Scan(cols ...any) error
-
-	// Columns returns a list of column information for the result set.
-	//
-	// Example:
-	//	columns, err := row.Columns()
-	//	if err != nil {
-	//		log.Fatal(err)
-	//	}
-	//	for _, col := range columns {
-	//		fmt.Println(col.Name)
-	//	}
-	Columns() (Columns, error)
+func ToInt32(one any) (int32, error) {
+	v, err := ToInt64(one)
+	if err != nil {
+		return 0, err
+	}
+	return int32(v), nil
 }
 
-type Appender interface {
-	// TableName returns the name of the table to which the Appender is appending data.
-	TableName() string
-
-	// Append adds a new row with the specified values to the table.
-	// The number of values must match the number of columns in the table.
-	//
-	// Example:
-	//	appender.Append("name", time.Now(), 3.14)
-	Append(values ...any) error
-
-	// AppendLogTime adds a new row with the specified timestamp and values to the table.
-	// This is applicable only for log tables, where the timestamp is applied to _ARRIVAL_TIME instead of the current system time.
-	//
-	// Example:
-	//	appender.AppendLogTime(time.Now(), "name", 3.14)
-	AppendLogTime(ts time.Time, values ...any) error
-
-	// Close finalizes the appending process and releases any resources associated with the Appender.
-	// It returns the number of rows successfully appended and the number of rows that failed to append.
-	//
-	// Example:
-	//	rowsAppended, rowsFailed, err := appender.Close()
-	Close() (int64, int64, error)
-
-	// Columns returns a list of column information for the table.
-	//
-	// Example:
-	//	columns, err := appender.Columns()
-	//	if err != nil {
-	//		log.Fatal(err)
-	//	}
-	//	for _, col := range columns {
-	//		fmt.Println(col.Name)
-	//	}
-	Columns() (Columns, error)
-
-	// TableType returns the type of the table to which the Appender is appending data.
-	TableType() TableType
-
-	// WithInputColumns sets the input column names for the Appender.
-	WithInputColumns(columns ...string) Appender
-
-	// WithInputFormats sets the input formats for the Appender.
-	WithInputFormats(formats ...string) Appender
-
-	// WithBatchMaxRows sets the maximum batch size in rows for batch append. If the batch size exceeds the limit, it will be flushed immediately.
-	// The default value is 512 rows. The minimum value is 1 row.
-	WithBatchMaxRows(rows int) Appender
-
-	// WithBatchMaxBytes sets the maximum batch size in bytes for batch append. If the batch size exceeds the limit, it will be flushed immediately.
-	// The default value is 512KB. The minimum value is 4KB.
-	WithBatchMaxBytes(bytes int) Appender
-
-	// WithBatchMaxDelay sets the maximum delay for batch append. If the batch is not full, it will be flushed when the delay is reached.
-	// The default value is 5 milliseconds. The minimum value is 1 millisecond.
-	WithBatchMaxDelay(duration time.Duration) Appender
+func ToUint32(one any) (uint32, error) {
+	v, err := ToInt64(one)
+	if err != nil {
+		return 0, err
+	}
+	return uint32(v), nil
 }
 
-type Flusher interface {
-	Flush() error
+func ToInt64(one any) (int64, error) {
+	switch val := one.(type) {
+	case string:
+		if v, err := strconv.ParseInt(val, 10, 64); err != nil {
+			if f, err := ToFloat64(val); err != nil {
+				return 0, ErrIncompatible("int64", val)
+			} else {
+				return int64(f), nil
+			}
+		} else {
+			return v, nil
+		}
+	case *string:
+		if v, err := strconv.ParseInt(*val, 10, 64); err != nil {
+			if f, err := ToFloat64(*val); err != nil {
+				return 0, ErrIncompatible("int64", val)
+			} else {
+				return int64(f), nil
+			}
+		} else {
+			return v, nil
+		}
+	case float32:
+		return int64(val), nil
+	case *float32:
+		return int64(*val), nil
+	case float64:
+		return int64(val), nil
+	case *float64:
+		return int64(*val), nil
+	case int64:
+		return val, nil
+	case *int64:
+		return *val, nil
+	case int:
+		return int64(val), nil
+	case *int:
+		return int64(*val), nil
+	case int32:
+		return int64(val), nil
+	case *int32:
+		return int64(*val), nil
+	case int16:
+		return int64(val), nil
+	case *int16:
+		return int64(*val), nil
+	case int8:
+		return int64(val), nil
+	case *int8:
+		return int64(*val), nil
+	case json.Number:
+		if v, err := val.Int64(); err != nil {
+			return 0, fmt.Errorf("incompatible conv '%v' (%T) to int64, %s", val, val, err.Error())
+		} else {
+			return v, nil
+		}
+	default:
+		return 0, ErrIncompatible("int64", val)
+	}
+}
+
+func ToUint64(one any) (uint64, error) {
+	switch val := one.(type) {
+	case string:
+		if v, err := strconv.ParseUint(val, 10, 64); err != nil {
+			if f, err := ToFloat64(val); err != nil {
+				return 0, ErrIncompatible("int64", val)
+			} else {
+				return uint64(f), nil
+			}
+		} else {
+			return v, nil
+		}
+	case *string:
+		if v, err := strconv.ParseUint(*val, 10, 64); err != nil {
+			if f, err := ToFloat64(*val); err != nil {
+				return 0, ErrIncompatible("int64", val)
+			} else {
+				return uint64(f), nil
+			}
+		} else {
+			return v, nil
+		}
+	case float32:
+		return uint64(val), nil
+	case *float32:
+		return uint64(*val), nil
+	case float64:
+		return uint64(val), nil
+	case *float64:
+		return uint64(*val), nil
+	case int64:
+		return uint64(val), nil
+	case *int64:
+		return uint64(*val), nil
+	case int:
+		return uint64(val), nil
+	case *int:
+		return uint64(*val), nil
+	case int32:
+		return uint64(val), nil
+	case *int32:
+		return uint64(*val), nil
+	case int16:
+		return uint64(val), nil
+	case *int16:
+		return uint64(*val), nil
+	case int8:
+		return uint64(val), nil
+	case *int8:
+		return uint64(*val), nil
+	case json.Number:
+		if v, err := val.Int64(); err != nil {
+			return 0, fmt.Errorf("incompatible conv '%v' (%T) to int64, %s", val, val, err.Error())
+		} else {
+			return uint64(v), nil
+		}
+	default:
+		return 0, ErrIncompatible("int64", val)
+	}
+}
+
+func ToFloat32(one any) (float32, error) {
+	switch val := one.(type) {
+	case string:
+		return ParseFloat32(val)
+	case *string:
+		return ParseFloat32(*val)
+	case float32:
+		return val, nil
+	case *float32:
+		return *val, nil
+	case float64:
+		return float32(val), nil
+	case *float64:
+		return float32(*val), nil
+	case int:
+		return float32(val), nil
+	case *int:
+		return float32(*val), nil
+	case json.Number:
+		if v, err := val.Float64(); err != nil {
+			return 0, fmt.Errorf("incompatible conv '%v' (%T) to float32, %s", val, val, err.Error())
+		} else {
+			return float32(v), nil
+		}
+	default:
+		return 0, ErrIncompatible("float32", val)
+	}
+}
+
+func ParseFloat32(val string) (float32, error) {
+	if val, err := strconv.ParseFloat(val, 32); err != nil {
+		return 0, fmt.Errorf("incompatible conv '%v' (%T) to float32, %s", val, val, err.Error())
+	} else {
+		return float32(val), nil
+	}
+}
+
+func ParseFloat64(val string) (float64, error) {
+	if val, err := strconv.ParseFloat(val, 64); err != nil {
+		return 0, fmt.Errorf("incompatible conv '%v' (%T) to float64, %s", val, val, err.Error())
+	} else {
+		return val, nil
+	}
+}
+
+func ParseBoolean(val string) (bool, error) {
+	return strconv.ParseBool(val)
+}
+
+func ToFloat64(one any) (float64, error) {
+	switch val := one.(type) {
+	case string:
+		return ParseFloat64(val)
+	case *string:
+		return ParseFloat64(*val)
+	case float32:
+		return float64(val), nil
+	case *float32:
+		return float64(*val), nil
+	case float64:
+		return val, nil
+	case *float64:
+		return *val, nil
+	case int:
+		return float64(val), nil
+	case *int:
+		return float64(*val), nil
+	case json.Number:
+		if v, err := val.Float64(); err != nil {
+			return 0, fmt.Errorf("incompatible conv '%v' (%T) to float64, %s", val, val, err.Error())
+		} else {
+			return v, nil
+		}
+	default:
+		return 0, ErrIncompatible("float64", val)
+	}
+}
+
+func ToDuration(one any) (time.Duration, error) {
+	switch val := one.(type) {
+	case time.Duration:
+		return val, nil
+	case string:
+		return ParseDuration(val)
+	case *string:
+		return ParseDuration(*val)
+	case float64:
+		return time.Duration(int64(val)), nil
+	case *float64:
+		return time.Duration(int64(*val)), nil
+	case float32:
+		return time.Duration(int64(val)), nil
+	case *float32:
+		return time.Duration(int64(*val)), nil
+	case int64:
+		return time.Duration(val), nil
+	case *int64:
+		return time.Duration(*val), nil
+	case int32:
+		return time.Duration(val), nil
+	case *int32:
+		return time.Duration(*val), nil
+	case int16:
+		return time.Duration(val), nil
+	case *int16:
+		return time.Duration(*val), nil
+	case int8:
+		return time.Duration(val), nil
+	case *int8:
+		return time.Duration(*val), nil
+	case int:
+		return time.Duration(val), nil
+	case *int:
+		return time.Duration(*val), nil
+	default:
+		return 0, ErrIncompatible("time.Duration", val)
+	}
+}
+
+func ParseDuration(val string) (time.Duration, error) {
+	if i := strings.IndexRune(val, 'd'); i > 0 {
+		var day time.Duration = 0
+		digit := val[0:i]
+		str := val[i+1:]
+		d, err := strconv.ParseInt(digit, 10, 64)
+		if err != nil {
+			return 0, ErrIncompatible("time.Duration", val)
+		}
+		day = time.Duration(d) * 24 * time.Hour
+		if len(str) > 0 {
+			if dur, err := time.ParseDuration(str); err != nil {
+				return 0, ErrIncompatible("time.Duration", val)
+			} else if day >= 0 {
+				return day + dur, nil
+			} else {
+				return day - dur, nil
+			}
+		} else {
+			return day, nil
+		}
+	}
+	if d, err := time.ParseDuration(val); err != nil {
+		return 0, err
+	} else {
+		return d, nil
+	}
+}
+
+func ParseIP(val string) (net.IP, error) {
+	addr := net.ParseIP(val)
+	if addr == nil {
+		return nil, fmt.Errorf("incompatible conv '%v' (%T) to IP", val, val)
+	}
+	return addr, nil
+}
+
+var StandardTimeNow func() time.Time = time.Now
+
+func ParseTime(strVal string, format string, location *time.Location) (time.Time, error) {
+	var baseTime time.Time
+	strVal = strings.TrimSpace(strVal)
+	if strings.HasPrefix(strVal, "now") {
+		baseTime = StandardTimeNow()
+		sig := time.Duration(1)
+		remain := strings.TrimSpace(strVal[3:])
+		if len(remain) == 0 {
+			return baseTime, nil
+		}
+		if strings.HasPrefix(remain, "+") {
+			remain = strings.TrimSpace(remain[1:])
+		} else if strings.HasPrefix(remain, "-") {
+			sig = time.Duration(-1)
+			remain = strings.TrimSpace(remain[1:])
+		} else {
+			return baseTime, ErrIncompatible("time.Time", strVal)
+		}
+		dur, err := ToDuration(remain)
+		if err != nil {
+			return baseTime, fmt.Errorf("incompatible conv '%s', %s", strVal, err.Error())
+		}
+		baseTime = baseTime.Add(dur * sig)
+		return baseTime, nil
+	}
+	if format == "" {
+		return baseTime, ErrIncompatible("time.Time", strVal)
+	}
+
+	timeLayout := GetTimeformat(format)
+	var ts int64
+	var err error
+	switch timeLayout {
+	case "s":
+		if ts, err = ToInt64(strVal); err != nil {
+			return time.Time{}, fmt.Errorf("unable parse time in timeformat, %s", err.Error())
+		}
+		return time.Unix(ts, 0), nil
+	case "ms":
+		if ts, err = ToInt64(strVal); err != nil {
+			return time.Time{}, fmt.Errorf("unable parse time in timeformat, %s", err.Error())
+		}
+		return time.Unix(0, ts*int64(time.Millisecond)), nil
+	case "us":
+		if ts, err = ToInt64(strVal); err != nil {
+			return time.Time{}, fmt.Errorf("unable parse time in timeformat, %s", err.Error())
+		}
+		return time.Unix(0, ts*int64(time.Microsecond)), nil
+	case "ns":
+		if ts, err = ToInt64(strVal); err != nil {
+			return time.Time{}, fmt.Errorf("unable parse time in timeformat, %s", err.Error())
+		}
+		return time.Unix(0, ts), nil
+	default:
+		baseTime, err = time.ParseInLocation(timeLayout, strVal, location)
+		if err != nil {
+			return baseTime, fmt.Errorf("%s, %s", ErrIncompatible("time.Time", strVal).Error(), err)
+		}
+	}
+	return baseTime, nil
+}
+
+func GetTimeformat(f string) string {
+	if m, ok := _predefinedFormats[strings.ToUpper(f)]; ok {
+		return m
+	}
+	return f
+}
+
+// Refer: https://gosamples.dev/date-time-format-cheatsheet/
+var _predefinedFormats = map[string]string{
+	"-":           "2006-01-02 15:04:05.999",
+	"DEFAULT":     "2006-01-02 15:04:05.999",
+	"DEFAULT_MS":  "2006-01-02 15:04:05.999",
+	"DEFAULT_US":  "2006-01-02 15:04:05.999999",
+	"DEFAULT_NS":  "2006-01-02 15:04:05.999999999",
+	"DEFAULT.MS":  "2006-01-02 15:04:05.000",
+	"DEFAULT.US":  "2006-01-02 15:04:05.000000",
+	"DEFAULT.NS":  "2006-01-02 15:04:05.000000000",
+	"NUMERIC":     "01/02 03:04:05PM '06 -0700", // The reference time, in numerical order.
+	"ANSIC":       "Mon Jan _2 15:04:05 2006",
+	"UNIX":        "Mon Jan _2 15:04:05 MST 2006",
+	"RUBY":        "Mon Jan 02 15:04:05 -0700 2006",
+	"RFC822":      "02 Jan 06 15:04 MST",
+	"RFC822Z":     "02 Jan 06 15:04 -0700", // RFC822 with numeric zone
+	"RFC850":      "Monday, 02-Jan-06 15:04:05 MST",
+	"RFC1123":     "Mon, 02 Jan 2006 15:04:05 MST",
+	"RFC1123Z":    "Mon, 02 Jan 2006 15:04:05 -0700", // RFC1123 with numeric zone
+	"RFC3339":     "2006-01-02T15:04:05Z07:00",
+	"RFC3339NANO": "2006-01-02T15:04:05.999999999Z07:00",
+	"KITCHEN":     "3:04:05PM",
+	"STAMP":       "Jan _2 15:04:05",
+	"STAMPMILLI":  "Jan _2 15:04:05.000",
+	"STAMPMICRO":  "Jan _2 15:04:05.000000",
+	"STAMPNANO":   "Jan _2 15:04:05.000000000",
+	"S_NS":        "05.999999999",
+	"S_US":        "05.999999",
+	"S_MS":        "05.999",
+	"S.NS":        "05.000000000",
+	"S.US":        "05.000000",
+	"S.MS":        "05.000",
 }

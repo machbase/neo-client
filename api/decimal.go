@@ -162,14 +162,3 @@ func (d *Decimal) Scan(src any) error {
 	*d = parsed
 	return nil
 }
-
-// NamedParam represents one named bind argument.
-type NamedParam struct {
-	Name  string
-	Value any
-}
-
-// Named creates a named bind argument for native APIs.
-func Named(name string, value any) NamedParam {
-	return NamedParam{Name: name, Value: value}
-}

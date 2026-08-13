@@ -1,12 +1,16 @@
-package api
+package client
 
 import (
 	"database/sql"
 	"database/sql/driver"
+	"errors"
+	"fmt"
 	"math"
 	"net"
 	"strconv"
 	"time"
+
+	"github.com/machbase/neo-client/v2/api"
 )
 
 /**
@@ -214,11 +218,11 @@ func Scan(src any, dst any, loc *time.Location) error {
 		if sv.Valid {
 			return scanString(sv.V, dst)
 		}
-	case JSONString:
+	case api.JSONString:
 		return scanString(string(sv), dst)
-	case *JSONString:
+	case *api.JSONString:
 		return scanString(string(*sv), dst)
-	case *sql.Null[JSONString]:
+	case *sql.Null[api.JSONString]:
 		if sv.Valid {
 			return scanString(string(sv.V), dst)
 		}
@@ -256,9 +260,9 @@ func Scan(src any, dst any, loc *time.Location) error {
 		if sv.Valid {
 			return scanIP(sv.V, dst)
 		}
-	case Decimal:
+	case api.Decimal:
 		switch d := dst.(type) {
-		case *Decimal:
+		case *api.Decimal:
 			*d = sv
 			return nil
 		case *string:
@@ -267,21 +271,21 @@ func Scan(src any, dst any, loc *time.Location) error {
 		case *driver.Value:
 			*d = sv.String()
 			return nil
-		case *sql.Null[Decimal]:
+		case *sql.Null[api.Decimal]:
 			d.V = sv
 			d.Valid = true
 			return nil
 		}
-	case *Decimal:
+	case *api.Decimal:
 		if sv != nil {
 			return Scan(*sv, dst, loc)
 		}
-	case *sql.Null[Decimal]:
+	case *sql.Null[api.Decimal]:
 		if sv.Valid {
 			return Scan(sv.V, dst, loc)
 		}
 	}
-	return ErrCannotConvertValue(src, dst)
+	return fmt.Errorf("cannot convert value from %T to %T", src, dst)
 }
 
 func ScanNull(dst any) bool {
@@ -355,11 +359,11 @@ func ScanNull(dst any) bool {
 	case *sql.Null[[]byte]:
 		d.V = nil
 		d.Valid = false
-	case *sql.Null[JSONString]:
+	case *sql.Null[api.JSONString]:
 		d.V = ""
 		d.Valid = false
-	case *sql.Null[Decimal]:
-		d.V = Decimal{}
+	case *sql.Null[api.Decimal]:
+		d.V = api.Decimal{}
 		d.Valid = false
 	case *sql.Null[any]:
 		d.V = nil
@@ -376,7 +380,7 @@ func ScanNull(dst any) bool {
 
 func scanInt16(src int16, pDst any) error {
 	if src == math.MinInt16 {
-		return ErrDatabaseScanNull("INT16")
+		return errors.New("scan NULL INT16")
 	}
 	switch dst := pDst.(type) {
 	case *int:
@@ -430,14 +434,14 @@ func scanInt16(src int16, pDst any) error {
 	case *driver.Value:
 		*dst = driver.Value(src)
 	default:
-		return ErrDatabaseScanType("INT16", pDst)
+		return fmt.Errorf("scan convert from INT16 to %T not supported", pDst)
 	}
 	return nil
 }
 
 func scanInt32(src int32, pDst any) error {
 	if src == math.MinInt32 {
-		return ErrDatabaseScanNull("INT32")
+		return errors.New("scan NULL INT32")
 	}
 	switch dst := pDst.(type) {
 	case *int:
@@ -462,10 +466,10 @@ func scanInt32(src int32, pDst any) error {
 		*dst = TableType(src)
 	case *TableFlag:
 		*dst = TableFlag(src)
-	case *ColumnType:
-		*dst = ColumnType(src)
-	case *ColumnFlag:
-		*dst = ColumnFlag(src)
+	case *api.ColumnType:
+		*dst = api.ColumnType(src)
+	case *api.ColumnFlag:
+		*dst = api.ColumnFlag(src)
 	case *sql.NullInt32:
 		dst.Valid = true
 		dst.Int32 = src
@@ -490,14 +494,14 @@ func scanInt32(src int32, pDst any) error {
 	case *driver.Value:
 		*dst = driver.Value(src)
 	default:
-		return ErrDatabaseScanType("INT32", pDst)
+		return fmt.Errorf("scan convert from INT32 to %T not supported", pDst)
 	}
 	return nil
 }
 
 func scanInt64(src int64, pDst any) error {
 	if src == math.MinInt64 {
-		return ErrDatabaseScanNull("INT64")
+		return errors.New("scan NULL INT64")
 	}
 	switch dst := pDst.(type) {
 	case *int:
@@ -524,10 +528,10 @@ func scanInt64(src int64, pDst any) error {
 		*dst = TableType(src)
 	case *TableFlag:
 		*dst = TableFlag(src)
-	case *ColumnType:
-		*dst = ColumnType(src)
-	case *ColumnFlag:
-		*dst = ColumnFlag(src)
+	case *api.ColumnType:
+		*dst = api.ColumnType(src)
+	case *api.ColumnFlag:
+		*dst = api.ColumnFlag(src)
 	case *sql.NullInt64:
 		dst.Valid = true
 		dst.Int64 = src
@@ -543,7 +547,7 @@ func scanInt64(src int64, pDst any) error {
 	case *driver.Value:
 		*dst = driver.Value(src)
 	default:
-		return ErrDatabaseScanType("INT64", pDst)
+		return fmt.Errorf("scan convert from INT64 to %T not supported", pDst)
 	}
 	return nil
 }
@@ -565,7 +569,7 @@ func scanDatetime(src time.Time, pDst any, loc *time.Location) error {
 	case *driver.Value:
 		*dst = driver.Value(src)
 	default:
-		return ErrDatabaseScanType("DATETIME", pDst)
+		return fmt.Errorf("scan convert from DATETIME to %T not supported", pDst)
 	}
 	return nil
 }
@@ -596,7 +600,7 @@ func scanFloat32(src float32, pDst any) error {
 	case *int64:
 		*dst = int64(src)
 	default:
-		return ErrDatabaseScanType("FLOAT32", pDst)
+		return fmt.Errorf("scan convert from FLOAT32 to %T not supported", pDst)
 	}
 	return nil
 }
@@ -627,7 +631,7 @@ func scanFloat64(src float64, pDst any) error {
 	case *int64:
 		*dst = int64(src)
 	default:
-		return ErrDatabaseScanType("FLOAT64", pDst)
+		return fmt.Errorf("scan convert from FLOAT64 to %T not supported", pDst)
 	}
 	return nil
 }
@@ -658,7 +662,7 @@ func scanString(src string, pDst any) error {
 		}
 	case *net.IP:
 		if src == "" {
-			return ErrDatabaseScanNull("STRING")
+			return errors.New("scan NULL STRING")
 		}
 		*dst = net.ParseIP(src)
 	case *sql.NullString:
@@ -669,13 +673,13 @@ func scanString(src string, pDst any) error {
 		dst.V = src
 	case *driver.Value:
 		*dst = driver.Value(src)
-	case *JSONString:
-		*dst = JSONString(src)
-	case *sql.Null[JSONString]:
+	case *api.JSONString:
+		*dst = api.JSONString(src)
+	case *sql.Null[api.JSONString]:
 		dst.Valid = true
-		dst.V = JSONString(src)
+		dst.V = api.JSONString(src)
 	default:
-		return ErrDatabaseScanType("STRING", pDst)
+		return fmt.Errorf("scan convert from STRING to %T not supported", pDst)
 	}
 	return nil
 }
@@ -692,7 +696,7 @@ func scanBytes(src []byte, pDst any) error {
 		dst.Valid = true
 		dst.V = src
 	default:
-		return ErrDatabaseScanType("BYTES", pDst)
+		return fmt.Errorf("scan convert from BYTES to %T not supported", pDst)
 	}
 	return nil
 }
@@ -709,7 +713,7 @@ func scanIP(src net.IP, pDst any) error {
 		dst.Valid = true
 		dst.V = src
 	default:
-		return ErrDatabaseScanType("IPv4", pDst)
+		return fmt.Errorf("scan convert from IPv4 to %T not supported", pDst)
 	}
 	return nil
 }
@@ -729,7 +733,7 @@ func scanBool(src bool, pDst any) error {
 	case *driver.Value:
 		*dst = driver.Value(src)
 	default:
-		return ErrDatabaseScanType("BOOL", pDst)
+		return fmt.Errorf("scan convert from BOOL to %T not supported", pDst)
 	}
 	return nil
 }
@@ -762,7 +766,7 @@ func Unbox(val any) any {
 		return *v
 	case *string:
 		return *v
-	case *JSONString:
+	case *api.JSONString:
 		return *v
 	case *time.Time:
 		return *v
@@ -912,13 +916,13 @@ func Unbox(val any) any {
 		} else {
 			return nil
 		}
-	case *sql.Null[JSONString]:
+	case *sql.Null[api.JSONString]:
 		if v.Valid {
 			return v.V
 		} else {
 			return nil
 		}
-	case *sql.Null[Decimal]:
+	case *sql.Null[api.Decimal]:
 		if v.Valid {
 			return v.V
 		} else {

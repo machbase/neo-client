@@ -1,10 +1,12 @@
-package api
+package client
 
 import (
 	"database/sql"
 	"net"
 	"testing"
 	"time"
+
+	"github.com/machbase/neo-client/v2/api"
 )
 
 type unsupportedValue struct {
@@ -247,13 +249,13 @@ func TestUnboxGenericNullWrappers(t *testing.T) {
 		t.Fatalf("Unbox(sql.Null[time.Time]) = %#v", got)
 	}
 
-	dec, err := ParseDecimal("12.34", 10, 2)
+	dec, err := api.ParseDecimal("12.34", 10, 2)
 	if err != nil {
 		t.Fatalf("ParseDecimal error = %v", err)
 	}
-	nDecimal := sql.Null[Decimal]{V: dec, Valid: true}
-	if got, ok := Unbox(&nDecimal).(Decimal); !ok || got.String() != "12.34" {
-		t.Fatalf("Unbox(sql.Null[Decimal]) = %#v", got)
+	nDecimal := sql.Null[api.Decimal]{V: dec, Valid: true}
+	if got, ok := Unbox(&nDecimal).(api.Decimal); !ok || got.String() != "12.34" {
+		t.Fatalf("Unbox(sql.Null[api.Decimal]) = %#v", got)
 	}
 
 	nInvalid := sql.Null[int]{V: 99, Valid: false}
