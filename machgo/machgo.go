@@ -349,22 +349,18 @@ func (c *Conn) close() (ret error) {
 	return ret
 }
 
-func (c *Conn) IOMetrics() (readBytes uint64, writtenBytes uint64, enabled bool) {
+func (c *Conn) IOMetrics(reset bool) (readBytes uint64, writtenBytes uint64, enabled bool) {
 	if c == nil || c.handle == nil {
 		return 0, 0, false
+	}
+	if reset {
+		return c.handle.ResetIOMetrics()
 	}
 	return c.handle.IOMetrics()
 }
 
 func (c *Conn) SupportsDatabaseMetadata() bool {
 	return c != nil && c.handle != nil && c.handle.SupportsDatabaseMetadata()
-}
-
-func (c *Conn) ResetIOMetrics() (readBytes uint64, writtenBytes uint64, enabled bool) {
-	if c == nil || c.handle == nil {
-		return
-	}
-	return c.handle.ResetIOMetrics()
 }
 
 func (c *Conn) Error() error {

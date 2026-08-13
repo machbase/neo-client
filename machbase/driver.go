@@ -210,6 +210,10 @@ func (cn *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("unexpected connection type %T", conn)
 	}
+	if meta, ok := ctx.Value(MetaKey).(*Meta); ok && meta != nil {
+		meta.cbIOMetrics = concrete.IOMetrics
+	}
+
 	return &Conn{connector: cn, conn: concrete, database: cn.cfg.Database}, nil
 }
 
@@ -224,13 +228,13 @@ type ConnectOptionsProvider func(context.Context) ([]api.ConnectOption, error)
 
 type DatabaseConnector struct {
 	driver          *Driver
-	db              api.Database
+	db              *machgo.Database
 	optionsProvider ConnectOptionsProvider
 }
 
 var _ driver.Connector = (*DatabaseConnector)(nil)
 
-func NewDatabaseConnector(db api.Database, optionsProvider ConnectOptionsProvider) (*DatabaseConnector, error) {
+func NewDatabaseConnector(db *machgo.Database, optionsProvider ConnectOptionsProvider) (*DatabaseConnector, error) {
 	if db == nil {
 		return nil, errors.New("database is nil")
 	}
@@ -241,7 +245,7 @@ func NewDatabaseConnector(db api.Database, optionsProvider ConnectOptionsProvide
 	}, nil
 }
 
-func OpenDBWithConnector(db api.Database, optionsProvider ConnectOptionsProvider) (*sql.DB, error) {
+func OpenDBWithConnector(db *machgo.Database, optionsProvider ConnectOptionsProvider) (*sql.DB, error) {
 	cn, err := NewDatabaseConnector(db, optionsProvider)
 	if err != nil {
 		return nil, err
@@ -265,7 +269,8 @@ func (cn *DatabaseConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	if err != nil {
 		return nil, normalizeError(err)
 	}
-	return &Conn{connector: nil, conn: conn, database: connectOptionDatabase(opts)}, nil
+	concrete := conn.(*machgo.Conn)
+	return &Conn{connector: nil, conn: concrete, database: connectOptionDatabase(opts)}, nil
 }
 
 func (cn *DatabaseConnector) Driver() driver.Driver {
@@ -275,9 +280,15 @@ func (cn *DatabaseConnector) Driver() driver.Driver {
 	return cn.driver
 }
 
+type resetSessionConn interface {
+	Close() error
+	Exec(context.Context, string, ...any) api.Result
+}
+
 type Conn struct {
 	connector *Connector
-	conn      api.Conn
+	conn      *machgo.Conn
+	resetConn resetSessionConn
 	txMu      sync.Mutex
 	inTx      bool
 	database  string
@@ -305,13 +316,25 @@ func (c *Conn) Prepare(query string) (driver.Stmt, error) {
 	return c.PrepareContext(context.Background(), query)
 }
 
-func (c *Conn) Close() error {
-	if c == nil || c.conn == nil {
+func (c *Conn) closeUnderlying() error {
+	if c == nil {
 		return nil
 	}
-	err := c.conn.Close()
-	c.conn = nil
-	return normalizeError(err)
+	if c.conn != nil {
+		err := c.conn.Close()
+		c.conn = nil
+		return normalizeError(err)
+	}
+	if c.resetConn != nil {
+		err := c.resetConn.Close()
+		c.resetConn = nil
+		return normalizeError(err)
+	}
+	return nil
+}
+
+func (c *Conn) Close() error {
+	return c.closeUnderlying()
 }
 
 func (c *Conn) Appender(ctx context.Context, tableName string, opts ...api.AppenderOption) (api.Appender, error) {
@@ -378,17 +401,30 @@ func (c *Conn) Ping(ctx context.Context) error {
 	return nil
 }
 
+func (c *Conn) resetExec(ctx context.Context, query string) api.Result {
+	if c == nil {
+		return nil
+	}
+	if c.conn != nil {
+		return c.conn.Exec(ctx, query)
+	}
+	if c.resetConn != nil {
+		return c.resetConn.Exec(ctx, query)
+	}
+	return nil
+}
+
 func (c *Conn) ResetSession(ctx context.Context) error {
-	if c == nil || c.conn == nil {
+	if c == nil || (c.conn == nil && c.resetConn == nil) {
 		return driver.ErrBadConn
 	}
 	c.txMu.Lock()
 	inTx := c.inTx
 	c.txMu.Unlock()
 	if inTx {
-		result := c.conn.Exec(ctx, "ROLLBACK")
-		if err := normalizeError(result.Err()); err != nil {
-			_ = c.Close()
+		result := c.resetExec(ctx, "ROLLBACK")
+		if result == nil || normalizeError(result.Err()) != nil {
+			_ = c.closeUnderlying()
 			return driver.ErrBadConn
 		}
 		c.setTransactionState("ROLLBACK")
@@ -398,9 +434,9 @@ func (c *Conn) ResetSession(ctx context.Context) error {
 	dbDirty := c.dbDirty
 	c.txMu.Unlock()
 	if dbDirty && strings.TrimSpace(database) != "" {
-		result := c.conn.Exec(ctx, "USE "+quoteIdentifier(database))
-		if err := normalizeError(result.Err()); err != nil {
-			_ = c.Close()
+		result := c.resetExec(ctx, "USE "+quoteIdentifier(database))
+		if result == nil || normalizeError(result.Err()) != nil {
+			_ = c.closeUnderlying()
 			return driver.ErrBadConn
 		}
 		c.txMu.Lock()
@@ -426,7 +462,8 @@ func (c *Conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, e
 	if err != nil {
 		return nil, normalizeError(err)
 	}
-	return &Stmt{conn: c, stmt: stmt, query: query}, nil
+	concrete := stmt.(*machgo.PreparedStmt)
+	return &Stmt{conn: c, stmt: concrete, query: query}, nil
 }
 
 func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
@@ -442,7 +479,11 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		return nil, err
 	}
 	c.setTransactionState(query)
-	return &Result{result: result}, nil
+	concrete := result.(*machgo.Result)
+	if meta, ok := ctx.Value(MetaKey).(*Meta); ok {
+		meta.cbMessage = concrete.Message
+	}
+	return &Result{result: concrete}, nil
 }
 
 func (c *Conn) setTransactionState(query string) {
@@ -504,12 +545,17 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		return nil, normalizeError(err)
 	}
 	c.setTransactionState(query)
-	return newRows(rows)
+	concrete := rows.(*machgo.Rows)
+	if meta, ok := ctx.Value(MetaKey).(*Meta); ok {
+		meta.cbMessage = concrete.Message
+		meta.cbFetchable = concrete.IsFetchable
+	}
+	return newRows(concrete)
 }
 
 type Stmt struct {
 	conn  *Conn
-	stmt  api.Stmt
+	stmt  *machgo.PreparedStmt
 	query string
 }
 
@@ -570,7 +616,11 @@ func (s *Stmt) exec(ctx context.Context, vals []any) (driver.Result, error) {
 	if s.conn != nil {
 		s.conn.setTransactionState(s.query)
 	}
-	return &Result{result: result}, nil
+	concrete := result.(*machgo.Result)
+	if meta, ok := ctx.Value(MetaKey).(*Meta); ok {
+		meta.cbMessage = concrete.Message
+	}
+	return &Result{result: concrete}, nil
 }
 
 func (s *Stmt) queryRows(ctx context.Context, vals []any) (driver.Rows, error) {
@@ -584,11 +634,15 @@ func (s *Stmt) queryRows(ctx context.Context, vals []any) (driver.Rows, error) {
 	if s.conn != nil {
 		s.conn.setTransactionState(s.query)
 	}
-	return newRows(rows)
+	concrete := rows.(*machgo.Rows)
+	if meta, ok := ctx.Value(MetaKey).(*Meta); ok {
+		meta.cbMessage = concrete.Message
+	}
+	return newRows(concrete)
 }
 
 type Result struct {
-	result api.Result
+	result *machgo.Result
 }
 
 var _ driver.Result = (*Result)(nil)
@@ -605,7 +659,7 @@ func (r *Result) RowsAffected() (int64, error) {
 }
 
 type Rows struct {
-	rows    api.Rows
+	rows    *machgo.Rows
 	columns api.Columns
 	desc    []api.ColumnDesc
 	buffer  []any
@@ -618,16 +672,14 @@ var _ driver.RowsColumnTypeNullable = (*Rows)(nil)
 var _ driver.RowsColumnTypePrecisionScale = (*Rows)(nil)
 var _ driver.RowsColumnTypeScanType = (*Rows)(nil)
 
-func newRows(rows api.Rows) (*Rows, error) {
+func newRows(rows *machgo.Rows) (*Rows, error) {
 	cols, err := rows.Columns()
 	if err != nil {
 		_ = rows.Close()
 		return nil, normalizeError(err)
 	}
 	ret := &Rows{rows: rows, columns: cols}
-	if provider, ok := rows.(interface{ ColumnDescriptions() []api.ColumnDesc }); ok {
-		ret.desc = provider.ColumnDescriptions()
-	}
+	ret.desc = rows.ColumnDescriptions()
 	return ret, nil
 }
 
@@ -657,22 +709,7 @@ func (r *Rows) Next(dest []driver.Value) error {
 		}
 		return io.EOF
 	}
-	var row []any
-	if provider, ok := r.rows.(interface{ Row() []any }); ok {
-		row = provider.Row()
-	} else {
-		if r.buffer == nil {
-			buf, err := r.columns.MakeBuffer()
-			if err != nil {
-				return normalizeError(err)
-			}
-			r.buffer = buf
-		}
-		if err := r.rows.Scan(r.buffer...); err != nil {
-			return normalizeError(err)
-		}
-		row = r.buffer
-	}
+	var row = r.rows.Row()
 	for i := range dest {
 		if i >= len(row) {
 			dest[i] = nil
@@ -1459,4 +1496,34 @@ func toDriverValue(value any) (driver.Value, error) {
 	default:
 		return nil, fmt.Errorf("machbase cannot convert row value %T to driver.Value", value)
 	}
+}
+
+const MetaKey = "machbase:meta"
+
+type Meta struct {
+	cbMessage   func() string
+	cbFetchable func() bool
+	cbIOMetrics func(reset bool) (readBytes uint64, writtenBytes uint64, enabled bool)
+}
+
+func (m *Meta) Message() string {
+	if m == nil || m.cbMessage == nil {
+		return ""
+	}
+	return m.cbMessage()
+}
+
+func (m *Meta) IsFetchable() bool {
+	if m == nil || m.cbFetchable == nil {
+		return false
+	}
+	return m.cbFetchable()
+}
+
+// Use dsn parameter "io_metrics=1" to enable I/O metrics collection. When enabled, the driver will track the number of bytes read and written for each connection. You can retrieve these metrics using the IOMetrics method on the Conn type.
+func (m *Meta) IOMetrics(reset bool) (readBytes uint64, writtenBytes uint64, enabled bool) {
+	if m.cbIOMetrics != nil {
+		return m.cbIOMetrics(reset)
+	}
+	return 0, 0, false
 }

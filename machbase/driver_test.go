@@ -277,7 +277,7 @@ func TestConnectOptionDatabase(t *testing.T) {
 
 func TestResetSessionRestoresConfiguredDatabase(t *testing.T) {
 	native := &resetTestConn{}
-	conn := &Conn{conn: native, database: `Database "A`, dbDirty: true}
+	conn := &Conn{resetConn: native, database: `Database "A`, dbDirty: true}
 
 	if err := conn.ResetSession(context.Background()); err != nil {
 		t.Fatalf("ResetSession() error = %v", err)
@@ -299,12 +299,12 @@ func TestResetSessionRestoresConfiguredDatabase(t *testing.T) {
 
 func TestResetSessionDatabaseFailureDiscardsConnection(t *testing.T) {
 	native := &resetTestConn{err: errors.New("database unavailable")}
-	conn := &Conn{conn: native, database: "DATABASE_A", dbDirty: true}
+	conn := &Conn{resetConn: native, database: "DATABASE_A", dbDirty: true}
 
 	if err := conn.ResetSession(context.Background()); !errors.Is(err, driver.ErrBadConn) {
 		t.Fatalf("ResetSession() error = %v, want ErrBadConn", err)
 	}
-	if !native.closed || conn.conn != nil {
+	if !native.closed || conn.resetConn != nil || conn.conn != nil {
 		t.Fatal("failed reset did not close the connection")
 	}
 }

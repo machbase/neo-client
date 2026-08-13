@@ -58,6 +58,9 @@ func (ap *Appender) Connect(ctx context.Context, dsn string, table string, colum
 	if strings.TrimSpace(cfg.Database) != "" {
 		opts = append(opts, api.WithDatabase(cfg.Database))
 	}
+	if cfg.IOMetrics {
+		opts = append(opts, api.WithIOMetrics(true))
+	}
 
 	if conn, err := ap.db.Connect(ap.ctx, opts...); err != nil {
 		return err
@@ -65,6 +68,9 @@ func (ap *Appender) Connect(ctx context.Context, dsn string, table string, colum
 		ap.conn = conn.(*machgo.Conn)
 	}
 
+	if meta, ok := ap.ctx.Value(MetaKey).(*Meta); ok && meta != nil {
+		meta.cbIOMetrics = ap.conn.IOMetrics
+	}
 	if raw, err := ap.conn.Appender(ap.ctx, table); err != nil {
 		return err
 	} else {
@@ -93,6 +99,10 @@ func (ap *Appender) Close() (successCount int64, failCount int64, err error) {
 		}
 	}
 	return
+}
+
+func (ap *Appender) Flush() error {
+	return ap.raw.Flush()
 }
 
 func (ap *Appender) TableType() (api.TableType, error) {
