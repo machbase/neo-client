@@ -2,8 +2,6 @@ package api
 
 import (
 	"crypto"
-	"regexp"
-	"strings"
 	"time"
 )
 
@@ -119,42 +117,6 @@ func (AppenderOptionBuffer) appenderOption() {}
 
 func WithAppenderBuffer(threshold int) *AppenderOptionBuffer {
 	return &AppenderOptionBuffer{Threshold: threshold}
-}
-
-func SqlTidy(sqlTextLines ...string) string {
-	sqlText := strings.Join(sqlTextLines, "\n")
-	lines := strings.Split(sqlText, "\n")
-	for i, ln := range lines {
-		lines[i] = strings.TrimSpace(ln)
-	}
-	return strings.Join(lines, " ")
-}
-
-var sqlTidyWidthRegexp = regexp.MustCompile(`\s+`)
-
-func SqlTidyWidth(width int, sqlTextLines ...string) string {
-	sqlText := SqlTidy(sqlTextLines...)
-	sqlText = sqlTidyWidthRegexp.ReplaceAllString(sqlText, " ")
-
-	words := strings.Split(sqlText, " ")
-	lines := []string{}
-	currentLine := ""
-
-	for _, word := range words {
-		if len(currentLine)+len(word)+1 > width {
-			lines = append(lines, currentLine)
-			currentLine = word
-		} else {
-			if currentLine != "" {
-				currentLine += " "
-			}
-			currentLine += word
-		}
-	}
-	if currentLine != "" {
-		lines = append(lines, currentLine)
-	}
-	return strings.Join(lines, "\n")
 }
 
 type ConnectOptionTimeout struct {
