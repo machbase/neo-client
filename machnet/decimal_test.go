@@ -5,7 +5,7 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/machbase/neo-client/api"
+	"github.com/machbase/neo-client/v2/api"
 )
 
 func TestDecimalCodec(t *testing.T) {

@@ -1,4 +1,4 @@
-package machbase
+package client
 
 import (
 	"context"
@@ -6,15 +6,14 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/machbase/neo-client/api"
-	"github.com/machbase/neo-client/machgo"
+	"github.com/machbase/neo-client/v2/api"
 )
 
 type Appender struct {
 	ctx  context.Context
-	db   *machgo.Database
-	conn *machgo.Conn
-	raw  *machgo.Appender
+	db   *ClientDatabase
+	conn *ClientConn
+	raw  *ClientAppender
 
 	columns     []string
 	columnTypes []string
@@ -30,7 +29,7 @@ func (ap *Appender) Connect(ctx context.Context, dsn string, table string, colum
 	if err != nil {
 		return err
 	}
-	if db, err := machgo.NewDatabase(cfg.machgoConfig()); err != nil {
+	if db, err := NewDatabase(cfg.clientConfig()); err != nil {
 		return err
 	} else {
 		ap.db = db
@@ -65,7 +64,7 @@ func (ap *Appender) Connect(ctx context.Context, dsn string, table string, colum
 	if conn, err := ap.db.Connect(ap.ctx, opts...); err != nil {
 		return err
 	} else {
-		ap.conn = conn.(*machgo.Conn)
+		ap.conn = conn.(*ClientConn)
 	}
 
 	if meta, ok := ap.ctx.Value(MetaKey).(*Meta); ok && meta != nil {
@@ -76,9 +75,9 @@ func (ap *Appender) Connect(ctx context.Context, dsn string, table string, colum
 	} else {
 		if len(columns) > 0 {
 			raw = raw.WithInputColumns(columns...)
-			ap.raw = raw.(*machgo.Appender)
+			ap.raw = raw.(*ClientAppender)
 		} else {
-			ap.raw = raw.(*machgo.Appender)
+			ap.raw = raw.(*ClientAppender)
 		}
 	}
 	return nil

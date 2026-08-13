@@ -10,7 +10,7 @@ import (
 	"net"
 	"strings"
 
-	_ "github.com/machbase/neo-client"
+	_ "github.com/machbase/neo-client/v2"
 )
 
 var server = "127.0.0.1:5656"

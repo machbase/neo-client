@@ -4,10 +4,9 @@
 
 It provides:
 
-- `machgo`: the main client package used by applications
-- `machbase`: the standard `database/sql` driver package
+- `neo-client`: the standard `database/sql` driver package
 - `api`: shared interfaces, options, and helper types
-- `machnet`: lower-level protocol and transport implementation used by `machgo`
+- `machnet`: lower-level protocol and transport implementation used by `neo-client`
 
 The examples in this module show how to connect to a Machbase Neo server, execute queries, append time-series records, and use the standard `database/sql` API.
 
@@ -22,22 +21,18 @@ The examples in this repository use the native TCP endpoint, usually `127.0.0.1:
 ## Install
 
 ```sh
-go get github.com/machbase/neo-client
+go get github.com/machbase/neo-client/v2
 ```
 
 ## Package Layout
 
-### `machgo`
+### `client`
 
-Use this package for normal application code. It exposes the database handle, connection management, query execution, prepared statements, and append operations.
+This package provides a standard Go `database/sql` driver on top of the native TCP client. Use it when you want to integrate Machbase Neo with libraries or application code that already expect the standard `database/sql` interfaces.
 
 ### `api`
 
 This package contains interfaces such as `Database`, `Conn`, `Rows`, and `Appender`, plus options like `api.WithPassword`, `api.WithFetchRows`, and `api.WithStatementCache`.
-
-### `machbase`
-
-This package provides a standard Go `database/sql` driver on top of the native TCP client. Use it when you want to integrate Machbase Neo with libraries or application code that already expect the standard `database/sql` interfaces.
 
 ### `machnet`
 
@@ -57,7 +52,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	_ "github.com/machbase/neo-client"
+	_ "github.com/machbase/neo-client/v2"
 )
 
 func main() {
@@ -77,7 +72,7 @@ func main() {
 	for rows.Next() {
 		var (
 			name string
-			id          int64
+			id   int64
 			typ  int
 		)
 		if err := rows.Scan(&name, &id, &typ); err != nil {
@@ -115,7 +110,7 @@ import (
 	"fmt"
 	"time"
 
-	_ "github.com/machbase/neo-client"
+	_ "github.com/machbase/neo-client/v2"
 )
 
 func main() {
@@ -174,7 +169,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	_ "github.com/machbase/neo-client"
+	_ "github.com/machbase/neo-client/v2"
 )
 
 func main() {
@@ -312,8 +307,6 @@ go run ./_example/insert.go -s 127.0.0.1:5656 -u sys -p manager
 
 - Always close `Rows`, `Stmt`, `sql.Conn`, and `sql.DB` objects after use.
 - `Appender.Close()` returns success and failure counts for the append session.
-- For regular application usage, prefer `machgo` over importing `machnet` directly.
-- Use `machbase` when you need compatibility with `database/sql` and its connection pooling.
 - On servers that support transaction tables, the standard driver supports explicit transactions. `LastInsertId` remains unsupported.
 
 ## See Also

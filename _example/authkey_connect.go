@@ -18,7 +18,7 @@ import (
 	"net"
 	"strings"
 
-	_ "github.com/machbase/neo-client"
+	_ "github.com/machbase/neo-client/v2"
 )
 
 func main() {

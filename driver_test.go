@@ -1,4 +1,4 @@
-package machbase
+package client
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/machbase/neo-client/api"
+	"github.com/machbase/neo-client/v2/api"
 )
 
 func TestParseDSNKeyValue(t *testing.T) {

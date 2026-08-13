@@ -1,4 +1,4 @@
-package machbase
+package client
 
 import (
 	"context"
@@ -17,8 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/machbase/neo-client/api"
-	"github.com/machbase/neo-client/machgo"
+	"github.com/machbase/neo-client/v2/api"
 )
 
 const (
@@ -81,8 +80,8 @@ func (cfg Config) validate() error {
 	return nil
 }
 
-func (cfg Config) machgoConfig() *machgo.Config {
-	return &machgo.Config{
+func (cfg Config) clientConfig() *ClientConfig {
+	return &ClientConfig{
 		Host:            cfg.Host,
 		Port:            cfg.Port,
 		AlternativeHost: cfg.AlternativeHost,
@@ -152,7 +151,7 @@ func (drv *Driver) OpenConnector(dsn string) (driver.Connector, error) {
 	if err := effective.validate(); err != nil {
 		return nil, err
 	}
-	db, err := machgo.NewDatabase(effective.machgoConfig())
+	db, err := NewDatabase(effective.clientConfig())
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +161,7 @@ func (drv *Driver) OpenConnector(dsn string) (driver.Connector, error) {
 type Connector struct {
 	driver *Driver
 	cfg    Config
-	db     *machgo.Database
+	db     *ClientDatabase
 }
 
 var _ driver.Connector = (*Connector)(nil)
@@ -205,7 +204,7 @@ func (cn *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	if err != nil {
 		return nil, normalizeError(err)
 	}
-	concrete, ok := conn.(*machgo.Conn)
+	concrete, ok := conn.(*ClientConn)
 	if !ok {
 		_ = conn.Close()
 		return nil, fmt.Errorf("unexpected connection type %T", conn)
@@ -228,13 +227,13 @@ type ConnectOptionsProvider func(context.Context) ([]api.ConnectOption, error)
 
 type DatabaseConnector struct {
 	driver          *Driver
-	db              *machgo.Database
+	db              *ClientDatabase
 	optionsProvider ConnectOptionsProvider
 }
 
 var _ driver.Connector = (*DatabaseConnector)(nil)
 
-func NewDatabaseConnector(db *machgo.Database, optionsProvider ConnectOptionsProvider) (*DatabaseConnector, error) {
+func NewDatabaseConnector(db *ClientDatabase, optionsProvider ConnectOptionsProvider) (*DatabaseConnector, error) {
 	if db == nil {
 		return nil, errors.New("database is nil")
 	}
@@ -245,7 +244,7 @@ func NewDatabaseConnector(db *machgo.Database, optionsProvider ConnectOptionsPro
 	}, nil
 }
 
-func OpenDBWithConnector(db *machgo.Database, optionsProvider ConnectOptionsProvider) (*sql.DB, error) {
+func OpenDBWithConnector(db *ClientDatabase, optionsProvider ConnectOptionsProvider) (*sql.DB, error) {
 	cn, err := NewDatabaseConnector(db, optionsProvider)
 	if err != nil {
 		return nil, err
@@ -269,7 +268,7 @@ func (cn *DatabaseConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	if err != nil {
 		return nil, normalizeError(err)
 	}
-	concrete := conn.(*machgo.Conn)
+	concrete := conn.(*ClientConn)
 	return &Conn{connector: nil, conn: concrete, database: connectOptionDatabase(opts)}, nil
 }
 
@@ -287,7 +286,7 @@ type resetSessionConn interface {
 
 type Conn struct {
 	connector *Connector
-	conn      *machgo.Conn
+	conn      *ClientConn
 	resetConn resetSessionConn
 	txMu      sync.Mutex
 	inTx      bool
@@ -462,7 +461,7 @@ func (c *Conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, e
 	if err != nil {
 		return nil, normalizeError(err)
 	}
-	concrete := stmt.(*machgo.PreparedStmt)
+	concrete := stmt.(*ClientPreparedStmt)
 	return &Stmt{conn: c, stmt: concrete, query: query}, nil
 }
 
@@ -479,7 +478,7 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		return nil, err
 	}
 	c.setTransactionState(query)
-	concrete := result.(*machgo.Result)
+	concrete := result.(*ClientResult)
 	if meta, ok := ctx.Value(MetaKey).(*Meta); ok {
 		meta.cbMessage = concrete.Message
 	}
@@ -545,7 +544,7 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		return nil, normalizeError(err)
 	}
 	c.setTransactionState(query)
-	concrete := rows.(*machgo.Rows)
+	concrete := rows.(*ClientRows)
 	if meta, ok := ctx.Value(MetaKey).(*Meta); ok {
 		meta.cbMessage = concrete.Message
 		meta.cbFetchable = concrete.IsFetchable
@@ -555,7 +554,7 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 
 type Stmt struct {
 	conn  *Conn
-	stmt  *machgo.PreparedStmt
+	stmt  *ClientPreparedStmt
 	query string
 }
 
@@ -616,7 +615,7 @@ func (s *Stmt) exec(ctx context.Context, vals []any) (driver.Result, error) {
 	if s.conn != nil {
 		s.conn.setTransactionState(s.query)
 	}
-	concrete := result.(*machgo.Result)
+	concrete := result.(*ClientResult)
 	if meta, ok := ctx.Value(MetaKey).(*Meta); ok {
 		meta.cbMessage = concrete.Message
 	}
@@ -634,7 +633,7 @@ func (s *Stmt) queryRows(ctx context.Context, vals []any) (driver.Rows, error) {
 	if s.conn != nil {
 		s.conn.setTransactionState(s.query)
 	}
-	concrete := rows.(*machgo.Rows)
+	concrete := rows.(*ClientRows)
 	if meta, ok := ctx.Value(MetaKey).(*Meta); ok {
 		meta.cbMessage = concrete.Message
 	}
@@ -642,7 +641,7 @@ func (s *Stmt) queryRows(ctx context.Context, vals []any) (driver.Rows, error) {
 }
 
 type Result struct {
-	result *machgo.Result
+	result *ClientResult
 }
 
 var _ driver.Result = (*Result)(nil)
@@ -662,7 +661,7 @@ func (r *Result) RowsAffected() (int64, error) {
 }
 
 type Rows struct {
-	rows    *machgo.Rows
+	rows    *ClientRows
 	columns api.Columns
 	desc    []api.ColumnDesc
 	buffer  []any
@@ -675,7 +674,7 @@ var _ driver.RowsColumnTypeNullable = (*Rows)(nil)
 var _ driver.RowsColumnTypePrecisionScale = (*Rows)(nil)
 var _ driver.RowsColumnTypeScanType = (*Rows)(nil)
 
-func newRows(rows *machgo.Rows) (*Rows, error) {
+func newRows(rows *ClientRows) (*Rows, error) {
 	cols, err := rows.Columns()
 	if err != nil {
 		_ = rows.Close()

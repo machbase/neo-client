@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/machbase/neo-client/api"
+	"github.com/machbase/neo-client/v2/api"
 )
 
 type BoundParam struct {

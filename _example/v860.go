@@ -10,8 +10,8 @@ import (
 	"log"
 	"os"
 
-	_ "github.com/machbase/neo-client"
-	"github.com/machbase/neo-client/api"
+	_ "github.com/machbase/neo-client/v2"
+	"github.com/machbase/neo-client/v2/api"
 )
 
 const tableName = "GO860_SQL_SAMPLE"

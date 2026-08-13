@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	client "github.com/machbase/neo-client"
+	client "github.com/machbase/neo-client/v2"
 )
 
 var server = "127.0.0.1:5656"
@@ -35,7 +35,7 @@ func main() {
 
 	ctx := context.Background()
 
-	appender := client.NewAppender()
+	appender := &client.Appender{}
 	// The columns are optional, if not specified, the columns will be retrieved from the table.
 	// So, the below example is equivalent to `appender.Connect(ctx, dsn, "EXAMPLE")`
 	if err := appender.Connect(ctx, dsn, "EXAMPLE", "NAME", "TIME", "VALUE"); err != nil {
