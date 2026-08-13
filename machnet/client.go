@@ -51,6 +51,8 @@ type StmtExecResult struct {
 	stmtType   StmtType
 	message    string
 	rowCount   int64
+	rowID      uint64
+	hasRowID   bool
 	columns    []ColumnMeta
 	paramDesc  []ParamDesc
 	rows       [][]any
@@ -468,15 +470,19 @@ func (c *NativeConn) supportsV403() bool {
 	return protocolVersion() >= cmiV403MetadataVersion && c.serverVersion >= cmiV403MetadataVersion
 }
 
+func (c *NativeConn) supportsGeneratedRowID() bool {
+	return protocolVersion() >= cmiGeneratedRowIDVersion && c.serverVersion >= cmiGeneratedRowIDVersion
+}
+
 func parseStmtResponse(body []byte, sql string, fallbackCols []ColumnMeta) (*StmtExecResult, error) {
-	return parseStmtResponseVersion(body, sql, fallbackCols, true, false)
+	return parseStmtResponseVersion(body, sql, fallbackCols, true, false, false)
 }
 
 func parseStmtResponseWithStmtTypeFallback(body []byte, sql string, fallbackCols []ColumnMeta, useStmtTypeFallback bool) (*StmtExecResult, error) {
-	return parseStmtResponseVersion(body, sql, fallbackCols, useStmtTypeFallback, false)
+	return parseStmtResponseVersion(body, sql, fallbackCols, useStmtTypeFallback, false, false)
 }
 
-func parseStmtResponseVersion(body []byte, sql string, fallbackCols []ColumnMeta, useStmtTypeFallback, v403 bool) (*StmtExecResult, error) {
+func parseStmtResponseVersion(body []byte, sql string, fallbackCols []ColumnMeta, useStmtTypeFallback, v403, generatedRowID bool) (*StmtExecResult, error) {
 	units, err := collectUnits(body)
 	if err != nil {
 		return nil, err
@@ -492,6 +498,15 @@ func parseStmtResponseVersion(body []byte, sql string, fallbackCols []ColumnMeta
 	if rc, ok := firstUnit(units, cmiPRowsID); ok {
 		if v, ok := readUIntLE(rc.data); ok {
 			ret.rowCount = int64(v)
+		}
+	}
+	if generatedRowID {
+		if rowID, ok := firstUnit(units, cmiPGeneratedRowIDID); ok {
+			if len(rowID.data) < 8 {
+				return nil, fmt.Errorf("malformed generated ROWID metadata")
+			}
+			ret.rowID = binary.LittleEndian.Uint64(rowID.data[:8])
+			ret.hasRowID = true
 		}
 	}
 	if st, ok := firstUnit(units, cmimIDStmtType); ok {
@@ -642,7 +657,7 @@ func (c *NativeConn) execDirect(stmtID uint32, sql string) (*StmtExecResult, err
 	if err != nil {
 		return nil, err
 	}
-	ret, err := parseStmtResponseVersion(body, sql, nil, true, c.supportsV403())
+	ret, err := parseStmtResponseVersion(body, sql, nil, true, c.supportsV403(), c.supportsGeneratedRowID())
 	if err != nil {
 		return nil, err
 	}
@@ -663,7 +678,7 @@ func (c *NativeConn) prepare(stmtID uint32, sql string) (*StmtExecResult, error)
 	if err != nil {
 		return nil, err
 	}
-	ret, err := parseStmtResponseVersion(body, sql, nil, true, c.supportsV403())
+	ret, err := parseStmtResponseVersion(body, sql, nil, true, c.supportsV403(), c.supportsGeneratedRowID())
 	if err != nil {
 		return nil, err
 	}
@@ -695,7 +710,7 @@ func (c *NativeConn) executePrepared(stmtID uint32, sql string, params []BoundPa
 	if err != nil {
 		return nil, err
 	}
-	ret, err := parseStmtResponseVersion(body, sql, preparedCols, false, c.supportsV403())
+	ret, err := parseStmtResponseVersion(body, sql, preparedCols, false, c.supportsV403(), c.supportsGeneratedRowID())
 	if err != nil {
 		return nil, err
 	}
@@ -743,7 +758,7 @@ func (c *NativeConn) appendOpen(stmtID uint32, table string, errCheckCount int) 
 	if err != nil {
 		return nil, err
 	}
-	ret, err := parseStmtResponseVersion(body, "APPEND "+table, nil, true, c.supportsV403())
+	ret, err := parseStmtResponseVersion(body, "APPEND "+table, nil, true, c.supportsV403(), false)
 	if err != nil {
 		return nil, err
 	}
