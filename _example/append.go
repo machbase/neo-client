@@ -49,8 +49,8 @@ func main() {
 		println("Append finished. Success:", successCount, "Fail:", failCount)
 	}()
 
-	cols, _ := appender.Columns()
-	typs, _ := appender.ColumnTypes()
+	cols := appender.ColumnNames()
+	typs := appender.ColumnTypes()
 	println("Columns:", strings.Join(cols, ", "))
 	println("Column Types:", strings.Join(typs, ", "))
 
