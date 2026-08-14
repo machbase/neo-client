@@ -1,6 +1,7 @@
 package client
 
 import (
+	"crypto"
 	"errors"
 	"fmt"
 	"net"
@@ -8,6 +9,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/machbase/neo-client/v2/api"
 )
 
 type StatementCacheMode int
@@ -16,6 +20,13 @@ const (
 	StatementCacheOff  StatementCacheMode = 0
 	StatementCacheOn   StatementCacheMode = 1
 	StatementCacheAuto StatementCacheMode = 2
+)
+
+const (
+	defaultQueryStmtPoolCap         = 128
+	defaultQueryStmtPoolPerQueryCap = 8
+	defaultPort                     = 5656
+	defaultFetchRows                = 1000
 )
 
 type Config struct {
@@ -34,13 +45,46 @@ type Config struct {
 	FetchRows       int64
 	StatementCache  StatementCacheMode
 	IOMetrics       bool
+	TimeLocation    *time.Location
 
+	loginName         string
+	key               crypto.PrivateKey
 	statementCacheSet bool
 }
 
-func (cfg Config) validate() error {
+func (cfg *Config) normalize() *Config {
+	if cfg.Port == 0 {
+		cfg.Port = defaultPort
+	}
+	if cfg.FetchRows <= 0 {
+		cfg.FetchRows = defaultFetchRows
+	}
+	if cfg.AuthMode == "" {
+		cfg.AuthMode = "PASSWORD"
+	}
+	if cfg.AuthKeyFile != "" || cfg.AuthKeyPEM != "" {
+		cfg.AuthMode = "CHALLENGE"
+	}
+	if cfg.TimeLocation == nil {
+		cfg.TimeLocation = time.UTC
+	}
+
+	if strings.EqualFold(cfg.User, "sys") && cfg.ProxyUser != "" && !strings.EqualFold(cfg.ProxyUser, "sys") {
+		// "SYS AS PROXY_USER" format is required for proxy user authentication,
+		// and the proxy user cannot be "SYS" ('sys as sys' is 'sys').
+		cfg.loginName = fmt.Sprintf("SYS AS %s", strings.ToUpper(cfg.ProxyUser))
+	} else {
+		cfg.loginName = strings.ToUpper(cfg.User)
+	}
+	return cfg
+}
+
+func (cfg *Config) validate() error {
 	if cfg.Host == "" {
 		return errors.New("machbase dsn requires host or server")
+	}
+	if cfg.Port <= 0 {
+		return fmt.Errorf("machbase dsn has invalid port %d", cfg.Port)
 	}
 	if cfg.User == "" {
 		return errors.New("machbase dsn requires user")
@@ -56,59 +100,20 @@ func (cfg Config) validate() error {
 	if authMode == "CHALLENGE" && strings.TrimSpace(cfg.AuthKeyFile) == "" && strings.TrimSpace(cfg.AuthKeyPEM) == "" {
 		return errors.New("machbase dsn requires auth_key_file or auth_key_pem for auth_mode=CHALLENGE")
 	}
-	if cfg.Port <= 0 {
-		return fmt.Errorf("machbase dsn has invalid port %d", cfg.Port)
+	if strings.EqualFold(cfg.AuthMode, "CHALLENGE") {
+		var key crypto.PrivateKey
+		var err error
+		if strings.TrimSpace(cfg.AuthKeyPEM) != "" {
+			key, err = api.LoadPrivateKeyFromPEM([]byte(cfg.AuthKeyPEM))
+		} else {
+			key, err = api.LoadPrivateKeyFromFile(cfg.AuthKeyFile)
+		}
+		if err != nil {
+			return err
+		}
+		cfg.key = key
 	}
 	return nil
-}
-
-func mergeConfig(base Config, override Config) Config {
-	if override.Host != "" {
-		base.Host = override.Host
-	}
-	if override.Port != 0 {
-		base.Port = override.Port
-	}
-	if override.User != "" {
-		base.User = override.User
-	}
-	if override.ProxyUser != "" {
-		base.ProxyUser = override.ProxyUser
-	}
-	if override.Password != "" {
-		base.Password = override.Password
-	}
-	if override.Database != "" {
-		base.Database = override.Database
-	}
-	if override.AuthMode != "" {
-		base.AuthMode = override.AuthMode
-	}
-	if override.AuthKeyFile != "" {
-		base.AuthKeyFile = override.AuthKeyFile
-	}
-	if override.AuthKeyPEM != "" {
-		base.AuthKeyPEM = override.AuthKeyPEM
-	}
-	if override.AuthSigScheme != "" {
-		base.AuthSigScheme = override.AuthSigScheme
-	}
-	if override.AlternativeHost != "" {
-		base.AlternativeHost = override.AlternativeHost
-	}
-	if override.AlternativePort != 0 {
-		base.AlternativePort = override.AlternativePort
-	}
-	if override.FetchRows != 0 {
-		base.FetchRows = override.FetchRows
-	}
-	if override.statementCacheSet {
-		base.StatementCache = override.StatementCache
-	}
-	if override.IOMetrics {
-		base.IOMetrics = true
-	}
-	return base
 }
 
 // ParseDSN parses a Machbase DSN string and returns connection config.
@@ -132,17 +137,17 @@ func mergeConfig(base Config, override Config) Config {
 //   - user='sys as demo';password='12;34';host=127.0.0.1;
 //   - password="a\"b";password2='a\'b';
 //   - auth_mode=challenge;user=sys;auth_key_pem="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----";
-func ParseDSN(dsn string) (Config, error) {
+func ParseDSN(dsn string) (*Config, error) {
 	var cfg Config
 	dsn = strings.TrimSpace(dsn)
 	if dsn == "" {
-		return cfg, nil
+		return &cfg, nil
 	}
 	scheme := strings.Index(dsn, "://")
 	separator := strings.IndexByte(dsn, '=')
 	if scheme >= 0 && (separator < 0 || separator > scheme) {
 		if err := applyServerValue(&cfg, dsn); err != nil {
-			return Config{}, err
+			return nil, err
 		}
 		return cfg.normalize(), nil
 	}
@@ -150,23 +155,16 @@ func ParseDSN(dsn string) (Config, error) {
 		return parseKeyValueDSN(dsn)
 	}
 	if err := applyServerValue(&cfg, dsn); err != nil {
-		return Config{}, err
+		return nil, err
 	}
 	return cfg.normalize(), nil
 }
 
-func (cfg Config) normalize() Config {
-	if cfg.Port == 0 {
-		cfg.Port = defaultPort
-	}
-	return cfg
-}
-
-func parseKeyValueDSN(dsn string) (Config, error) {
+func parseKeyValueDSN(dsn string) (*Config, error) {
 	var cfg Config
 	parts, err := splitDSNSegments(dsn)
 	if err != nil {
-		return Config{}, err
+		return nil, err
 	}
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
@@ -175,25 +173,25 @@ func parseKeyValueDSN(dsn string) (Config, error) {
 		}
 		key, value, ok := strings.Cut(part, "=")
 		if !ok {
-			return Config{}, fmt.Errorf("invalid dsn segment %q", part)
+			return nil, fmt.Errorf("invalid dsn segment %q", part)
 		}
 		key = strings.ToLower(strings.TrimSpace(key))
 		value = strings.TrimSpace(value)
 		value, err = unquoteDSNValue(value)
 		if err != nil {
-			return Config{}, fmt.Errorf("invalid value for %q: %w", key, err)
+			return nil, fmt.Errorf("invalid value for %q: %w", key, err)
 		}
 		switch key {
 		case "server":
 			if err := applyServerValue(&cfg, value); err != nil {
-				return Config{}, err
+				return nil, err
 			}
 		case "host":
 			cfg.Host = value
 		case "port":
 			port, err := strconv.Atoi(value)
 			if err != nil {
-				return Config{}, fmt.Errorf("invalid port %q", value)
+				return nil, fmt.Errorf("invalid port %q", value)
 			}
 			cfg.Port = port
 		case "user", "uid":
@@ -217,36 +215,36 @@ func parseKeyValueDSN(dsn string) (Config, error) {
 		case "fetch_rows", "fetchrows":
 			rows, err := strconv.ParseInt(value, 10, 64)
 			if err != nil {
-				return Config{}, fmt.Errorf("invalid fetch_rows %q", value)
+				return nil, fmt.Errorf("invalid fetch_rows %q", value)
 			}
 			cfg.FetchRows = rows
 		case "statement_cache", "statementcache":
 			mode, err := parseStatementCacheMode(value)
 			if err != nil {
-				return Config{}, err
+				return nil, err
 			}
 			cfg.StatementCache = mode
 			cfg.statementCacheSet = true
 		case "io_metrics", "iometrics":
 			enabled, err := strconv.ParseBool(value)
 			if err != nil {
-				return Config{}, fmt.Errorf("invalid io_metrics %q", value)
+				return nil, fmt.Errorf("invalid io_metrics %q", value)
 			}
 			cfg.IOMetrics = enabled
 		case "alternative_servers":
 			if err := applyAlternativeServers(&cfg, value); err != nil {
-				return Config{}, err
+				return nil, err
 			}
 		case "alternative_host":
 			cfg.AlternativeHost = value
 		case "alternative_port":
 			port, err := strconv.Atoi(value)
 			if err != nil {
-				return Config{}, fmt.Errorf("invalid alternative_port %q", value)
+				return nil, fmt.Errorf("invalid alternative_port %q", value)
 			}
 			cfg.AlternativePort = port
 		default:
-			return Config{}, fmt.Errorf("unsupported dsn key %q", key)
+			return nil, fmt.Errorf("unsupported dsn key %q", key)
 		}
 	}
 	return cfg.normalize(), nil

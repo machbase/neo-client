@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"net"
@@ -12,7 +13,7 @@ import (
 
 func TestResetSessionRestoresConfiguredDatabase(t *testing.T) {
 	native := &resetTestConn{}
-	conn := &Conn{resetConn: native, database: `Database "A`, dbDirty: true}
+	conn := &Conn{testResetConn: native, database: `Database "A`, dbDirty: true}
 
 	if err := conn.ResetSession(context.Background()); err != nil {
 		t.Fatalf("ResetSession() error = %v", err)
@@ -34,12 +35,12 @@ func TestResetSessionRestoresConfiguredDatabase(t *testing.T) {
 
 func TestResetSessionDatabaseFailureDiscardsConnection(t *testing.T) {
 	native := &resetTestConn{err: errors.New("database unavailable")}
-	conn := &Conn{resetConn: native, database: "DATABASE_A", dbDirty: true}
+	conn := &Conn{testResetConn: native, database: "DATABASE_A", dbDirty: true}
 
 	if err := conn.ResetSession(context.Background()); !errors.Is(err, driver.ErrBadConn) {
 		t.Fatalf("ResetSession() error = %v, want ErrBadConn", err)
 	}
-	if !native.closed || conn.resetConn != nil || conn.conn != nil {
+	if !native.closed || conn.testResetConn != nil || conn.handle != nil {
 		t.Fatal("failed reset did not close the connection")
 	}
 }
@@ -152,32 +153,85 @@ type resetTestConn struct {
 	closed  bool
 }
 
-var _ resetSessionConn = (*resetTestConn)(nil)
+var _ testResetSessionConn = (*resetTestConn)(nil)
 
 func (c *resetTestConn) Close() error {
 	c.closed = true
 	return nil
 }
 
-func (c *resetTestConn) Exec(_ context.Context, query string, _ ...any) *ClientResult {
+func (c *resetTestConn) Exec(_ context.Context, query string, _ ...any) *Result {
 	c.queries = append(c.queries, query)
-	return &ClientResult{err: c.err}
+	return &Result{err: c.err}
 }
 
-func (c *resetTestConn) Query(context.Context, string, ...any) (*ClientRows, error) {
+func (c *resetTestConn) Query(context.Context, string, ...any) (*Rows, error) {
 	return nil, errors.New("not implemented")
 }
 
-func (c *resetTestConn) QueryRow(context.Context, string, ...any) *ClientRow { return nil }
+func (c *resetTestConn) QueryRow(context.Context, string, ...any) *Row { return nil }
 
-func (c *resetTestConn) Prepare(context.Context, string) (*ClientStmt, error) {
+func (c *resetTestConn) Prepare(context.Context, string) (*Stmt, error) {
 	return nil, errors.New("not implemented")
 }
 
-func (c *resetTestConn) Appender(context.Context, string) (*ClientAppender, error) {
+func (c *resetTestConn) Appender(context.Context, string) (*Appender, error) {
 	return nil, errors.New("not implemented")
 }
 
 func (c *resetTestConn) Explain(context.Context, string, bool) (string, error) {
 	return "", errors.New("not implemented")
+}
+
+func TestResultLastInsertIDPreservesUint64Bits(t *testing.T) {
+	for _, value := range []uint64{0, 1, 0x8000000000000000, 0xfffffffffffffffe} {
+		result := &Result{rowID: value, hasRowID: true}
+		got, err := result.LastInsertId()
+		if err != nil {
+			t.Fatalf("LastInsertId(%#x) error = %v", value, err)
+		}
+		if uint64(got) != value {
+			t.Fatalf("LastInsertId(%#x) bits = %#x", value, uint64(got))
+		}
+	}
+
+	if _, err := (&Result{}).LastInsertId(); err == nil {
+		t.Fatal("LastInsertId() without generated ROWID unexpectedly succeeded")
+	}
+}
+
+func TestRowScanNullDestination(t *testing.T) {
+	row := &Row{values: []any{nil}}
+	var direct string
+	if err := row.Scan(&direct); err == nil {
+		t.Fatal("Row.Scan NULL into string should fail")
+	}
+	nullable := sql.NullString{String: "stale", Valid: true}
+	if err := row.Scan(&nullable); err != nil {
+		t.Fatalf("Row.Scan NULL into NullString: %v", err)
+	}
+	if nullable.Valid {
+		t.Fatal("Row.Scan NULL left NullString valid")
+	}
+	if nullable.String != "" {
+		t.Fatalf("Row.Scan NULL left stale value %q", nullable.String)
+	}
+}
+
+func TestRowsScanNullDestination(t *testing.T) {
+	rows := &Rows{row: []any{nil}}
+	var direct string
+	if err := rows.Scan(&direct); err == nil {
+		t.Fatal("Rows.Scan NULL into string should fail")
+	}
+	nullable := sql.NullString{String: "stale", Valid: true}
+	if err := rows.Scan(&nullable); err != nil {
+		t.Fatalf("Rows.Scan NULL into NullString: %v", err)
+	}
+	if nullable.Valid {
+		t.Fatal("Rows.Scan NULL left NullString valid")
+	}
+	if nullable.String != "" {
+		t.Fatalf("Rows.Scan NULL left stale value %q", nullable.String)
+	}
 }

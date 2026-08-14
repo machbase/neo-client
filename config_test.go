@@ -232,8 +232,8 @@ func TestConfigValidateImplicitChallengeWithAuthKeyPEM(t *testing.T) {
 }
 
 func TestDriverOpenConnectorMergesDefaults(t *testing.T) {
-	drv := &Driver{Host: "127.0.0.1", Port: 5656, User: "sys", Password: "manager", Database: "DEFAULT_DB", StatementCache: StatementCacheOn}
-	connector, err := drv.OpenConnector("fetch_rows=500")
+	drv := &Driver{}
+	connector, err := drv.OpenConnector("host=127.0.0.1; port=5656; user=sys; password=manager; database=DEFAULT_DB; statement_cache=on; fetch_rows=500")
 	if err != nil {
 		t.Fatalf("OpenConnector() error = %v", err)
 	}

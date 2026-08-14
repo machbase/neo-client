@@ -7,19 +7,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/machbase/neo-client/v2/api"
+	"github.com/machbase/neo-client/v2/machnet"
 )
 
 const (
 	DefaultDriverName = "machbase"
-	defaultPort       = 5656
 )
 
 func init() {
@@ -27,47 +27,10 @@ func init() {
 }
 
 type Driver struct {
-	Host            string
-	Port            int
-	User            string
-	Password        string
-	Database        string
-	AuthMode        string
-	AuthKeyFile     string
-	AuthKeyPEM      string
-	AuthSigScheme   string
-	AlternativeHost string
-	AlternativePort int
-	FetchRows       int64
-	StatementCache  StatementCacheMode
-	IOMetrics       bool
 }
 
 var _ driver.Driver = (*Driver)(nil)
 var _ driver.DriverContext = (*Driver)(nil)
-
-func (drv *Driver) baseConfig() Config {
-	statementCache := drv.StatementCache
-	if statementCache != StatementCacheOn && statementCache != StatementCacheOff {
-		statementCache = StatementCacheAuto
-	}
-	return Config{
-		Host:            drv.Host,
-		Port:            drv.Port,
-		User:            drv.User,
-		Password:        drv.Password,
-		Database:        drv.Database,
-		AuthMode:        drv.AuthMode,
-		AuthKeyFile:     drv.AuthKeyFile,
-		AuthKeyPEM:      drv.AuthKeyPEM,
-		AuthSigScheme:   drv.AuthSigScheme,
-		AlternativeHost: drv.AlternativeHost,
-		AlternativePort: drv.AlternativePort,
-		FetchRows:       drv.FetchRows,
-		StatementCache:  statementCache,
-		IOMetrics:       drv.IOMetrics,
-	}.normalize()
-}
 
 func (drv *Driver) Open(dsn string) (driver.Conn, error) {
 	connector, err := drv.OpenConnector(dsn)
@@ -82,37 +45,86 @@ func (drv *Driver) OpenConnector(dsn string) (driver.Connector, error) {
 	if err != nil {
 		return nil, err
 	}
-	effective := mergeConfig(drv.baseConfig(), cfg).normalize()
-	if err := effective.validate(); err != nil {
+	if err := cfg.normalize().validate(); err != nil {
 		return nil, err
 	}
-	db, err := NewDatabase(&effective)
-	if err != nil {
+
+	var handle *machnet.EnvHandle
+	if h, err := machnet.Initialize(); err != nil {
 		return nil, err
+	} else {
+		handle = h
 	}
-	return &Connector{driver: drv, cfg: effective, db: db}, nil
+	return &Connector{
+		driver: drv,
+		cfg:    cfg,
+		handle: handle,
+	}, nil
 }
 
 type Connector struct {
 	driver *Driver
-	cfg    Config
-	db     *ClientDatabase
+	cfg    *Config
+	handle *machnet.EnvHandle
 }
 
 var _ driver.Connector = (*Connector)(nil)
+var _ io.Closer = (*Connector)(nil)
 
 func (cn *Connector) Connect(ctx context.Context) (driver.Conn, error) {
-	if cn == nil || cn.db == nil {
+	if cn == nil || cn.handle == nil {
 		return nil, driver.ErrBadConn
 	}
-	conn, err := cn.db.ConnectConfig(ctx, &cn.cfg)
-	if err != nil {
-		return nil, normalizeError(err)
+	var handle *machnet.ConnHandle
+	if c, err := cn.handle.Connect(cn.connectionString(), cn.cfg.key); err != nil {
+		return nil, normalizeError(cn.ErrorOf(err))
+	} else {
+		handle = c
+	}
+	ret := &Conn{
+		cn:                     cn,
+		database:               cn.cfg.Database,
+		handle:                 handle,
+		user:                   strings.ToUpper(cn.cfg.loginName),
+		usedAt:                 time.Now(),
+		timeLocation:           cn.cfg.TimeLocation,
+		queryStmtReuseMode:     cn.cfg.StatementCache,
+		queryStmtPool:          map[string][]*Stmt{},
+		queryStmtPoolCap:       defaultQueryStmtPoolCap,
+		queryStmtPoolPerKeyCap: defaultQueryStmtPoolPerQueryCap,
+	}
+	if strings.TrimSpace(cn.cfg.Database) != "" && !strings.EqualFold(cn.cfg.Database, "MACHBASEDB") {
+		if err := ret.exec(ctx, "USE "+quoteIdentifier(cn.cfg.Database)).Err(); err != nil {
+			return nil, errors.Join(err, ret.Close())
+		}
 	}
 	if meta, ok := ctx.Value(MetaKey).(*Meta); ok && meta != nil {
-		meta.cbIOMetrics = conn.IOMetrics
+		meta.cbIOMetrics = ret.IOMetrics
 	}
-	return &Conn{conn: conn, database: cn.cfg.Database}, nil
+	return ret, nil
+}
+
+func (cn *Connector) connectionString() string {
+	entries := []string{
+		fmt.Sprintf("SERVER=%s", cn.cfg.Host),
+		fmt.Sprintf("PORT_NO=%d", cn.cfg.Port),
+		fmt.Sprintf("UID=%s", strings.ToUpper(cn.cfg.loginName)),
+		fmt.Sprintf("PWD=%s", cn.cfg.Password),
+		"CONNTYPE=1",
+		fmt.Sprintf("FETCH_ROWS=%d", cn.cfg.FetchRows),
+	}
+	if cn.cfg.IOMetrics {
+		entries = append(entries, "IO_METRICS=1")
+	}
+	if strings.TrimSpace(cn.cfg.AuthMode) != "" {
+		entries = append(entries, fmt.Sprintf("AUTH_MODE=%s", cn.cfg.AuthMode))
+	}
+	if cn.cfg.AlternativeHost != "" && cn.cfg.AlternativePort != 0 {
+		entries = append(entries,
+			fmt.Sprintf("ALTERNATIVE_SERVERS=%s:%d",
+				cn.cfg.AlternativeHost, cn.cfg.AlternativePort))
+	}
+	return strings.Join(entries, ";")
 }
 
 func (cn *Connector) Driver() driver.Driver {
@@ -122,18 +134,74 @@ func (cn *Connector) Driver() driver.Driver {
 	return cn.driver
 }
 
-type resetSessionConn interface {
+// If a Connector implements [io.Closer], the [database/sql.DB.Close]
+// method will call the Close method and return error (if any).
+func (cn *Connector) Close() error {
+	if cn == nil || cn.handle == nil {
+		return nil
+	}
+	if err := cn.handle.Finalize(); err == nil {
+		cn.handle = nil
+		return nil
+	} else {
+		return err
+	}
+}
+
+func (cn *Connector) ErrorOf(cause error) error {
+	code, msg := cn.handle.Error()
+	if code == 0 && msg == "" && cause == nil {
+		// no error
+		return nil
+	} else if code == 0 && msg != "" {
+		// code == 0 means client-side error
+		if cause == nil {
+			return fmt.Errorf("MACHCLI %s", msg)
+		} else {
+			return fmt.Errorf("MACHCLI %s, %s", msg, cause.Error())
+		}
+	} else {
+		// code > 0 means server-side error
+		if cause == nil {
+			return fmt.Errorf("MACHCLI-ERR-%d, %s", code, msg)
+		} else {
+			return fmt.Errorf("MACHCLI-ERR-%d, %s", code, msg)
+		}
+	}
+}
+
+// testResetSessionConn is a seam for unit-testing ResetSession without a real machnet.ConnHandle.
+type testResetSessionConn interface {
 	Close() error
-	Exec(context.Context, string, ...any) *ClientResult
+	Exec(context.Context, string, ...any) *Result
 }
 
 type Conn struct {
-	conn      *ClientConn
-	resetConn resetSessionConn
-	txMu      sync.Mutex
-	inTx      bool
-	database  string
-	dbDirty   bool
+	handle *machnet.ConnHandle
+	cn     *Connector
+
+	user      string
+	usedAt    time.Time
+	usedCount int64
+	closeOnce sync.Once
+	sessionMu sync.Mutex
+
+	timeLocation           *time.Location
+	queryStmtReuseMode     StatementCacheMode
+	queryStmtPoolMu        sync.Mutex
+	queryStmtFastKey       string
+	queryStmtFast          *Stmt
+	queryStmtPool          map[string][]*Stmt
+	queryStmtPoolCount     int
+	queryStmtPoolCap       int
+	queryStmtPoolPerKeyCap int
+	catalogGeneration      atomic.Uint64
+
+	testResetConn testResetSessionConn // only set by tests; nil in production
+	txMu          sync.Mutex
+	inTx          bool
+	database      string
+	dbDirty       bool
 }
 
 var _ driver.Conn = (*Conn)(nil)
@@ -147,10 +215,89 @@ var _ driver.SessionResetter = (*Conn)(nil)
 var _ driver.Validator = (*Conn)(nil)
 
 func (c *Conn) Explain(ctx context.Context, query string, full bool) (string, error) {
-	if c == nil || c.conn == nil {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+
+	if c == nil || c.handle == nil {
 		return "", driver.ErrBadConn
 	}
-	return c.conn.Explain(ctx, query, full)
+	if full {
+		query = "explain full " + query
+	} else {
+		query = "explain " + query
+	}
+
+	var stmt *machnet.StmtHandle
+	if s, err := c.handle.AllocStmt(); err != nil {
+		return "", c.ErrorOf(err)
+	} else {
+		stmt = s
+	}
+	defer stmt.Free()
+
+	if err := stmt.ExecDirect(query); err != nil {
+		return "", c.ErrorOf(err)
+	}
+
+	ret := make([]string, 0, 20)
+	for {
+		if row, err := stmt.Fetch(); err != nil {
+			return "", err
+		} else if row == nil {
+			break
+		} else {
+			line := make([]string, 0, len(row))
+			for _, col := range row {
+				if col == nil {
+					line = append(line, "NULL")
+				} else {
+					line = append(line, fmt.Sprintf("%v", col))
+				}
+			}
+			ret = append(ret, strings.Join(line, " "))
+		}
+	}
+	return strings.Join(ret, "\n"), nil
+}
+
+func (c *Conn) IOMetrics(reset bool) (readBytes uint64, writtenBytes uint64, enabled bool) {
+	if c == nil || c.handle == nil {
+		return 0, 0, false
+	}
+	if reset {
+		return c.handle.ResetIOMetrics()
+	}
+	return c.handle.IOMetrics()
+}
+
+func (c *Conn) SupportsDatabaseMetadata() bool {
+	return c != nil && c.handle != nil && c.handle.SupportsDatabaseMetadata()
+}
+
+func (c *Conn) Error() error {
+	return c.ErrorOf(nil)
+}
+
+func (c *Conn) ErrorOf(cause error) error {
+	code, msg := c.handle.Error()
+	if code == 0 && msg == "" && cause == nil {
+		// no error
+		return nil
+	} else if code == 0 && msg != "" {
+		// code == 0 means client-side error
+		if cause == nil {
+			return fmt.Errorf("MACHCLI %s", msg)
+		} else {
+			return fmt.Errorf("MACHCLI %s, %s", msg, cause.Error())
+		}
+	} else {
+		// code > 0 means server-side error
+		if cause == nil {
+			return fmt.Errorf("MACHCLI-ERR-%d, %s", code, msg)
+		} else {
+			return fmt.Errorf("MACHCLI-ERR-%d, %s", code, msg)
+		}
+	}
 }
 
 func (c *Conn) Prepare(query string) (driver.Stmt, error) {
@@ -161,25 +308,209 @@ func (c *Conn) closeUnderlying() error {
 	if c == nil {
 		return nil
 	}
-	if c.conn != nil {
-		err := c.conn.Close()
-		c.conn = nil
-		return normalizeError(err)
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	if c.handle != nil {
+		if err := c.close(); err != nil {
+			return normalizeError(err)
+		}
 	}
-	if c.resetConn != nil {
-		err := c.resetConn.Close()
-		c.resetConn = nil
+	if c.testResetConn != nil {
+		err := c.testResetConn.Close()
+		c.testResetConn = nil
 		return normalizeError(err)
 	}
 	return nil
+}
+
+func (c *Conn) close() (ret error) {
+	c.closeOnce.Do(func() {
+		defer func() {
+			c.usedAt = time.Now()
+			c.usedCount++
+		}()
+		c.catalogGeneration.Add(1)
+		if err := c.closeQueryStmtPool(); err != nil && ret == nil {
+			ret = err
+		}
+		if err := c.handle.Disconnect(); err != nil {
+			if ret == nil {
+				ret = c.ErrorOf(err)
+			}
+		}
+	})
+	return ret
 }
 
 func (c *Conn) Close() error {
 	return c.closeUnderlying()
 }
 
-func (c *Conn) Appender(ctx context.Context, tableName string) (*ClientAppender, error) {
-	return c.conn.Appender(ctx, tableName)
+func (c *Conn) shouldReuseStmtForQuery(query string) bool {
+	switch c.queryStmtReuseMode {
+	case StatementCacheOn:
+		return true
+	case StatementCacheOff:
+		return false
+	default:
+		switch queryHead(query) {
+		case "SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "MERGE", "UPSERT", "REPLACE":
+			return true
+		default:
+			return false
+		}
+	}
+}
+
+func (c *Conn) acquireQueryStmt(query string) (*Stmt, error) {
+	generation := c.catalogGeneration.Load()
+	if !c.shouldReuseStmtForQuery(query) {
+		stmt, err := c.NewStmt()
+		if err != nil {
+			return nil, err
+		}
+		stmt.catalogGeneration = generation
+		if err := stmt.prepare(query); err != nil {
+			_ = stmt.Close()
+			return nil, err
+		}
+		return stmt, nil
+	}
+	c.queryStmtPoolMu.Lock()
+	if c.queryStmtFast != nil && c.queryStmtFastKey == query {
+		stmt := c.queryStmtFast
+		c.queryStmtFast = nil
+		c.queryStmtFastKey = ""
+		c.queryStmtPoolMu.Unlock()
+
+		if stmt.catalogGeneration != generation {
+			_ = stmt.Close()
+			return c.acquireQueryStmt(query)
+		}
+		stmt.reachEOF = false
+		if stmt.handle.SupportsReprepare() {
+			if err := stmt.prepare(query); err != nil {
+				_ = stmt.Close()
+				return nil, err
+			}
+		}
+		return stmt, nil
+	}
+	if pool := c.queryStmtPool[query]; len(pool) > 0 {
+		idx := len(pool) - 1
+		stmt := pool[idx]
+		if idx == 0 {
+			delete(c.queryStmtPool, query)
+		} else {
+			c.queryStmtPool[query] = pool[:idx]
+		}
+		if c.queryStmtPoolCount > 0 {
+			c.queryStmtPoolCount--
+		}
+		c.queryStmtPoolMu.Unlock()
+
+		if stmt.catalogGeneration != generation {
+			_ = stmt.Close()
+			return c.acquireQueryStmt(query)
+		}
+		stmt.reachEOF = false
+		if stmt.handle.SupportsReprepare() {
+			if err := stmt.prepare(query); err != nil {
+				_ = stmt.Close()
+				return nil, err
+			}
+		}
+		return stmt, nil
+	}
+	c.queryStmtPoolMu.Unlock()
+
+	stmt, err := c.NewStmt()
+	if err != nil {
+		return nil, err
+	}
+	stmt.catalogGeneration = generation
+	if err := stmt.prepare(query); err != nil {
+		_ = stmt.Close()
+		return nil, err
+	}
+	return stmt, nil
+}
+
+func (c *Conn) releaseQueryStmt(query string, stmt *Stmt, reusable bool) error {
+	if stmt == nil {
+		return nil
+	}
+	if !c.shouldReuseStmtForQuery(query) {
+		return stmt.Close()
+	}
+	if !reusable {
+		return stmt.Close()
+	}
+	stmt.reachEOF = false
+	if err := stmt.handle.ExecuteClean(); err != nil {
+		_ = stmt.Close()
+		return stmt.ErrorOf(err)
+	}
+
+	keep := false
+	c.queryStmtPoolMu.Lock()
+	if stmt.catalogGeneration != c.catalogGeneration.Load() {
+		keep = false
+	} else if c.queryStmtFast == nil {
+		c.queryStmtFast = stmt
+		c.queryStmtFastKey = query
+		keep = true
+	} else if c.queryStmtPool != nil &&
+		c.queryStmtPoolCount < c.queryStmtPoolCap &&
+		len(c.queryStmtPool[query]) < c.queryStmtPoolPerKeyCap {
+		c.queryStmtPool[query] = append(c.queryStmtPool[query], stmt)
+		c.queryStmtPoolCount++
+		keep = true
+	}
+	c.queryStmtPoolMu.Unlock()
+
+	if keep {
+		return nil
+	}
+	return stmt.Close()
+}
+
+func (c *Conn) closeQueryStmtPool() error {
+	if c.queryStmtReuseMode == StatementCacheOff {
+		return nil
+	}
+	c.queryStmtPoolMu.Lock()
+	if len(c.queryStmtPool) == 0 && c.queryStmtFast == nil {
+		c.queryStmtPoolMu.Unlock()
+		return nil
+	}
+	capHint := c.queryStmtPoolCount
+	if c.queryStmtFast != nil {
+		capHint++
+	}
+	statements := make([]*Stmt, 0, capHint)
+	if c.queryStmtFast != nil {
+		statements = append(statements, c.queryStmtFast)
+		c.queryStmtFast = nil
+		c.queryStmtFastKey = ""
+	}
+	for key, pool := range c.queryStmtPool {
+		statements = append(statements, pool...)
+		delete(c.queryStmtPool, key)
+	}
+	c.queryStmtPoolCount = 0
+	c.queryStmtPoolMu.Unlock()
+
+	var firstErr error
+	for _, stmt := range statements {
+		if stmt == nil {
+			continue
+		}
+		if err := stmt.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (c *Conn) Begin() (driver.Tx, error) {
@@ -193,7 +524,7 @@ func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 	if opts.ReadOnly {
 		return nil, errors.New("machbase read-only transactions are not supported")
 	}
-	if c == nil || c.conn == nil {
+	if c == nil || c.handle == nil {
 		return nil, driver.ErrBadConn
 	}
 	if _, err := c.ExecContext(ctx, "BEGIN", nil); err != nil {
@@ -231,7 +562,7 @@ func (tx *Tx) Commit() error { return tx.finish("COMMIT") }
 func (tx *Tx) Rollback() error { return tx.finish("ROLLBACK") }
 
 func (c *Conn) Ping(ctx context.Context) error {
-	if c == nil || c.conn == nil {
+	if c == nil || c.handle == nil {
 		return driver.ErrBadConn
 	}
 	rows, err := c.QueryContext(ctx, "SELECT 1", nil)
@@ -242,21 +573,21 @@ func (c *Conn) Ping(ctx context.Context) error {
 	return nil
 }
 
-func (c *Conn) resetExec(ctx context.Context, query string) *ClientResult {
+func (c *Conn) resetExec(ctx context.Context, query string) *Result {
 	if c == nil {
 		return nil
 	}
-	if c.conn != nil {
-		return c.conn.Exec(ctx, query)
+	if c.handle != nil {
+		return c.exec(ctx, query)
 	}
-	if c.resetConn != nil {
-		return c.resetConn.Exec(ctx, query)
+	if c.testResetConn != nil {
+		return c.testResetConn.Exec(ctx, query)
 	}
 	return nil
 }
 
 func (c *Conn) ResetSession(ctx context.Context) error {
-	if c == nil || (c.conn == nil && c.resetConn == nil) {
+	if c == nil || (c.handle == nil && c.testResetConn == nil) {
 		return driver.ErrBadConn
 	}
 	c.txMu.Lock()
@@ -288,7 +619,7 @@ func (c *Conn) ResetSession(ctx context.Context) error {
 }
 
 func (c *Conn) IsValid() bool {
-	return c != nil && c.conn != nil
+	return c != nil && c.handle != nil
 }
 
 func (c *Conn) CheckNamedValue(nv *driver.NamedValue) error {
@@ -296,25 +627,44 @@ func (c *Conn) CheckNamedValue(nv *driver.NamedValue) error {
 }
 
 func (c *Conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
-	if c == nil || c.conn == nil {
+	if c == nil || c.handle == nil {
 		return nil, driver.ErrBadConn
 	}
-	stmt, err := c.conn.Prepare(ctx, query)
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+
+	stmt, err := c.NewStmt()
 	if err != nil {
-		return nil, normalizeError(err)
+		return nil, err
 	}
-	return &Stmt{conn: c, stmt: stmt, query: query}, nil
+
+	if err := stmt.prepare(query); err != nil {
+		stmt.Close()
+		return nil, err
+	}
+	return stmt, nil
+}
+
+func (c *Conn) NewStmt() (*Stmt, error) {
+	var handle *machnet.StmtHandle
+	if h, err := c.handle.AllocStmt(); err != nil {
+		return nil, c.ErrorOf(err)
+	} else {
+		handle = h
+	}
+	ret := &Stmt{conn: c, handle: handle}
+	return ret, nil
 }
 
 func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	if c == nil || c.conn == nil {
+	if c == nil || c.handle == nil {
 		return nil, driver.ErrBadConn
 	}
 	vals, err := namedValuesToAny(args)
 	if err != nil {
 		return nil, err
 	}
-	result := c.conn.Exec(ctx, query, vals...)
+	result := c.exec(ctx, query, vals...)
 	if err := normalizeError(result.Err()); err != nil {
 		return nil, err
 	}
@@ -322,7 +672,68 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	if meta, ok := ctx.Value(MetaKey).(*Meta); ok {
 		meta.cbMessage = result.Message
 	}
-	return &Result{result: result}, nil
+	return result, nil
+}
+
+func (c *Conn) exec(_ context.Context, query string, args ...any) *Result {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	ret := &Result{}
+	if len(args) == 0 {
+		stmt, err := c.NewStmt()
+		if err != nil {
+			ret.err = err
+			return ret
+		}
+		defer stmt.Close()
+
+		if err := stmt.handle.ExecDirect(query); err != nil {
+			ret.err = c.ErrorOf(err)
+			return ret
+		}
+		ret.rowCount, ret.err = stmt.handle.RowCount()
+		ret.rowID, ret.hasRowID = stmt.handle.GeneratedRowID()
+		if typ, err := stmt.handle.GetStmtType(); err != nil {
+			ret.err = err
+			return ret
+		} else {
+			ret.stmtType = typ
+		}
+		if ret.stmtType == machnet.QPP_STMT_TYPE_ALTER_SESSION_SET ||
+			ret.stmtType == machnet.QPP_STMT_TYPE_CONNECT_USER {
+			c.catalogGeneration.Add(1)
+			if err := c.closeQueryStmtPool(); err != nil {
+				ret.err = err
+			}
+		}
+		return ret
+	}
+
+	stmt, err := c.acquireQueryStmt(query)
+	if err != nil {
+		ret.err = err
+		return ret
+	}
+	defer func() {
+		keep := ret.err == nil
+		if relErr := c.releaseQueryStmt(query, stmt, keep); relErr != nil && ret.err == nil {
+			ret.err = relErr
+		}
+	}()
+
+	if ret.err = stmt.bindParams(args...); ret.err != nil {
+		return ret
+	}
+	ret.err = stmt.execute()
+	ret.rowCount = stmt.rowCount
+	ret.rowID, ret.hasRowID = stmt.handle.GeneratedRowID()
+	if typ, err := stmt.handle.GetStmtType(); err != nil {
+		ret.err = err
+		return ret
+	} else {
+		ret.stmtType = typ
+	}
+	return ret
 }
 
 func (c *Conn) setTransactionState(query string) {
@@ -339,47 +750,17 @@ func (c *Conn) setTransactionState(query string) {
 	c.txMu.Unlock()
 }
 
-func leadingSQLKeyword(query string) string {
-	remaining := strings.TrimSpace(query)
-	for remaining != "" {
-		switch {
-		case strings.HasPrefix(remaining, "--"):
-			newline := strings.IndexByte(remaining, '\n')
-			if newline < 0 {
-				return ""
-			}
-			remaining = strings.TrimSpace(remaining[newline+1:])
-		case strings.HasPrefix(remaining, "/*"):
-			end := strings.Index(remaining[2:], "*/")
-			if end < 0 {
-				return ""
-			}
-			remaining = strings.TrimSpace(remaining[end+4:])
-		default:
-			end := 0
-			for end < len(remaining) {
-				ch := remaining[end]
-				if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-					(ch >= '0' && ch <= '9') || ch == '_' || ch == '$') {
-					break
-				}
-				end++
-			}
-			return strings.ToUpper(remaining[:end])
-		}
-	}
-	return ""
-}
-
 func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	if c == nil || c.conn == nil {
+	if c == nil || c.handle == nil {
 		return nil, driver.ErrBadConn
 	}
 	vals, err := namedValuesToAny(args)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := c.conn.Query(ctx, query, vals...)
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	rows, err := c.query(ctx, query, vals...)
 	if err != nil {
 		return nil, normalizeError(err)
 	}
@@ -388,13 +769,115 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		meta.cbMessage = rows.Message
 		meta.cbFetchable = rows.IsFetchable
 	}
-	return newRows(rows)
+	return rows, nil
+}
+
+func (c *Conn) query(_ context.Context, query string, args ...any) (*Rows, error) {
+	stmt, err := c.acquireQueryStmt(query)
+	if err != nil {
+		return nil, err
+	}
+	if err := stmt.bindParams(args...); err != nil {
+		if relErr := c.releaseQueryStmt(query, stmt, false); relErr != nil {
+			return nil, relErr
+		}
+		return nil, err
+	}
+	if err := stmt.execute(); err != nil {
+		if relErr := c.releaseQueryStmt(query, stmt, false); relErr != nil {
+			return nil, relErr
+		}
+		return nil, err
+	}
+	ret := &Rows{
+		stmt:            stmt,
+		queryStmtKey:    query,
+		queryStmtPooled: true,
+		timeLocation:    c.timeLocation,
+	}
+	if typ, err := stmt.handle.GetStmtType(); err != nil {
+		if relErr := c.releaseQueryStmt(query, stmt, false); relErr != nil {
+			return nil, relErr
+		}
+		return nil, err
+	} else {
+		ret.stmtType = typ
+	}
+	if ret.stmtType.IsSelect() {
+		ret.rowsCount = 0
+	} else {
+		ret.rowsCount = stmt.rowCount
+	}
+	return ret, nil
+}
+
+func (c *Conn) QueryRow(ctx context.Context, query string, args ...any) *Row {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	return c.queryRow(ctx, query, args...)
+}
+
+func (c *Conn) queryRow(_ context.Context, query string, args ...any) *Row {
+	ret := &Row{timeLocation: c.timeLocation}
+	stmt, err := c.acquireQueryStmt(query)
+	if err != nil {
+		ret.err = err
+		return ret
+	}
+	defer func() {
+		keep := ret.err == nil || errors.Is(ret.err, sql.ErrNoRows)
+		if relErr := c.releaseQueryStmt(query, stmt, keep); relErr != nil && ret.err == nil {
+			ret.err = relErr
+		}
+	}()
+	if ret.err = stmt.bindParams(args...); ret.err != nil {
+		return ret
+	}
+	if ret.err = stmt.execute(); ret.err != nil {
+		return ret
+	}
+	if typ, err := stmt.handle.GetStmtType(); err != nil {
+		ret.err = err
+		return ret
+	} else {
+		ret.stmtType = typ
+	}
+	ret.rowCount = stmt.rowCount
+	ret.columns = make(Columns, len(stmt.columnDesc))
+	for i, desc := range stmt.columnDesc {
+		ret.columns[i] = &Column{
+			Name:        desc.Name,
+			Length:      desc.Size,
+			Type:        desc.Type.ColumnType(),
+			DataType:    desc.Type.DataType(),
+			Nullable:    desc.Nullable,
+			Nullability: desc.Nullability,
+			PrimaryKey:  desc.PrimaryKey,
+		}
+	}
+	if values, err := stmt.fetch(); err != nil {
+		if err == io.EOF {
+			// it means no row fetched
+			ret.err = sql.ErrNoRows
+		} else {
+			ret.err = err
+		}
+		return ret
+	} else {
+		ret.values = values
+	}
+	return ret
 }
 
 type Stmt struct {
-	conn  *Conn
-	stmt  *ClientPreparedStmt
-	query string
+	conn              *Conn
+	handle            *machnet.StmtHandle
+	sqlText           string
+	columnDesc        []ColumnDesc
+	reachEOF          bool
+	rowCount          int64
+	execCount         int64
+	catalogGeneration uint64
 }
 
 var _ driver.Stmt = (*Stmt)(nil)
@@ -403,12 +886,60 @@ var _ driver.StmtQueryContext = (*Stmt)(nil)
 var _ driver.NamedValueChecker = (*Stmt)(nil)
 
 func (s *Stmt) Close() error {
-	if s == nil || s.stmt == nil {
+	if s == nil || s.handle == nil {
 		return nil
 	}
-	err := s.stmt.Close()
-	s.stmt = nil
-	return normalizeError(err)
+	if err := s.handle.Free(); err == nil {
+		s.handle = nil
+		return nil
+	} else {
+		return normalizeError(s.ErrorOf(err))
+	}
+}
+
+func (s *Stmt) Error() error {
+	return s.ErrorOf(nil)
+}
+
+func (s *Stmt) ErrorOf(cause error) error {
+	code, msg := s.handle.Error()
+	if code == 0 && msg == "" && cause == nil {
+		// no error
+		return nil
+	} else if code == 0 && msg != "" {
+		// code == 0 means client-side error
+		if cause == nil {
+			return fmt.Errorf("MACHCLI %s", msg)
+		} else {
+			return fmt.Errorf("MACHCLI %s, %s", msg, cause.Error())
+		}
+	} else {
+		// code > 0 means server-side error
+		if cause == nil {
+			return fmt.Errorf("MACHCLI-ERR-%d, %s", code, msg)
+		} else {
+			return fmt.Errorf("MACHCLI-ERR-%d, %s", code, msg)
+		}
+	}
+}
+
+func (s *Stmt) prepare(query string) error {
+	if err := s.handle.Prepare(query); err != nil {
+		return s.ErrorOf(err)
+	}
+	s.sqlText = query
+	s.columnDesc = nil
+	s.rowCount = 0
+	s.execCount = 0
+	s.reachEOF = false
+	return nil
+}
+
+func (s *Stmt) reprepareIfSupported() error {
+	if s == nil || s.handle == nil || !s.handle.SupportsReprepare() {
+		return nil
+	}
+	return s.prepare(s.sqlText)
 }
 
 func (s *Stmt) NumInput() int {
@@ -444,64 +975,398 @@ func (s *Stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driv
 }
 
 func (s *Stmt) exec(ctx context.Context, vals []any) (driver.Result, error) {
-	if s == nil || s.stmt == nil {
+	if s == nil || s.handle == nil {
 		return nil, driver.ErrBadConn
 	}
-	result := s.stmt.Exec(ctx, vals...)
+	result := &Result{}
+	if err := s.reprepareIfSupported(); err != nil {
+		result.err = err
+		goto doResult
+	}
+	defer s.handle.ExecuteClean()
+	if err := s.bindParams(vals...); err != nil {
+		result.err = err
+		goto doResult
+	}
+	if err := s.execute(); err != nil {
+		result.err = err
+		goto doResult
+	}
+	result.rowCount = s.rowCount
+	result.rowID, result.hasRowID = s.handle.GeneratedRowID()
+	if typ, err := s.handle.GetStmtType(); err != nil {
+		result.err = err
+		goto doResult
+	} else {
+		result.stmtType = typ
+	}
+doResult:
 	if err := normalizeError(result.Err()); err != nil {
 		return nil, err
 	}
 	if s.conn != nil {
-		s.conn.setTransactionState(s.query)
+		s.conn.setTransactionState(s.sqlText)
 	}
 	if meta, ok := ctx.Value(MetaKey).(*Meta); ok {
 		meta.cbMessage = result.Message
 	}
-	return &Result{result: result}, nil
+	return result, nil
+}
+
+func (s *Stmt) execute() error {
+	s.reachEOF = false
+	if err := s.handle.Execute(); err != nil {
+		return s.ErrorOf(err)
+	}
+	defer func() {
+		s.execCount++
+	}()
+	if rowCount, err := s.handle.RowCount(); err != nil {
+		return s.ErrorOf(err)
+	} else {
+		s.rowCount = rowCount
+	}
+	if s.execCount > 0 {
+		return nil
+	}
+	stmtType, _ := s.handle.GetStmtType()
+	if !stmtType.IsSelect() {
+		return nil
+	}
+	num, err := s.handle.NumResultCol()
+	if err != nil {
+		return s.ErrorOf(err)
+	}
+	s.columnDesc = make([]ColumnDesc, num)
+	for i := 0; i < num; i++ {
+		d := ColumnDesc{}
+		if err := s.handle.DescribeColEx(i, &d.Name, (*api.SqlType)(&d.Type), &d.Size, &d.Scale, &d.Nullable, &d.Nullability, &d.PrimaryKey); err != nil {
+			return s.ErrorOf(err)
+		}
+		s.columnDesc[i] = d
+	}
+	return nil
+}
+
+func (s *Stmt) QueryRow(ctx context.Context, params ...any) *Row {
+	ret := &Row{timeLocation: s.conn.timeLocation}
+	if err := s.reprepareIfSupported(); err != nil {
+		ret.err = err
+		return ret
+	}
+	if err := s.bindParams(params...); err != nil {
+		ret.err = err
+		return ret
+	}
+	if err := s.execute(); err != nil {
+		ret.err = err
+		return ret
+	}
+	ret.rowCount = s.rowCount
+	if values, err := s.fetch(); err != nil {
+		if err == io.EOF {
+			// it means no row fetched
+			ret.err = sql.ErrNoRows
+		} else {
+			ret.err = err
+		}
+		return ret
+	} else {
+		ret.values = values
+	}
+	ret.columns = make(Columns, len(s.columnDesc))
+	for i, desc := range s.columnDesc {
+		ret.columns[i] = &Column{
+			Name:        desc.Name,
+			Length:      desc.Size,
+			Type:        desc.Type.ColumnType(),
+			DataType:    desc.Type.DataType(),
+			Nullable:    desc.Nullable,
+			Nullability: desc.Nullability,
+			PrimaryKey:  desc.PrimaryKey,
+		}
+	}
+	return ret
 }
 
 func (s *Stmt) queryRows(ctx context.Context, vals []any) (driver.Rows, error) {
-	if s == nil || s.stmt == nil {
+	if s == nil || s.handle == nil {
 		return nil, driver.ErrBadConn
 	}
-	rows, err := s.stmt.Query(ctx, vals...)
-	if err != nil {
+	if err := s.reprepareIfSupported(); err != nil {
+		return nil, err
+	}
+	if err := s.bindParams(vals...); err != nil {
+		return nil, err
+	}
+	if err := s.execute(); err != nil {
+		return nil, err
+	}
+	rows := &Rows{
+		stmt:         s,
+		isPrepared:   true,
+		timeLocation: s.conn.timeLocation,
+	}
+	if typ, err := s.handle.GetStmtType(); err != nil {
 		return nil, normalizeError(err)
+	} else {
+		rows.stmtType = typ
+	}
+	if !rows.stmtType.IsSelect() {
+		rows.rowsCount = 0
+	} else {
+		rows.rowsCount = s.rowCount
 	}
 	if s.conn != nil {
-		s.conn.setTransactionState(s.query)
+		s.conn.setTransactionState(s.sqlText)
 	}
 	if meta, ok := ctx.Value(MetaKey).(*Meta); ok {
 		meta.cbMessage = rows.Message
 	}
-	return newRows(rows)
+	return rows, nil
+}
+
+// fetch fetches the next row from the result set.
+// It returns true if it reaches end of the result, otherwise false.
+func (s *Stmt) fetch() ([]any, error) {
+	if s.reachEOF {
+		return nil, errors.New("fetch reached end of the result set")
+	}
+	row, err := s.handle.Fetch()
+	if err != nil {
+		return nil, err
+	}
+	s.reachEOF = row == nil
+	if s.reachEOF {
+		return nil, io.EOF
+	}
+	if row == nil {
+		return nil, io.EOF
+	}
+	return row, nil
+}
+
+func (s *Stmt) bindParams(args ...any) error {
+	numParam, err := s.handle.NumParam()
+	if err != nil {
+		return s.ErrorOf(err)
+	}
+	args, err = s.mapNamedParams(args, numParam)
+	if err != nil {
+		return err
+	}
+	if len(args) != numParam {
+		return fmt.Errorf("params required %d, but got %d", numParam, len(args))
+	}
+
+	for idx, arg := range args {
+		var value any
+		var sqlType api.SqlType
+		switch val := arg.(type) {
+		default:
+			pd, err := s.handle.DescribeParam(idx)
+			if err != nil {
+				return s.ErrorOf(err)
+			}
+			if val == nil {
+				sqlType = pd.Type
+				value = nil
+			} else {
+				return fmt.Errorf("bind unknown type at column %d %T, expect: %d", idx, val, pd.Type)
+			}
+		case int16:
+			sqlType = api.SqlTypeInt16
+			value = val
+		case *int16:
+			sqlType = api.SqlTypeInt16
+			value = *val
+		case uint16:
+			sqlType = api.SqlTypeUInt16
+			value = val
+		case *uint16:
+			sqlType = api.SqlTypeUInt16
+			value = *val
+		case int32:
+			sqlType = api.SqlTypeInt32
+			value = val
+		case *int32:
+			sqlType = api.SqlTypeInt32
+			value = *val
+		case uint32:
+			sqlType = api.SqlTypeUInt32
+			value = val
+		case *uint32:
+			sqlType = api.SqlTypeUInt32
+			value = *val
+		case int:
+			sqlType = api.SqlTypeInt32
+			value = val
+		case *int:
+			sqlType = api.SqlTypeInt32
+			value = *val
+		case int64:
+			sqlType = api.SqlTypeInt64
+			value = val
+		case *int64:
+			sqlType = api.SqlTypeInt64
+			value = *val
+		case uint64:
+			sqlType = api.SqlTypeUInt64
+			value = val
+		case *uint64:
+			sqlType = api.SqlTypeUInt64
+			value = *val
+		case time.Time:
+			sqlType = api.SqlTypeDatetime
+			value = val.UnixNano()
+		case *time.Time:
+			sqlType = api.SqlTypeDatetime
+			value = (*val).UnixNano()
+		case float32:
+			sqlType = api.SqlTypeFloat
+			value = val
+		case *float32:
+			sqlType = api.SqlTypeFloat
+			value = *val
+		case float64:
+			sqlType = api.SqlTypeDouble
+			value = val
+		case *float64:
+			sqlType = api.SqlTypeDouble
+			value = *val
+		case net.IP:
+			if ipv4 := val.To4(); ipv4 != nil {
+				sqlType = api.SqlTypeIPv4
+				value = []byte(ipv4.String())
+			} else {
+				sqlType = api.SqlTypeIPv6
+				value = []byte(val.To16().String())
+			}
+		case string:
+			sqlType = api.SqlTypeString
+			value = val
+		case *string:
+			sqlType = api.SqlTypeString
+			value = *val
+		case api.JSONString:
+			sqlType = api.SqlTypeJSON
+			value = string(val)
+		case []byte:
+			sqlType = api.SqlTypeBinary
+			value = val
+		case api.Decimal:
+			sqlType = api.SqlTypeDecimal
+			value = val
+		case *api.Decimal:
+			sqlType = api.SqlTypeDecimal
+			if val != nil {
+				value = *val
+			}
+		}
+		if err := s.handle.BindParam(idx, sqlType, value); err != nil {
+			return s.ErrorOf(err)
+		}
+	}
+	return nil
+}
+
+func (s *Stmt) mapNamedParams(args []any, numParam int) ([]any, error) {
+	hasNamed := false
+	for _, arg := range args {
+		switch arg.(type) {
+		case NamedParam, *NamedParam:
+			hasNamed = true
+		}
+	}
+	if !hasNamed {
+		return args, nil
+	}
+	provided := make(map[string]any, len(args))
+	for _, arg := range args {
+		var named NamedParam
+		switch value := arg.(type) {
+		case NamedParam:
+			named = value
+		case *NamedParam:
+			if value == nil {
+				return nil, fmt.Errorf("named parameter is nil")
+			}
+			named = *value
+		default:
+			return nil, fmt.Errorf("named and positional parameters cannot be mixed")
+		}
+		if named.Name == "" {
+			return nil, fmt.Errorf("named parameter name is empty")
+		}
+		if _, exists := provided[named.Name]; exists {
+			return nil, fmt.Errorf("duplicate named parameter %q", named.Name)
+		}
+		provided[named.Name] = named.Value
+	}
+	ret := make([]any, numParam)
+	required := make(map[string]struct{}, numParam)
+	for idx := 0; idx < numParam; idx++ {
+		desc, err := s.handle.DescribeParam(idx)
+		if err != nil {
+			return nil, s.ErrorOf(err)
+		}
+		if desc.Name == "" {
+			return nil, fmt.Errorf("named parameters require Machbase protocol 4.0.3 metadata and cannot be mixed with anonymous markers")
+		}
+		value, exists := provided[desc.Name]
+		if !exists {
+			return nil, fmt.Errorf("missing named parameter %q", desc.Name)
+		}
+		ret[idx] = value
+		required[desc.Name] = struct{}{}
+	}
+	for name := range provided {
+		if _, exists := required[name]; !exists {
+			return nil, fmt.Errorf("unexpected named parameter %q", name)
+		}
+	}
+	return ret, nil
 }
 
 type Result struct {
-	result *ClientResult
+	err      error
+	rowCount int64
+	stmtType machnet.StmtType
+	rowID    uint64
+	hasRowID bool
 }
 
 var _ driver.Result = (*Result)(nil)
 
-func (r *Result) LastInsertId() (int64, error) {
-	if r != nil && r.result != nil {
-		return r.result.LastInsertId()
+func (rs *Result) Message() string {
+	return formatResultMessage(rs.err, rs.stmtType, rs.rowCount)
+}
+
+func (rs *Result) Err() error {
+	return rs.err
+}
+
+func (rs *Result) LastInsertId() (int64, error) {
+	if rs != nil && rs.hasRowID {
+		return int64(rs.rowID), nil
 	}
 	return 0, errors.New("not implemented LastInsertId")
 }
 
-func (r *Result) RowsAffected() (int64, error) {
-	if r == nil || r.result == nil {
-		return 0, nil
-	}
-	return r.result.RowsAffected(), nil
+func (rs *Result) RowsAffected() (int64, error) {
+	return rs.rowCount, nil
 }
 
 type Rows struct {
-	rows    *ClientRows
-	columns Columns
-	desc    []ColumnDesc
-	buffer  []any
+	stmt            *Stmt
+	err             error
+	row             []any
+	rowsCount       int64
+	stmtType        machnet.StmtType
+	isPrepared      bool
+	queryStmtPooled bool
+	queryStmtKey    string
+	timeLocation    *time.Location
 }
 
 var _ driver.Rows = (*Rows)(nil)
@@ -511,44 +1376,58 @@ var _ driver.RowsColumnTypeNullable = (*Rows)(nil)
 var _ driver.RowsColumnTypePrecisionScale = (*Rows)(nil)
 var _ driver.RowsColumnTypeScanType = (*Rows)(nil)
 
-func newRows(rows *ClientRows) (*Rows, error) {
-	cols, err := rows.Columns()
-	if err != nil {
-		_ = rows.Close()
-		return nil, normalizeError(err)
+func (r *Rows) Columns() []string {
+	if r == nil {
+		return nil
 	}
-	ret := &Rows{rows: rows, columns: cols}
-	ret.desc = rows.ColumnDescriptions()
+	cols, _ := r.columns()
+	if cols == nil {
+		return nil
+	}
+	return cols.Names()
+}
+
+func (r *Rows) columns() (Columns, error) {
+	if r.stmt == nil {
+		return nil, nil
+	}
+	ret := make(Columns, len(r.stmt.columnDesc))
+	for i, desc := range r.stmt.columnDesc {
+		ret[i] = &Column{
+			Name:        desc.Name,
+			Length:      desc.Size,
+			Type:        desc.Type.ColumnType(),
+			DataType:    desc.Type.DataType(),
+			Nullable:    desc.Nullable,
+			Nullability: desc.Nullability,
+			PrimaryKey:  desc.PrimaryKey,
+		}
+	}
 	return ret, nil
 }
 
-func (r *Rows) Columns() []string {
-	if r == nil || len(r.columns) == 0 {
-		return nil
+func (r *Rows) column(index int) (*Column, bool) {
+	cols, err := r.columns()
+	if err != nil {
+		return nil, false
 	}
-	return r.columns.Names()
-}
-
-func (r *Rows) Close() error {
-	if r == nil || r.rows == nil {
-		return nil
+	if index < 0 || index >= len(cols) {
+		return nil, false
 	}
-	err := r.rows.Close()
-	r.rows = nil
-	return normalizeError(err)
+	return cols[index], true
 }
 
 func (r *Rows) Next(dest []driver.Value) error {
-	if r == nil || r.rows == nil {
+	if r == nil {
 		return io.EOF
 	}
-	if !r.rows.Next() {
-		if err := normalizeError(r.rows.Err()); err != nil {
+	if !r.next() {
+		if err := normalizeError(r.Err()); err != nil {
 			return err
 		}
 		return io.EOF
 	}
-	var row = r.rows.Row()
+	var row = r.Row()
 	for i := range dest {
 		if i >= len(row) {
 			dest[i] = nil
@@ -559,6 +1438,99 @@ func (r *Rows) Next(dest []driver.Value) error {
 			return err
 		}
 		dest[i] = value
+	}
+	return nil
+}
+
+func (r *Rows) next() bool {
+	if r.stmt == nil {
+		return false
+	}
+	if r.stmt.reachEOF {
+		return false
+	}
+	row, err := r.stmt.fetch()
+	if err != nil {
+		if err != io.EOF {
+			r.err = err
+		}
+		return false
+	}
+	r.row = row
+	r.rowsCount++
+	return true
+}
+
+func (r *Rows) Err() error {
+	return r.err
+}
+
+func (r *Rows) Close() error {
+	if r.stmt == nil {
+		return nil
+	}
+	stmt := r.stmt
+	r.stmt = nil
+	if r.isPrepared {
+		stmt.reachEOF = false
+		return stmt.handle.ExecuteClean()
+	}
+	if r.queryStmtPooled && stmt.conn != nil {
+		return stmt.conn.releaseQueryStmt(r.queryStmtKey, stmt, true)
+	}
+	if err := stmt.Close(); err != nil {
+		return normalizeError(err)
+	}
+	return nil
+}
+
+func (r *Rows) IsFetchable() bool {
+	if r.stmt == nil || r.stmt.handle == nil {
+		return false
+	}
+	typ, _ := r.stmt.handle.GetStmtType()
+	return typ.IsSelect()
+}
+
+func (r *Rows) Message() string {
+	return formatResultMessage(r.err, r.stmtType, r.rowsCount)
+}
+
+func (r *Rows) RowsAffected() int64 {
+	return r.rowsCount
+}
+
+func (r *Rows) Row() []any {
+	return r.row
+}
+
+func (r *Rows) ColumnDescriptions() []ColumnDesc {
+	if r.stmt == nil {
+		return nil
+	}
+	return r.stmt.columnDesc
+}
+
+func (r *Rows) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	if len(dest) > len(r.row) {
+		return fmt.Errorf("params required %d, but got %d", len(r.row), len(dest))
+	}
+	for i, d := range dest {
+		if d == nil {
+			continue
+		}
+		if r.row[i] == nil {
+			if !ScanNull(dest[i]) {
+				return fmt.Errorf("scan NULL into %T", dest[i])
+			}
+			continue
+		}
+		if err := Scan(r.row[i], d, r.timeLocation); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -599,10 +1571,10 @@ func (r *Rows) ColumnTypeNullable(index int) (nullable, ok bool) {
 }
 
 func (r *Rows) ColumnTypePrecisionScale(index int) (precision, scale int64, ok bool) {
-	if index < 0 || index >= len(r.desc) {
+	if index < 0 || index >= len(r.stmt.columnDesc) {
 		return 0, 0, false
 	}
-	desc := r.desc[index]
+	desc := r.stmt.columnDesc[index]
 	switch desc.Type {
 	case api.SqlTypeFloat, api.SqlTypeDouble, api.SqlTypeDecimal:
 		if desc.Size <= 0 {
@@ -682,245 +1654,58 @@ func (r *Rows) ColumnTypeScanType(index int) reflect.Type {
 	}
 }
 
-func (r *Rows) column(index int) (*Column, bool) {
-	if r == nil || index < 0 || index >= len(r.columns) {
-		return nil, false
+type Row struct {
+	err          error
+	values       []any
+	columns      Columns
+	rowCount     int64
+	stmtType     machnet.StmtType
+	timeLocation *time.Location
+}
+
+func (r *Row) Success() bool {
+	return r.err == nil
+}
+
+func (r *Row) Err() error {
+	return r.err
+}
+
+func (r *Row) Columns() (Columns, error) {
+	return r.columns, nil
+}
+
+func (r *Row) Scan(dest ...any) error {
+	if r.err == sql.ErrNoRows {
+		return r.err
 	}
-	return r.columns[index], true
-}
-
-func quoteIdentifier(name string) string {
-	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
-}
-
-func namedValuesToAny(args []driver.NamedValue) ([]any, error) {
-	vals := make([]any, len(args))
-	for i := range args {
-		arg := args[i]
-		if err := checkNamedValue(&arg); err != nil {
-			return nil, err
+	if len(dest) > len(r.values) {
+		return fmt.Errorf("params required %d, but got %d", len(r.values), len(dest))
+	}
+	for i, d := range dest {
+		if r.values[i] == nil {
+			if !ScanNull(d) {
+				return fmt.Errorf("scan NULL VALUE into %T", d)
+			}
+			continue
 		}
-		if arg.Name != "" {
-			vals[i] = Named(arg.Name, arg.Value)
-		} else {
-			vals[i] = arg.Value
+		if err := Scan(r.values[i], d, r.timeLocation); err != nil {
+			return err
 		}
 	}
-	return vals, nil
-}
-
-func valuesToAny(args []driver.Value) []any {
-	vals := make([]any, len(args))
-	for i := range args {
-		vals[i] = args[i]
-	}
-	return vals
-}
-
-func checkNamedValue(nv *driver.NamedValue) error {
-	if nv == nil {
-		return nil
-	}
-	value, err := normalizeNamedValue(nv.Value)
-	if err != nil {
-		return err
-	}
-	nv.Value = value
 	return nil
 }
 
-func normalizeNamedValue(value any) (any, error) {
-	switch v := value.(type) {
-	case nil:
-		return nil, nil
-	case int:
-		if v > math.MaxInt32 || v < math.MinInt32 {
-			return int64(v), nil
-		}
-		return v, nil
-	case int16, *int16, int32, *int32, int64, *int64, float32, *float32, float64, *float64, string, *string, []byte, time.Time, *time.Time, net.IP, api.Decimal, *api.Decimal:
-		return v, nil
-	case *int:
-		if v == nil {
-			return nil, nil
-		}
-		if *v > math.MaxInt32 || *v < math.MinInt32 {
-			return int64(*v), nil
-		}
-		return *v, nil
-	case bool:
-		return nil, fmt.Errorf("machbase does not support bool parameter type")
-	case driver.Valuer:
-		resolved, err := v.Value()
-		if err != nil {
-			return nil, err
-		}
-		return normalizeNamedValue(resolved)
-	case uint:
-		if uint64(v) > math.MaxInt64 {
-			return nil, fmt.Errorf("uint value %d overflows int64", v)
-		}
-		return int64(v), nil
-	case uint8:
-		return int64(v), nil
-	case uint16:
-		return int64(v), nil
-	case uint32:
-		return int64(v), nil
-	case uint64:
-		if v > math.MaxInt64 {
-			return nil, fmt.Errorf("uint64 value %d overflows int64", v)
-		}
-		return int64(v), nil
-	case *uint:
-		if v == nil {
-			return nil, nil
-		}
-		return normalizeNamedValue(*v)
-	case *uint8:
-		if v == nil {
-			return nil, nil
-		}
-		return int64(*v), nil
-	case *uint16:
-		if v == nil {
-			return nil, nil
-		}
-		return int64(*v), nil
-	case *uint32:
-		if v == nil {
-			return nil, nil
-		}
-		return int64(*v), nil
-	case *uint64:
-		if v == nil {
-			return nil, nil
-		}
-		return normalizeNamedValue(*v)
-	default:
-		return nil, fmt.Errorf("machbase does not support parameter type %T", value)
-	}
+func (r *Row) Values() []any {
+	return r.values
 }
 
-func normalizeError(err error) error {
-	if err == nil {
-		return nil
-	}
-	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "connection closed") ||
-		strings.Contains(msg, "invalid connection") ||
-		strings.Contains(msg, "broken pipe") ||
-		strings.Contains(msg, "connection reset") ||
-		strings.Contains(msg, "unexpected eof") ||
-		strings.Contains(msg, "eof") {
-		return driver.ErrBadConn
-	}
-	return err
+func (r *Row) RowsAffected() int64 {
+	return r.rowCount
 }
 
-func toDriverValue(value any) (driver.Value, error) {
-	switch v := value.(type) {
-	case nil:
-		return nil, nil
-	case *bool:
-		if v == nil {
-			return nil, nil
-		}
-		return *v, nil
-	case *int16:
-		if v == nil {
-			return nil, nil
-		}
-		return int64(*v), nil
-	case *uint16:
-		if v == nil {
-			return nil, nil
-		}
-		return int64(*v), nil
-	case *int32:
-		if v == nil {
-			return nil, nil
-		}
-		return int64(*v), nil
-	case *uint32:
-		if v == nil {
-			return nil, nil
-		}
-		return int64(*v), nil
-	case *int64:
-		if v == nil {
-			return nil, nil
-		}
-		return *v, nil
-	case *uint64:
-		if v == nil {
-			return nil, nil
-		}
-		return int64(*v), nil
-	case *float32:
-		if v == nil {
-			return nil, nil
-		}
-		return float64(*v), nil
-	case *float64:
-		if v == nil {
-			return nil, nil
-		}
-		return *v, nil
-	case *string:
-		if v == nil {
-			return nil, nil
-		}
-		return *v, nil
-	case *[]byte:
-		if v == nil {
-			return nil, nil
-		}
-		buf := make([]byte, len(*v))
-		copy(buf, *v)
-		return buf, nil
-	case *time.Time:
-		if v == nil {
-			return nil, nil
-		}
-		return *v, nil
-	case time.Time:
-		return v, nil
-	case *net.IP:
-		if v == nil {
-			return nil, nil
-		}
-		return v.String(), nil
-	case net.IP:
-		return v, nil
-	case api.Decimal:
-		return v.String(), nil
-	case *api.Decimal:
-		if v == nil {
-			return nil, nil
-		}
-		return v.String(), nil
-	case int:
-		return int64(v), nil
-	case int16:
-		return int64(v), nil
-	case int32:
-		return int64(v), nil
-	case int64:
-		return v, nil
-	case float32:
-		return float64(v), nil
-	case float64:
-		return v, nil
-	case string:
-		return v, nil
-	case []byte:
-		buf := make([]byte, len(v))
-		copy(buf, v)
-		return buf, nil
-	default:
-		return nil, fmt.Errorf("machbase cannot convert row value %T to driver.Value", value)
-	}
+func (r *Row) Message() string {
+	return formatResultMessage(r.err, r.stmtType, r.rowCount)
 }
 
 const MetaKey = "machbase:meta"
