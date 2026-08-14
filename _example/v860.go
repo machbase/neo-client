@@ -10,8 +10,7 @@ import (
 	"log"
 	"os"
 
-	_ "github.com/machbase/neo-client/v2"
-	"github.com/machbase/neo-client/v2/api"
+	client "github.com/machbase/neo-client/v2"
 )
 
 const tableName = "GO860_SQL_SAMPLE"
@@ -40,7 +39,7 @@ func run(ctx context.Context) error {
 	}
 	defer func() { _, _ = db.ExecContext(context.Background(), "DROP TABLE "+tableName) }()
 
-	amount, err := api.ParseDecimal("123.450000000000", 30, 12)
+	amount, err := client.ParseDecimal("123.450000000000", 30, 12)
 	if err != nil {
 		return fmt.Errorf("parse decimal: %w", err)
 	}
@@ -71,7 +70,7 @@ func run(ctx context.Context) error {
 		sql.Named("id", int32(1))).Scan(&exactText); err != nil {
 		return fmt.Errorf("query decimal: %w", err)
 	}
-	parsed, err := api.ParseDecimal(exactText, 30, 12)
+	parsed, err := client.ParseDecimal(exactText, 30, 12)
 	if err != nil {
 		return fmt.Errorf("parse queried decimal: %w", err)
 	}

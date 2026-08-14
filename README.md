@@ -32,7 +32,7 @@ This package provides a standard Go `database/sql` driver on top of the native T
 
 ### `api`
 
-This package contains interfaces such as `Database`, `Conn`, `Rows`, and `Appender`, plus options like `api.WithPassword`, `api.WithFetchRows`, and `api.WithStatementCache`.
+This package contains a machbase specific data type and type definitions.
 
 ### `machnet`
 
@@ -257,17 +257,20 @@ The standard driver follows `database/sql` pooling through `sql.DB`. On servers 
 
 ### Machbase 8.6.0 DECIMAL and Named Parameters
 
-Machbase 8.6.0 provides exact DECIMAL values, nullable column information, and named parameters. Native code uses `api.Decimal` and `api.Named`:
+Machbase 8.6.0 provides exact DECIMAL values, nullable column information, and named parameters:
 
 ```go
-amount, err := api.ParseDecimal("1234567890.125", 30, 3)
+import "database/sql"
+import client "github.com/machbase/neo-client/v2"
+
+amount, err := client.ParseDecimal("1234567890.125", 30, 3)
 if err != nil {
 	panic(err)
 }
 result, err := conn.ExecContext(ctx,
 	"INSERT INTO payments(id, amount) VALUES (:id, :amount)",
-	api.Named("id", int32(1)),
-	api.Named("amount", amount),
+	sql.Named("id", int32(1)),
+	sql.Named("amount", amount),
 )
 if err != nil {
 	panic(err)

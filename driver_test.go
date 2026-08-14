@@ -84,7 +84,7 @@ func TestCheckNamedValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("namedValuesToAny() error = %v", err)
 	}
-	if param, ok := converted[0].(NamedParam); !ok || param.Name != "foo" || param.Value != 1 {
+	if param, ok := converted[0].(driver.NamedValue); !ok || param.Name != "foo" || param.Value != 1 {
 		t.Fatalf("unexpected named conversion: %#v", converted[0])
 	}
 	if err := checkNamedValue(&driver.NamedValue{Ordinal: 1, Value: true}); err == nil {

@@ -33,7 +33,7 @@ func namedValuesToAny(args []driver.NamedValue) ([]any, error) {
 			return nil, err
 		}
 		if arg.Name != "" {
-			vals[i] = Named(arg.Name, arg.Value)
+			vals[i] = arg
 		} else {
 			vals[i] = arg.Value
 		}

@@ -216,6 +216,13 @@ var _ driver.Pinger = (*Conn)(nil)
 var _ driver.SessionResetter = (*Conn)(nil)
 var _ driver.Validator = (*Conn)(nil)
 
+func (c *Conn) SupportDatabaseMetadata() bool {
+	if c == nil || c.handle == nil {
+		return false
+	}
+	return c.handle.SupportsDatabaseMetadata()
+}
+
 func (c *Conn) Explain(ctx context.Context, query string, full bool) (string, error) {
 	c.sessionMu.Lock()
 	defer c.sessionMu.Unlock()
@@ -617,6 +624,7 @@ func (c *Conn) IsValid() bool {
 	return c != nil && c.handle != nil && c.handle.IsOpen()
 }
 
+// Implement driver.NamedValueChecker
 func (c *Conn) CheckNamedValue(nv *driver.NamedValue) error {
 	return checkNamedValue(nv)
 }
@@ -1267,8 +1275,7 @@ func (s *Stmt) bindParams(args ...any) error {
 func (s *Stmt) mapNamedParams(args []any, numParam int) ([]any, error) {
 	hasNamed := false
 	for _, arg := range args {
-		switch arg.(type) {
-		case NamedParam, *NamedParam:
+		if _, ok := arg.(driver.NamedValue); ok {
 			hasNamed = true
 		}
 	}
@@ -1277,16 +1284,8 @@ func (s *Stmt) mapNamedParams(args []any, numParam int) ([]any, error) {
 	}
 	provided := make(map[string]any, len(args))
 	for _, arg := range args {
-		var named NamedParam
-		switch value := arg.(type) {
-		case NamedParam:
-			named = value
-		case *NamedParam:
-			if value == nil {
-				return nil, fmt.Errorf("named parameter is nil")
-			}
-			named = *value
-		default:
+		named, ok := arg.(driver.NamedValue)
+		if !ok {
 			return nil, fmt.Errorf("named and positional parameters cannot be mixed")
 		}
 		if named.Name == "" {
@@ -1734,15 +1733,4 @@ func (m *Meta) IOMetrics(reset bool) (readBytes uint64, writtenBytes uint64, ena
 		return m.cbIOMetrics(reset)
 	}
 	return 0, 0, false
-}
-
-// NamedParam represents one named bind argument.
-type NamedParam struct {
-	Name  string
-	Value any
-}
-
-// Named creates a named bind argument for native APIs.
-func Named(name string, value any) NamedParam {
-	return NamedParam{Name: name, Value: value}
 }

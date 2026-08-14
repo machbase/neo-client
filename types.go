@@ -10,6 +10,10 @@ import (
 	"github.com/machbase/neo-client/v2/api"
 )
 
+func ParseDecimal(text string, precision, scale int) (api.Decimal, error) {
+	return api.ParseDecimal(text, precision, scale)
+}
+
 type Column struct {
 	Id          uint64          `json:"id,omitempty"`       // if the column came from database table
 	Name        string          `json:"name"`               //
