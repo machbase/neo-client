@@ -134,6 +134,15 @@ func normalizeNamedValue(value any) (any, error) {
 	}
 }
 
+// normalizeError classifies an already-formatted error (typically the output
+// of ErrorOf/formatMachcliError) and promotes network/connection-death text
+// to driver.ErrBadConn so database/sql evicts and retries; it never formats
+// machcli (code, msg) pairs itself, that's ErrorOf's job. Every driver-facing
+// entry point (Conn/Stmt/Rows methods that implement database/sql/driver
+// interfaces) must wrap its final error in normalizeError exactly once right
+// before returning to database/sql; internal helpers that only stash an
+// ErrorOf result in a Result/Row/Rows field for later inspection should call
+// ErrorOf alone and let the eventual driver-facing caller normalize it.
 func normalizeError(err error) error {
 	if err == nil {
 		return nil
@@ -148,6 +157,34 @@ func normalizeError(err error) error {
 		return driver.ErrBadConn
 	}
 	return err
+}
+
+// formatMachcliError builds the error returned by Connector/Conn/Stmt.ErrorOf
+// from the machcli (code, msg) pair reported by the underlying handle, plus
+// an optional cause from the Go-level call that triggered the lookup. It only
+// formats a message; it never decides driver.ErrBadConn promotion, see
+// normalizeError above for that half of the split and the required call
+// order. (Full static enforcement of the ErrorOf -> normalizeError order
+// isn't practical without a broader refactor of every driver-interface
+// method into a single choke point; this comment plus grepping for
+// `.ErrorOf(` call sites is the current safeguard.)
+func formatMachcliError(code int, msg string, cause error) error {
+	if code == 0 && msg == "" && cause == nil {
+		// no error
+		return nil
+	}
+	if code == 0 {
+		// code == 0 means client-side error
+		if cause == nil {
+			return fmt.Errorf("MACHCLI %s", msg)
+		}
+		return fmt.Errorf("MACHCLI %s, %s", msg, cause.Error())
+	}
+	// code > 0 means server-side error: msg already carries the full
+	// server-reported text (cause is typically the very same error that
+	// populated code/msg in the first place), so cause is intentionally
+	// not appended here to avoid duplicating it.
+	return fmt.Errorf("MACHCLI-ERR-%d, %s", code, msg)
 }
 
 func leadingSQLKeyword(query string) string {

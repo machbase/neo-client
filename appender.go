@@ -11,6 +11,8 @@ import (
 	"github.com/machbase/neo-client/v2/api"
 )
 
+// Appender is not safe for concurrent use:
+// callers must serialize Append/AppendLogTime/Flush/Close on a single goroutine.
 type Appender struct {
 	ctx  context.Context
 	cn   *Connector
@@ -249,14 +251,6 @@ func (ap *Appender) Close() (int64, int64, error) {
 	return ap.successCount, ap.failCount, err
 }
 
-func (ap *Appender) Flush() error {
-	if err := ap.stmt.handle.AppendFlush(); err == nil {
-		return nil
-	} else {
-		return ap.stmt.ErrorOf(err)
-	}
-}
-
 func (ap *Appender) TableType() TableType {
 	if !ap.opened {
 		return TableType(-1)
@@ -296,6 +290,14 @@ func (ap *Appender) ColumnTypes() []string {
 	}
 	ap.ColumnNames()
 	return ap.stringColumnTypes
+}
+
+func (ap *Appender) Flush() error {
+	if err := ap.stmt.handle.AppendFlush(); err == nil {
+		return nil
+	} else {
+		return ap.stmt.ErrorOf(err)
+	}
 }
 
 func (ap *Appender) AppendLogTime(ts time.Time, values ...any) error {

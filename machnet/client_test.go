@@ -2,8 +2,11 @@ package machnet
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -147,7 +150,7 @@ func TestSendPacketsOptionalUsesIndependentWriteAndReadDeadlines(t *testing.T) {
 	}
 	packet := buildPacket(cmiAppendDataProtocol, 1, 0, 0, nil)
 	started := time.Now()
-	body, ok, err := conn.sendPacketsOptional([][]byte{packet}, cmiAppendDataProtocol, 200*time.Millisecond, 10*time.Millisecond)
+	body, ok, err := conn.sendPacketsOptional(context.Background(), [][]byte{packet}, cmiAppendDataProtocol, 200*time.Millisecond, 10*time.Millisecond)
 	if err != nil {
 		t.Fatalf("sendPacketsOptional() error = %v", err)
 	}
@@ -159,6 +162,55 @@ func TestSendPacketsOptionalUsesIndependentWriteAndReadDeadlines(t *testing.T) {
 	}
 	if err := <-readDone; err != nil {
 		t.Fatalf("server read: %v", err)
+	}
+}
+
+// TestSendPacketsContextCancellationAbortsBlockedRead exercises context
+// cancellation without any machnet server mock: net.Pipe() supplies both
+// ends of the "socket", and a goroutine that only drains writes (never
+// replies) is enough to force sendPackets into a blocking Read that only
+// context cancellation (via NativeConn.watchContext) can interrupt.
+func TestSendPacketsContextCancellationAbortsBlockedRead(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+
+	go func() {
+		_, _ = io.Copy(io.Discard, server)
+	}()
+
+	conn := &NativeConn{
+		netConn: client,
+		br:      bufio.NewReader(client),
+		bw:      bufio.NewWriter(client),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	packet := buildPacket(cmiExecDirectProtocol, 1, 0, 0, nil)
+	started := time.Now()
+	// timeout=0: no fixed deadline is set, so only ctx cancellation can
+	// unblock the pending Read.
+	_, err := conn.sendPackets(ctx, [][]byte{packet}, cmiExecDirectProtocol, 0)
+	elapsed := time.Since(started)
+
+	if err == nil {
+		t.Fatal("sendPackets() error = nil, want context cancellation error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "connection closed") {
+		t.Fatalf("sendPackets() error = %v, want it to mention connection closed", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("sendPackets() error = %v, want context.Canceled in its chain", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("sendPackets() took %v, want a prompt return after ctx cancellation", elapsed)
+	}
+	if !conn.closed {
+		t.Fatal("connection should be marked closed after a context-aborted I/O")
 	}
 }
 

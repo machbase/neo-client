@@ -1,6 +1,7 @@
 package machnet
 
 import (
+	"context"
 	"crypto"
 	"sync"
 	"time"
@@ -8,6 +9,16 @@ import (
 	"github.com/machbase/neo-client/v2/api"
 )
 
+// Lock hierarchy across this package (never acquire in the reverse order):
+//
+//	EnvHandle.mu     -> (never nests into ConnHandle.mu/StmtHandle.mu; Disconnect
+//	                     always releases ConnHandle.mu before taking EnvHandle.mu)
+//	ConnHandle.mu    -> NativeConn.stmtMu   (AllocStmt allocates a statement id)
+//	StmtHandle.mu    -> NativeConn.mu       (Prepare/Execute/ExecDirect/Fetch send packets)
+//
+// NativeConn.mu and NativeConn.stmtMu are never nested into each other, and
+// EnvHandle.mu/ConnHandle.mu/StmtHandle.mu are never held across a call into
+// another handle's exported method beyond the two edges listed above.
 type EnvHandle struct {
 	mu      sync.Mutex
 	closed  bool
@@ -33,6 +44,16 @@ func (conn *ConnHandle) Error() (int, string) {
 	return conn.lastErr.code, conn.lastErr.msg
 }
 
+// IsOpen reports whether the connection has not been closed/disconnected yet.
+func (conn *ConnHandle) IsOpen() bool {
+	if conn == nil {
+		return false
+	}
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return !conn.closed && conn.native != nil
+}
+
 type AppendState struct {
 	table         string
 	errCheckCnt   int
@@ -52,6 +73,8 @@ type AppendState struct {
 	appendBatchMaxDelay time.Duration
 }
 
+// See the lock hierarchy note above EnvHandle: stmt.mu is only ever nested
+// as StmtHandle.mu -> NativeConn.mu (never the other way around).
 type StmtHandle struct {
 	mu        sync.Mutex
 	conn      *ConnHandle
@@ -104,24 +127,33 @@ func (env *EnvHandle) Finalize() error {
 	return nil
 }
 
-func (env *EnvHandle) Connect(connStr string, key crypto.PrivateKey) (*ConnHandle, error) {
+type ConnConfig struct {
+	Host               string
+	Port               int
+	User               string
+	Password           string
+	AuthMode           string
+	AuthSigScheme      string
+	AlternativeServers []string
+	FetchRows          int64
+	TrackIOBytes       bool
+	PrivateKey         crypto.PrivateKey
+}
+
+func (env *EnvHandle) Connect(cfg ConnConfig) (*ConnHandle, error) {
 	if env == nil {
 		return nil, makeClientErr("invalid environment")
 	}
-	host, port, user, pass, authMode, authKeyFile, authSigScheme, alts, fetchRows, trackIOBytes, err := parseConnString(connStr)
-	if err != nil {
-		env.lastErr.setErr(err)
-		return nil, err
+	if cfg.Host == "" {
+		cfg.Host = "127.0.0.1"
 	}
-	if key == nil && authKeyFile != "" {
-		key, err = api.LoadPrivateKeyFromFile(authKeyFile)
-		if err != nil {
-			env.lastErr.setErr(err)
-			return nil, err
-		}
+	if cfg.Port <= 0 {
+		cfg.Port = 5656
 	}
-
-	nc, err := dialNative(host, port, user, pass, authMode, key, authSigScheme, alts, fetchRows, trackIOBytes)
+	if cfg.FetchRows <= 0 {
+		cfg.FetchRows = defaultFetchRows
+	}
+	nc, err := dialNative(cfg)
 	if err != nil {
 		env.lastErr.setErr(err)
 		return nil, err
@@ -261,7 +293,7 @@ func (stmt *StmtHandle) Free() error {
 	return err
 }
 
-func (stmt *StmtHandle) Prepare(query string) error {
+func (stmt *StmtHandle) Prepare(ctx context.Context, query string) error {
 	if stmt == nil {
 		return makeClientErr("invalid statement")
 	}
@@ -274,7 +306,7 @@ func (stmt *StmtHandle) Prepare(query string) error {
 		stmt.lastErr.setErr(err)
 		return err
 	}
-	res, err := stmt.conn.native.prepare(stmt.id, query)
+	res, err := stmt.conn.native.prepare(ctx, stmt.id, query)
 	stmt.lastErr.setErr(err)
 	stmt.conn.lastErr.setErr(err)
 	if err != nil {
@@ -302,7 +334,7 @@ func (stmt *StmtHandle) SupportsReprepare() bool {
 	return stmt.conn.native.supportsV403()
 }
 
-func (stmt *StmtHandle) Execute() error {
+func (stmt *StmtHandle) Execute(ctx context.Context) error {
 	if stmt == nil {
 		return makeClientErr("invalid statement")
 	}
@@ -336,7 +368,7 @@ func (stmt *StmtHandle) Execute() error {
 			params[i] = BoundParam{sqlType: api.SqlTypeString, isNull: true}
 		}
 	}
-	res, err := stmt.conn.native.executePrepared(stmt.id, stmt.sql, params, stmt.columns)
+	res, err := stmt.conn.native.executePrepared(ctx, stmt.id, stmt.sql, params, stmt.columns)
 	stmt.lastErr.setErr(err)
 	stmt.conn.lastErr.setErr(err)
 	if err != nil {
@@ -363,7 +395,7 @@ func (stmt *StmtHandle) Execute() error {
 	return nil
 }
 
-func (stmt *StmtHandle) ExecDirect(query string) error {
+func (stmt *StmtHandle) ExecDirect(ctx context.Context, query string) error {
 	if stmt == nil {
 		return makeClientErr("invalid statement")
 	}
@@ -376,7 +408,7 @@ func (stmt *StmtHandle) ExecDirect(query string) error {
 		stmt.lastErr.setErr(err)
 		return err
 	}
-	res, err := stmt.conn.native.execDirect(stmt.id, query)
+	res, err := stmt.conn.native.execDirect(ctx, stmt.id, query)
 	stmt.lastErr.setErr(err)
 	stmt.conn.lastErr.setErr(err)
 	if err != nil {
@@ -542,7 +574,7 @@ func (stmt *StmtHandle) DescribeColEx(columnNo int, pName *string, pType *api.Sq
 	return nil
 }
 
-func (stmt *StmtHandle) Fetch() ([]any, error) {
+func (stmt *StmtHandle) Fetch(ctx context.Context) ([]any, error) {
 	if stmt == nil {
 		return nil, makeClientErr("invalid statement")
 	}
@@ -566,7 +598,7 @@ func (stmt *StmtHandle) Fetch() ([]any, error) {
 			return nil, nil
 		}
 
-		rows, last, err := stmt.conn.native.fetchRowsChunk(stmt.id, stmt.columns, stmt.fetchSize)
+		rows, last, err := stmt.conn.native.fetchRowsChunk(ctx, stmt.id, stmt.columns, stmt.fetchSize)
 		stmt.fetchLast = last
 		stmt.lastErr.setErr(err)
 		stmt.conn.lastErr.setErr(err)

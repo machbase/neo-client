@@ -75,8 +75,20 @@ func (cn *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	if cn == nil || cn.handle == nil {
 		return nil, driver.ErrBadConn
 	}
+	cfg := machnet.ConnConfig{
+		Host:               cn.cfg.Host,
+		Port:               cn.cfg.Port,
+		User:               strings.ToUpper(cn.cfg.loginName),
+		Password:           cn.cfg.Password,
+		AuthMode:           cn.cfg.AuthMode,
+		AuthSigScheme:      cn.cfg.AuthSigScheme,
+		AlternativeServers: cn.cfg.AlternativeServers,
+		FetchRows:          cn.cfg.FetchRows,
+		TrackIOBytes:       cn.cfg.IOMetrics,
+		PrivateKey:         cn.cfg.key,
+	}
 	var handle *machnet.ConnHandle
-	if c, err := cn.handle.Connect(cn.connectionString(), cn.cfg.key); err != nil {
+	if c, err := cn.handle.Connect(cfg); err != nil {
 		return nil, normalizeError(cn.ErrorOf(err))
 	} else {
 		handle = c
@@ -119,10 +131,9 @@ func (cn *Connector) connectionString() string {
 	if strings.TrimSpace(cn.cfg.AuthMode) != "" {
 		entries = append(entries, fmt.Sprintf("AUTH_MODE=%s", cn.cfg.AuthMode))
 	}
-	if cn.cfg.AlternativeHost != "" && cn.cfg.AlternativePort != 0 {
+	if len(cn.cfg.AlternativeServers) > 0 {
 		entries = append(entries,
-			fmt.Sprintf("ALTERNATIVE_SERVERS=%s:%d",
-				cn.cfg.AlternativeHost, cn.cfg.AlternativePort))
+			fmt.Sprintf("ALTERNATIVE_SERVERS=%s", strings.Join(cn.cfg.AlternativeServers, ",")))
 	}
 	return strings.Join(entries, ";")
 }
@@ -150,24 +161,7 @@ func (cn *Connector) Close() error {
 
 func (cn *Connector) ErrorOf(cause error) error {
 	code, msg := cn.handle.Error()
-	if code == 0 && msg == "" && cause == nil {
-		// no error
-		return nil
-	} else if code == 0 && msg != "" {
-		// code == 0 means client-side error
-		if cause == nil {
-			return fmt.Errorf("MACHCLI %s", msg)
-		} else {
-			return fmt.Errorf("MACHCLI %s, %s", msg, cause.Error())
-		}
-	} else {
-		// code > 0 means server-side error
-		if cause == nil {
-			return fmt.Errorf("MACHCLI-ERR-%d, %s", code, msg)
-		} else {
-			return fmt.Errorf("MACHCLI-ERR-%d, %s", code, msg)
-		}
-	}
+	return formatMachcliError(code, msg, cause)
 }
 
 // testResetSessionConn is a seam for unit-testing ResetSession without a real machnet.ConnHandle.
@@ -184,7 +178,19 @@ type Conn struct {
 	usedAt    time.Time
 	usedCount int64
 	closeOnce sync.Once
+	// sessionMu serializes Conn-level operations that talk to the server
+	// (Exec/Query/Prepare/Close/Explain). Lock order: sessionMu is always
+	// acquired before txMu (see setTransactionState, called while
+	// QueryContext still holds sessionMu). Never acquire sessionMu while
+	// already holding txMu or queryStmtPoolMu.
 	sessionMu sync.Mutex
+	// txMu guards inTx/database/dbDirty only; it is always acquired and
+	// released on its own (see setTransactionState, ResetSession) and never
+	// held while calling back into a function that needs sessionMu.
+	txMu     sync.Mutex
+	inTx     bool
+	database string
+	dbDirty  bool
 
 	timeLocation           *time.Location
 	queryStmtReuseMode     StatementCacheMode
@@ -198,10 +204,6 @@ type Conn struct {
 	catalogGeneration      atomic.Uint64
 
 	testResetConn testResetSessionConn // only set by tests; nil in production
-	txMu          sync.Mutex
-	inTx          bool
-	database      string
-	dbDirty       bool
 }
 
 var _ driver.Conn = (*Conn)(nil)
@@ -235,13 +237,13 @@ func (c *Conn) Explain(ctx context.Context, query string, full bool) (string, er
 	}
 	defer stmt.Free()
 
-	if err := stmt.ExecDirect(query); err != nil {
+	if err := stmt.ExecDirect(ctx, query); err != nil {
 		return "", c.ErrorOf(err)
 	}
 
 	ret := make([]string, 0, 20)
 	for {
-		if row, err := stmt.Fetch(); err != nil {
+		if row, err := stmt.Fetch(ctx); err != nil {
 			return "", err
 		} else if row == nil {
 			break
@@ -280,24 +282,7 @@ func (c *Conn) Error() error {
 
 func (c *Conn) ErrorOf(cause error) error {
 	code, msg := c.handle.Error()
-	if code == 0 && msg == "" && cause == nil {
-		// no error
-		return nil
-	} else if code == 0 && msg != "" {
-		// code == 0 means client-side error
-		if cause == nil {
-			return fmt.Errorf("MACHCLI %s", msg)
-		} else {
-			return fmt.Errorf("MACHCLI %s, %s", msg, cause.Error())
-		}
-	} else {
-		// code > 0 means server-side error
-		if cause == nil {
-			return fmt.Errorf("MACHCLI-ERR-%d, %s", code, msg)
-		} else {
-			return fmt.Errorf("MACHCLI-ERR-%d, %s", code, msg)
-		}
-	}
+	return formatMachcliError(code, msg, cause)
 }
 
 func (c *Conn) Prepare(query string) (driver.Stmt, error) {
@@ -362,7 +347,11 @@ func (c *Conn) shouldReuseStmtForQuery(query string) bool {
 	}
 }
 
-func (c *Conn) acquireQueryStmt(query string) (*Stmt, error) {
+func (c *Conn) acquireQueryStmt(ctx context.Context, query string) (*Stmt, error) {
+	// catalogGeneration is loaded outside queryStmtPoolMu because it's an
+	// atomic counter, not memory protected by that mutex; each cached stmt's
+	// generation is re-checked against it right after the pool lock is
+	// (re)acquired below, so a concurrent bump is never missed.
 	generation := c.catalogGeneration.Load()
 	if !c.shouldReuseStmtForQuery(query) {
 		stmt, err := c.NewStmt()
@@ -370,7 +359,7 @@ func (c *Conn) acquireQueryStmt(query string) (*Stmt, error) {
 			return nil, err
 		}
 		stmt.catalogGeneration = generation
-		if err := stmt.prepare(query); err != nil {
+		if err := stmt.prepare(ctx, query); err != nil {
 			_ = stmt.Close()
 			return nil, err
 		}
@@ -385,11 +374,11 @@ func (c *Conn) acquireQueryStmt(query string) (*Stmt, error) {
 
 		if stmt.catalogGeneration != generation {
 			_ = stmt.Close()
-			return c.acquireQueryStmt(query)
+			return c.acquireQueryStmt(ctx, query)
 		}
 		stmt.reachEOF = false
 		if stmt.handle.SupportsReprepare() {
-			if err := stmt.prepare(query); err != nil {
+			if err := stmt.prepare(ctx, query); err != nil {
 				_ = stmt.Close()
 				return nil, err
 			}
@@ -411,11 +400,11 @@ func (c *Conn) acquireQueryStmt(query string) (*Stmt, error) {
 
 		if stmt.catalogGeneration != generation {
 			_ = stmt.Close()
-			return c.acquireQueryStmt(query)
+			return c.acquireQueryStmt(ctx, query)
 		}
 		stmt.reachEOF = false
 		if stmt.handle.SupportsReprepare() {
-			if err := stmt.prepare(query); err != nil {
+			if err := stmt.prepare(ctx, query); err != nil {
 				_ = stmt.Close()
 				return nil, err
 			}
@@ -429,7 +418,7 @@ func (c *Conn) acquireQueryStmt(query string) (*Stmt, error) {
 		return nil, err
 	}
 	stmt.catalogGeneration = generation
-	if err := stmt.prepare(query); err != nil {
+	if err := stmt.prepare(ctx, query); err != nil {
 		_ = stmt.Close()
 		return nil, err
 	}
@@ -586,6 +575,12 @@ func (c *Conn) resetExec(ctx context.Context, query string) *Result {
 	return nil
 }
 
+// ResetSession relies on the database/sql contract that a Conn is never
+// touched by another goroutine while it sits idle in the pool: it is called
+// right before a pooled *Conn is handed back out, so no other goroutine can
+// be running Exec/Query/Close concurrently. That is why inTx/database/dbDirty
+// are read via separate short txMu critical sections below instead of one
+// held for the whole function.
 func (c *Conn) ResetSession(ctx context.Context) error {
 	if c == nil || (c.handle == nil && c.testResetConn == nil) {
 		return driver.ErrBadConn
@@ -619,7 +614,7 @@ func (c *Conn) ResetSession(ctx context.Context) error {
 }
 
 func (c *Conn) IsValid() bool {
-	return c != nil && c.handle != nil
+	return c != nil && c.handle != nil && c.handle.IsOpen()
 }
 
 func (c *Conn) CheckNamedValue(nv *driver.NamedValue) error {
@@ -638,9 +633,9 @@ func (c *Conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, e
 		return nil, err
 	}
 
-	if err := stmt.prepare(query); err != nil {
+	if err := stmt.prepare(ctx, query); err != nil {
 		stmt.Close()
-		return nil, err
+		return nil, normalizeError(err)
 	}
 	return stmt, nil
 }
@@ -648,7 +643,7 @@ func (c *Conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, e
 func (c *Conn) NewStmt() (*Stmt, error) {
 	var handle *machnet.StmtHandle
 	if h, err := c.handle.AllocStmt(); err != nil {
-		return nil, c.ErrorOf(err)
+		return nil, normalizeError(c.ErrorOf(err))
 	} else {
 		handle = h
 	}
@@ -675,7 +670,7 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	return result, nil
 }
 
-func (c *Conn) exec(_ context.Context, query string, args ...any) *Result {
+func (c *Conn) exec(ctx context.Context, query string, args ...any) *Result {
 	c.sessionMu.Lock()
 	defer c.sessionMu.Unlock()
 	ret := &Result{}
@@ -687,7 +682,7 @@ func (c *Conn) exec(_ context.Context, query string, args ...any) *Result {
 		}
 		defer stmt.Close()
 
-		if err := stmt.handle.ExecDirect(query); err != nil {
+		if err := stmt.handle.ExecDirect(ctx, query); err != nil {
 			ret.err = c.ErrorOf(err)
 			return ret
 		}
@@ -709,7 +704,7 @@ func (c *Conn) exec(_ context.Context, query string, args ...any) *Result {
 		return ret
 	}
 
-	stmt, err := c.acquireQueryStmt(query)
+	stmt, err := c.acquireQueryStmt(ctx, query)
 	if err != nil {
 		ret.err = err
 		return ret
@@ -724,7 +719,7 @@ func (c *Conn) exec(_ context.Context, query string, args ...any) *Result {
 	if ret.err = stmt.bindParams(args...); ret.err != nil {
 		return ret
 	}
-	ret.err = stmt.execute()
+	ret.err = stmt.execute(ctx)
 	ret.rowCount = stmt.rowCount
 	ret.rowID, ret.hasRowID = stmt.handle.GeneratedRowID()
 	if typ, err := stmt.handle.GetStmtType(); err != nil {
@@ -736,6 +731,15 @@ func (c *Conn) exec(_ context.Context, query string, args ...any) *Result {
 	return ret
 }
 
+// setTransactionState updates inTx/dbDirty after a statement has completed
+// successfully. It is intentionally NOT called from exec()/query() (the
+// shared primitives behind acquireQueryStmt), because those are also reused
+// by paths that must not affect this tracking: Connector.Connect's initial
+// "USE <database>" (already at the intended db, so not "dirty") and
+// resetExec's internal ROLLBACK/USE during ResetSession (which already
+// updates inTx/dbDirty itself once the reset succeeds). Instead every
+// public success path calls it directly: ExecContext, QueryContext,
+// Conn.queryRow, Stmt.exec and Stmt.queryRows.
 func (c *Conn) setTransactionState(query string) {
 	verb := leadingSQLKeyword(query)
 	if verb != "BEGIN" && verb != "COMMIT" && verb != "ROLLBACK" && verb != "USE" {
@@ -772,8 +776,8 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	return rows, nil
 }
 
-func (c *Conn) query(_ context.Context, query string, args ...any) (*Rows, error) {
-	stmt, err := c.acquireQueryStmt(query)
+func (c *Conn) query(ctx context.Context, query string, args ...any) (*Rows, error) {
+	stmt, err := c.acquireQueryStmt(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -783,13 +787,14 @@ func (c *Conn) query(_ context.Context, query string, args ...any) (*Rows, error
 		}
 		return nil, err
 	}
-	if err := stmt.execute(); err != nil {
+	if err := stmt.execute(ctx); err != nil {
 		if relErr := c.releaseQueryStmt(query, stmt, false); relErr != nil {
 			return nil, relErr
 		}
 		return nil, err
 	}
 	ret := &Rows{
+		ctx:             ctx,
 		stmt:            stmt,
 		queryStmtKey:    query,
 		queryStmtPooled: true,
@@ -817,9 +822,9 @@ func (c *Conn) QueryRow(ctx context.Context, query string, args ...any) *Row {
 	return c.queryRow(ctx, query, args...)
 }
 
-func (c *Conn) queryRow(_ context.Context, query string, args ...any) *Row {
+func (c *Conn) queryRow(ctx context.Context, query string, args ...any) *Row {
 	ret := &Row{timeLocation: c.timeLocation}
-	stmt, err := c.acquireQueryStmt(query)
+	stmt, err := c.acquireQueryStmt(ctx, query)
 	if err != nil {
 		ret.err = err
 		return ret
@@ -833,9 +838,10 @@ func (c *Conn) queryRow(_ context.Context, query string, args ...any) *Row {
 	if ret.err = stmt.bindParams(args...); ret.err != nil {
 		return ret
 	}
-	if ret.err = stmt.execute(); ret.err != nil {
+	if ret.err = stmt.execute(ctx); ret.err != nil {
 		return ret
 	}
+	c.setTransactionState(query)
 	if typ, err := stmt.handle.GetStmtType(); err != nil {
 		ret.err = err
 		return ret
@@ -855,7 +861,7 @@ func (c *Conn) queryRow(_ context.Context, query string, args ...any) *Row {
 			PrimaryKey:  desc.PrimaryKey,
 		}
 	}
-	if values, err := stmt.fetch(); err != nil {
+	if values, err := stmt.fetch(ctx); err != nil {
 		if err == io.EOF {
 			// it means no row fetched
 			ret.err = sql.ErrNoRows
@@ -903,28 +909,11 @@ func (s *Stmt) Error() error {
 
 func (s *Stmt) ErrorOf(cause error) error {
 	code, msg := s.handle.Error()
-	if code == 0 && msg == "" && cause == nil {
-		// no error
-		return nil
-	} else if code == 0 && msg != "" {
-		// code == 0 means client-side error
-		if cause == nil {
-			return fmt.Errorf("MACHCLI %s", msg)
-		} else {
-			return fmt.Errorf("MACHCLI %s, %s", msg, cause.Error())
-		}
-	} else {
-		// code > 0 means server-side error
-		if cause == nil {
-			return fmt.Errorf("MACHCLI-ERR-%d, %s", code, msg)
-		} else {
-			return fmt.Errorf("MACHCLI-ERR-%d, %s", code, msg)
-		}
-	}
+	return formatMachcliError(code, msg, cause)
 }
 
-func (s *Stmt) prepare(query string) error {
-	if err := s.handle.Prepare(query); err != nil {
+func (s *Stmt) prepare(ctx context.Context, query string) error {
+	if err := s.handle.Prepare(ctx, query); err != nil {
 		return s.ErrorOf(err)
 	}
 	s.sqlText = query
@@ -935,13 +924,17 @@ func (s *Stmt) prepare(query string) error {
 	return nil
 }
 
-func (s *Stmt) reprepareIfSupported() error {
+func (s *Stmt) reprepareIfSupported(ctx context.Context) error {
 	if s == nil || s.handle == nil || !s.handle.SupportsReprepare() {
 		return nil
 	}
-	return s.prepare(s.sqlText)
+	return s.prepare(ctx, s.sqlText)
 }
 
+// NumInput intentionally returns -1: parameter counts are validated by the
+// server (via bindParams/DescribeParam at bind time), not by database/sql
+// before dispatch, so binding errors surface after a round trip instead of
+// up front.
 func (s *Stmt) NumInput() int {
 	return -1
 }
@@ -979,7 +972,7 @@ func (s *Stmt) exec(ctx context.Context, vals []any) (driver.Result, error) {
 		return nil, driver.ErrBadConn
 	}
 	result := &Result{}
-	if err := s.reprepareIfSupported(); err != nil {
+	if err := s.reprepareIfSupported(ctx); err != nil {
 		result.err = err
 		goto doResult
 	}
@@ -988,7 +981,7 @@ func (s *Stmt) exec(ctx context.Context, vals []any) (driver.Result, error) {
 		result.err = err
 		goto doResult
 	}
-	if err := s.execute(); err != nil {
+	if err := s.execute(ctx); err != nil {
 		result.err = err
 		goto doResult
 	}
@@ -1013,9 +1006,9 @@ doResult:
 	return result, nil
 }
 
-func (s *Stmt) execute() error {
+func (s *Stmt) execute(ctx context.Context) error {
 	s.reachEOF = false
-	if err := s.handle.Execute(); err != nil {
+	if err := s.handle.Execute(ctx); err != nil {
 		return s.ErrorOf(err)
 	}
 	defer func() {
@@ -1050,7 +1043,7 @@ func (s *Stmt) execute() error {
 
 func (s *Stmt) QueryRow(ctx context.Context, params ...any) *Row {
 	ret := &Row{timeLocation: s.conn.timeLocation}
-	if err := s.reprepareIfSupported(); err != nil {
+	if err := s.reprepareIfSupported(ctx); err != nil {
 		ret.err = err
 		return ret
 	}
@@ -1058,12 +1051,12 @@ func (s *Stmt) QueryRow(ctx context.Context, params ...any) *Row {
 		ret.err = err
 		return ret
 	}
-	if err := s.execute(); err != nil {
+	if err := s.execute(ctx); err != nil {
 		ret.err = err
 		return ret
 	}
 	ret.rowCount = s.rowCount
-	if values, err := s.fetch(); err != nil {
+	if values, err := s.fetch(ctx); err != nil {
 		if err == io.EOF {
 			// it means no row fetched
 			ret.err = sql.ErrNoRows
@@ -1093,16 +1086,17 @@ func (s *Stmt) queryRows(ctx context.Context, vals []any) (driver.Rows, error) {
 	if s == nil || s.handle == nil {
 		return nil, driver.ErrBadConn
 	}
-	if err := s.reprepareIfSupported(); err != nil {
-		return nil, err
+	if err := s.reprepareIfSupported(ctx); err != nil {
+		return nil, normalizeError(err)
 	}
 	if err := s.bindParams(vals...); err != nil {
-		return nil, err
+		return nil, normalizeError(err)
 	}
-	if err := s.execute(); err != nil {
-		return nil, err
+	if err := s.execute(ctx); err != nil {
+		return nil, normalizeError(err)
 	}
 	rows := &Rows{
+		ctx:          ctx,
 		stmt:         s,
 		isPrepared:   true,
 		timeLocation: s.conn.timeLocation,
@@ -1128,11 +1122,11 @@ func (s *Stmt) queryRows(ctx context.Context, vals []any) (driver.Rows, error) {
 
 // fetch fetches the next row from the result set.
 // It returns true if it reaches end of the result, otherwise false.
-func (s *Stmt) fetch() ([]any, error) {
+func (s *Stmt) fetch(ctx context.Context) ([]any, error) {
 	if s.reachEOF {
 		return nil, errors.New("fetch reached end of the result set")
 	}
-	row, err := s.handle.Fetch()
+	row, err := s.handle.Fetch(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1367,6 +1361,10 @@ type Rows struct {
 	queryStmtPooled bool
 	queryStmtKey    string
 	timeLocation    *time.Location
+	// ctx is the context supplied to the QueryContext/Query call that created
+	// these Rows; driver.Rows.Next has no context of its own, so it is reused
+	// to let cancellation interrupt a blocked Fetch during row iteration.
+	ctx context.Context
 }
 
 var _ driver.Rows = (*Rows)(nil)
@@ -1449,7 +1447,7 @@ func (r *Rows) next() bool {
 	if r.stmt.reachEOF {
 		return false
 	}
-	row, err := r.stmt.fetch()
+	row, err := r.stmt.fetch(r.ctx)
 	if err != nil {
 		if err != io.EOF {
 			r.err = err

@@ -2,6 +2,7 @@ package machnet
 
 import (
 	"bufio"
+	"context"
 	"crypto"
 	"encoding/binary"
 	"errors"
@@ -16,6 +17,10 @@ import (
 )
 
 type NativeConn struct {
+	// mu guards socket I/O (sendPackets/sendPacketsNoResponse/sendPacketsOptional
+	// and the append* helpers). See the lock hierarchy note above EnvHandle in
+	// cli.go: mu is only ever nested as StmtHandle.mu -> NativeConn.mu, never
+	// entered while stmtMu is held.
 	mu      sync.Mutex
 	netConn net.Conn
 	br      *bufio.Reader
@@ -38,6 +43,9 @@ type NativeConn struct {
 	serverVersion uint64
 	closed        bool
 
+	// stmtMu guards statement-id allocation only (nextStmtID/releaseStmtID)
+	// and is always acquired and released independently of mu; it is never
+	// held while sending/receiving packets.
 	stmtMu      sync.Mutex
 	stmtCursor  uint32
 	stmtUsed    [stmtIDLimit]bool
@@ -111,18 +119,17 @@ func countSQLPlaceholders(sql string) int {
 	return cnt
 }
 
-func dialNative(host string, port int, user string, password string, authMode string, key crypto.PrivateKey, authSigScheme string, alts []net.TCPAddr, fetchRows int64, trackIOBytes bool) (*NativeConn, error) {
-	if fetchRows <= 0 {
-		fetchRows = defaultFetchRows
+func dialNative(cfg ConnConfig) (*NativeConn, error) {
+	if cfg.FetchRows <= 0 {
+		cfg.FetchRows = defaultFetchRows
 	}
-	endpoints := make([]string, 0, 1+len(alts))
-	endpoints = append(endpoints, fmt.Sprintf("%s:%d", host, port))
-	for _, alt := range alts {
-		h := alt.IP.String()
-		if h == "<nil>" || h == "" {
+	endpoints := make([]string, 0, 1+len(cfg.AlternativeServers))
+	endpoints = append(endpoints, fmt.Sprintf("%s:%d", cfg.Host, cfg.Port))
+	for _, alt := range cfg.AlternativeServers {
+		if strings.TrimSpace(alt) == "" {
 			continue
 		}
-		endpoints = append(endpoints, fmt.Sprintf("%s:%d", h, alt.Port))
+		endpoints = append(endpoints, alt)
 	}
 	var lastErr error
 	for _, ep := range endpoints {
@@ -134,7 +141,7 @@ func dialNative(host string, port int, user string, password string, authMode st
 		var counter *ioByteCounter
 		var br *bufio.Reader
 		var bw *bufio.Writer
-		if trackIOBytes {
+		if cfg.TrackIOBytes {
 			counter = newIOByteCounter(true)
 			br = bufio.NewReaderSize(&countingReader{r: c, counter: counter}, defaultReadBufferSize)
 			bw = bufio.NewWriterSize(&countingWriter{w: c, counter: counter}, defaultWriteBufferSize)
@@ -147,15 +154,15 @@ func dialNative(host string, port int, user string, password string, authMode st
 			br:            br,
 			bw:            bw,
 			ioBytes:       counter,
-			host:          host,
-			port:          port,
-			user:          user,
-			password:      password,
-			authMode:      authMode,
-			authKey:       key,
-			authSigScheme: authSigScheme,
+			host:          cfg.Host,
+			port:          cfg.Port,
+			user:          cfg.User,
+			password:      cfg.Password,
+			authMode:      cfg.AuthMode,
+			authKey:       cfg.PrivateKey,
+			authSigScheme: cfg.AuthSigScheme,
 			queryTimeout:  defaultQueryTimeout,
-			fetchRows:     fetchRows,
+			fetchRows:     cfg.FetchRows,
 		}
 		if err := nc.handshake(); err != nil {
 			_ = c.Close()
@@ -264,7 +271,64 @@ func (c *NativeConn) handshake() error {
 	return nil
 }
 
-func (c *NativeConn) sendPackets(packets [][]byte, expected byte, timeout time.Duration) ([]byte, error) {
+// ctxDeadline returns the earlier of "now+timeout" (if timeout > 0) and the
+// context's own deadline (if any). A zero Time means "no deadline".
+func ctxDeadline(ctx context.Context, timeout time.Duration) time.Time {
+	var d time.Time
+	if timeout > 0 {
+		d = time.Now().Add(timeout)
+	}
+	if ctx != nil {
+		if cd, ok := ctx.Deadline(); ok && (d.IsZero() || cd.Before(d)) {
+			d = cd
+		}
+	}
+	return d
+}
+
+// watchContext forces any in-flight Read/Write on the connection to return
+// immediately once ctx is done, so context cancellation interrupts a blocked
+// network call instead of waiting for the fixed protocol timeout (or forever,
+// for calls that have no fixed read timeout). The returned stop func must
+// always be invoked (e.g. via defer) to release the watcher goroutine.
+func (c *NativeConn) watchContext(ctx context.Context) (stop func()) {
+	if ctx == nil || ctx.Done() == nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		select {
+		case <-ctx.Done():
+			_ = c.netConn.SetDeadline(time.Now())
+		case <-done:
+		}
+	}()
+	return func() {
+		close(done)
+		<-stopped
+	}
+}
+
+// ctxAbortErr reports whether err was caused by ctx being canceled or its
+// deadline being exceeded (via watchContext forcing the deadline). When it
+// was, the connection is marked closed: a forced-deadline abort can leave the
+// protocol byte stream desynchronized mid read/write, so the connection is
+// not safe to reuse. The returned error contains "connection closed" so that
+// normalizeError() (package client) promotes it to driver.ErrBadConn.
+func (c *NativeConn) ctxAbortErr(ctx context.Context, err error) error {
+	if err == nil || ctx == nil || ctx.Err() == nil {
+		return err
+	}
+	c.closed = true
+	if c.netConn != nil {
+		_ = c.netConn.Close()
+	}
+	return fmt.Errorf("connection closed: %w", ctx.Err())
+}
+
+func (c *NativeConn) sendPackets(ctx context.Context, packets [][]byte, expected byte, timeout time.Duration) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
@@ -274,16 +338,26 @@ func (c *NativeConn) sendPackets(packets [][]byte, expected byte, timeout time.D
 		_ = c.netConn.SetWriteDeadline(time.Now().Add(timeout))
 		defer c.netConn.SetWriteDeadline(time.Time{})
 	}
+	// A context deadline additionally bounds the read, unlike the fixed
+	// timeout above which only ever guarded the write side.
+	if ctx != nil {
+		if cd, ok := ctx.Deadline(); ok {
+			_ = c.netConn.SetReadDeadline(cd)
+			defer c.netConn.SetReadDeadline(time.Time{})
+		}
+	}
+	stop := c.watchContext(ctx)
+	defer stop()
 	for _, p := range packets {
 		if err := writePacket(c.bw, p); err != nil {
-			return nil, err
+			return nil, c.ctxAbortErr(ctx, err)
 		}
 	}
 	if err := c.bw.Flush(); err != nil {
-		return nil, err
+		return nil, c.ctxAbortErr(ctx, err)
 	}
 	if err := c.packet.Read(c.br); err != nil {
-		return nil, err
+		return nil, c.ctxAbortErr(ctx, err)
 	}
 	if c.packet.protocol != expected {
 		return nil, fmt.Errorf("unexpected protocol %d expected %d", c.packet.protocol, expected)
@@ -291,49 +365,53 @@ func (c *NativeConn) sendPackets(packets [][]byte, expected byte, timeout time.D
 	return c.packet.body, nil
 }
 
-func (c *NativeConn) sendPacketsNoResponse(packets [][]byte, timeout time.Duration) error {
+func (c *NativeConn) sendPacketsNoResponse(ctx context.Context, packets [][]byte, timeout time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
 		return errors.New("connection closed")
 	}
-	if timeout > 0 {
-		_ = c.netConn.SetWriteDeadline(time.Now().Add(timeout))
+	if deadline := ctxDeadline(ctx, timeout); !deadline.IsZero() {
+		_ = c.netConn.SetWriteDeadline(deadline)
 		defer c.netConn.SetWriteDeadline(time.Time{})
-		_ = c.netConn.SetReadDeadline(time.Now().Add(timeout))
+		_ = c.netConn.SetReadDeadline(deadline)
 		defer c.netConn.SetReadDeadline(time.Time{})
 	}
+	stop := c.watchContext(ctx)
+	defer stop()
 	for _, p := range packets {
 		if err := writePacket(c.bw, p); err != nil {
-			return err
+			return c.ctxAbortErr(ctx, err)
 		}
 	}
 	if err := c.bw.Flush(); err != nil {
-		return err
+		return c.ctxAbortErr(ctx, err)
 	}
 	return nil
 }
 
-func (c *NativeConn) sendPacketsOptional(packets [][]byte, expected byte, writeTimeout, readTimeout time.Duration) ([]byte, bool, error) {
+func (c *NativeConn) sendPacketsOptional(ctx context.Context, packets [][]byte, expected byte, writeTimeout, readTimeout time.Duration) ([]byte, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
 		return nil, false, errors.New("connection closed")
 	}
-	if writeTimeout > 0 {
-		_ = c.netConn.SetWriteDeadline(time.Now().Add(writeTimeout))
+	if deadline := ctxDeadline(ctx, writeTimeout); !deadline.IsZero() {
+		_ = c.netConn.SetWriteDeadline(deadline)
 		defer c.netConn.SetWriteDeadline(time.Time{})
 	}
+	stop := c.watchContext(ctx)
+	defer stop()
 	for _, p := range packets {
 		if err := writePacket(c.bw, p); err != nil {
-			return nil, false, err
+			return nil, false, c.ctxAbortErr(ctx, err)
 		}
 	}
 	if err := c.bw.Flush(); err != nil {
-		return nil, false, err
+		return nil, false, c.ctxAbortErr(ctx, err)
 	}
-	if readTimeout > 0 {
-		_ = c.netConn.SetReadDeadline(time.Now().Add(readTimeout))
+	if deadline := ctxDeadline(ctx, readTimeout); !deadline.IsZero() {
+		_ = c.netConn.SetReadDeadline(deadline)
 		defer c.netConn.SetReadDeadline(time.Time{})
 	}
 	if err := c.packet.Read(c.br); err != nil {
@@ -341,7 +419,7 @@ func (c *NativeConn) sendPacketsOptional(packets [][]byte, expected byte, writeT
 		if errors.As(err, &netErr) && netErr.Timeout() {
 			return nil, false, nil
 		}
-		return nil, false, err
+		return nil, false, c.ctxAbortErr(ctx, err)
 	}
 	if c.packet.protocol != expected {
 		return nil, false, fmt.Errorf("unexpected protocol %d expected %d", c.packet.protocol, expected)
@@ -376,7 +454,7 @@ func (c *NativeConn) connectProtocol() error {
 	} else {
 		w.addString(cmiCIPID, "127.0.0.1")
 	}
-	body, err := c.sendPackets(w.finalize(), cmiConnectProtocol, defaultConnectTimeout)
+	body, err := c.sendPackets(context.Background(), w.finalize(), cmiConnectProtocol, defaultConnectTimeout)
 	if err != nil {
 		return err
 	}
@@ -425,7 +503,7 @@ func (c *NativeConn) connectProtocol() error {
 		} else {
 			w2.addString(cmiCIPID, "127.0.0.1")
 		}
-		body2, err := c.sendPackets(w2.finalize(), cmiConnectProtocol, defaultConnectTimeout)
+		body2, err := c.sendPackets(context.Background(), w2.finalize(), cmiConnectProtocol, defaultConnectTimeout)
 		if err != nil {
 			return err
 		}
@@ -587,7 +665,7 @@ func parseStmtResponseVersion(body []byte, sql string, fallbackCols []ColumnMeta
 	return ret, nil
 }
 
-func (c *NativeConn) fetchRowsChunk(stmtID uint32, columns []ColumnMeta, fetchRows int64) ([][]any, bool, error) {
+func (c *NativeConn) fetchRowsChunk(ctx context.Context, stmtID uint32, columns []ColumnMeta, fetchRows int64) ([][]any, bool, error) {
 	if fetchRows <= 0 {
 		fetchRows = c.fetchRows
 		if fetchRows <= 0 {
@@ -597,7 +675,7 @@ func (c *NativeConn) fetchRowsChunk(stmtID uint32, columns []ColumnMeta, fetchRo
 	w := newMarshalWriter(cmiFetchProtocol, stmtID, 0)
 	w.addUInt32(cmiFIDID, stmtID)
 	w.addSInt64(cmiFRowsID, fetchRows)
-	body, err := c.sendPackets(w.finalize(), cmiFetchProtocol, c.queryTimeout)
+	body, err := c.sendPackets(ctx, w.finalize(), cmiFetchProtocol, c.queryTimeout)
 	if err != nil {
 		return nil, false, err
 	}
@@ -648,12 +726,12 @@ func (c *NativeConn) fetchRowsChunk(stmtID uint32, columns []ColumnMeta, fetchRo
 	return rows, last, nil
 }
 
-func (c *NativeConn) execDirect(stmtID uint32, sql string) (*StmtExecResult, error) {
+func (c *NativeConn) execDirect(ctx context.Context, stmtID uint32, sql string) (*StmtExecResult, error) {
 	w := newMarshalWriter(cmiExecDirectProtocol, stmtID, 0)
 	w.addString(cmiDStatementID, sql)
 	w.addUInt64(cmiPIDID, uint64(stmtID))
 	w.addSInt64(cmiFRowsID, c.fetchRows)
-	body, err := c.sendPackets(w.finalize(), cmiExecDirectProtocol, c.queryTimeout)
+	body, err := c.sendPackets(ctx, w.finalize(), cmiExecDirectProtocol, c.queryTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -670,11 +748,11 @@ func (c *NativeConn) execDirect(stmtID uint32, sql string) (*StmtExecResult, err
 	return ret, nil
 }
 
-func (c *NativeConn) prepare(stmtID uint32, sql string) (*StmtExecResult, error) {
+func (c *NativeConn) prepare(ctx context.Context, stmtID uint32, sql string) (*StmtExecResult, error) {
 	w := newMarshalWriter(cmiPrepareProtocol, stmtID, 0)
 	w.addUInt64(cmiPIDID, uint64(stmtID))
 	w.addString(cmiPStatementID, sql)
-	body, err := c.sendPackets(w.finalize(), cmiPrepareProtocol, c.queryTimeout)
+	body, err := c.sendPackets(ctx, w.finalize(), cmiPrepareProtocol, c.queryTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -688,7 +766,7 @@ func (c *NativeConn) prepare(stmtID uint32, sql string) (*StmtExecResult, error)
 	return ret, nil
 }
 
-func (c *NativeConn) executePrepared(stmtID uint32, sql string, params []BoundParam, preparedCols []ColumnMeta) (*StmtExecResult, error) {
+func (c *NativeConn) executePrepared(ctx context.Context, stmtID uint32, sql string, params []BoundParam, preparedCols []ColumnMeta) (*StmtExecResult, error) {
 	w := newMarshalWriter(cmiExecuteProtocol, stmtID, 0)
 	w.addUInt64(cmiPIDID, uint64(stmtID))
 	w.addSInt64(cmiFRowsID, c.fetchRows)
@@ -706,7 +784,7 @@ func (c *NativeConn) executePrepared(stmtID uint32, sql string, params []BoundPa
 			}
 		}
 	}
-	body, err := c.sendPackets(w.finalize(), cmiExecuteProtocol, c.queryTimeout)
+	body, err := c.sendPackets(ctx, w.finalize(), cmiExecuteProtocol, c.queryTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -723,7 +801,7 @@ func (c *NativeConn) executePrepared(stmtID uint32, sql string, params []BoundPa
 func (c *NativeConn) free(stmtID uint32) error {
 	w := newMarshalWriter(cmiFreeProtocol, stmtID, 0)
 	w.addUInt64(cmiXIDID, uint64(stmtID))
-	body, err := c.sendPackets(w.finalize(), cmiFreeProtocol, c.queryTimeout)
+	body, err := c.sendPackets(context.Background(), w.finalize(), cmiFreeProtocol, c.queryTimeout)
 	if err != nil {
 		if strings.Contains(err.Error(), "unexpected protocol") {
 			return nil
@@ -754,7 +832,7 @@ func (c *NativeConn) appendOpen(stmtID uint32, table string, errCheckCount int) 
 	w.addUInt64(cmiPIDID, uint64(stmtID))
 	w.addString(cmiPTableID, table)
 	w.addUInt64(cmiEEndianID, 0)
-	body, err := c.sendPackets(w.finalize(), cmiAppendOpenProtocol, c.queryTimeout)
+	body, err := c.sendPackets(context.Background(), w.finalize(), cmiAppendOpenProtocol, c.queryTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -822,14 +900,14 @@ func (c *NativeConn) appendData(stmtID uint32, rows [][]byte, checkResponse bool
 	}
 	packets := w.finalize()
 	if !checkResponse {
-		return c.sendPacketsNoResponse(packets, c.queryTimeout)
+		return c.sendPacketsNoResponse(context.Background(), packets, c.queryTimeout)
 	}
 	// CAUTION: This is a short timeout for low latency append. But prone to cause false-timeout.
 	timeout := 5 * time.Millisecond
 	if c.queryTimeout > 0 && timeout > c.queryTimeout {
 		timeout = c.queryTimeout
 	}
-	body, ok, err := c.sendPacketsOptional(packets, cmiAppendDataProtocol, c.queryTimeout, timeout)
+	body, ok, err := c.sendPacketsOptional(context.Background(), packets, cmiAppendDataProtocol, c.queryTimeout, timeout)
 	if err != nil {
 		return err
 	}

@@ -3,7 +3,6 @@ package machnet
 import (
 	"errors"
 	"fmt"
-	"net"
 	"strings"
 	"time"
 
@@ -508,74 +507,6 @@ func parseBoolOption(v string) (bool, error) {
 	default:
 		return false, fmt.Errorf("invalid bool value %q", v)
 	}
-}
-
-func parseConnString(connStr string) (host string, port int, user string, pass string, authMode string, authKeyFile string, authSigScheme string, alt []net.TCPAddr, fetchRows int64, trackIOBytes bool, err error) {
-	m := map[string]string{}
-	for _, entry := range strings.Split(connStr, ";") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		kv := strings.SplitN(entry, "=", 2)
-		if len(kv) != 2 {
-			continue
-		}
-		k := strings.ToUpper(strings.TrimSpace(kv[0]))
-		v := strings.TrimSpace(kv[1])
-		m[k] = v
-	}
-	host = m["SERVER"]
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	port = 5656
-	if p := strings.TrimSpace(m["PORT_NO"]); p != "" {
-		_, scanErr := fmt.Sscanf(p, "%d", &port)
-		if scanErr != nil {
-			return "", 0, "", "", "", "", "", nil, 0, false, fmt.Errorf("invalid PORT_NO: %w", scanErr)
-		}
-	}
-	user = m["UID"]
-	pass = m["PWD"]
-	authMode = m["AUTH_MODE"]
-	authKeyFile = m["AUTH_KEY_FILE"]
-	authSigScheme = m["AUTH_SIG_SCHEME"]
-	fetchRows = defaultFetchRows
-	if rowsStr := strings.TrimSpace(m["FETCH_ROWS"]); rowsStr != "" {
-		if _, scanErr := fmt.Sscanf(rowsStr, "%d", &fetchRows); scanErr != nil {
-			return "", 0, "", "", "", "", "", nil, 0, false, fmt.Errorf("invalid FETCH_ROWS: %w", scanErr)
-		}
-		if fetchRows <= 0 {
-			return "", 0, "", "", "", "", "", nil, 0, false, fmt.Errorf("invalid FETCH_ROWS: %d", fetchRows)
-		}
-	}
-
-	if opt := strings.TrimSpace(m["IO_METRICS"]); opt != "" {
-		trackIOBytes, err = parseBoolOption(opt)
-		if err != nil {
-			return "", 0, "", "", "", "", "", nil, 0, false, fmt.Errorf("invalid IO_METRICS: %w", err)
-		}
-	}
-
-	if altEntry := strings.TrimSpace(m["ALTERNATIVE_SERVERS"]); altEntry != "" {
-		for _, token := range strings.Split(altEntry, ",") {
-			token = strings.TrimSpace(token)
-			if token == "" {
-				continue
-			}
-			h, pStr, ok := strings.Cut(token, ":")
-			if !ok {
-				continue
-			}
-			var p int
-			if _, scanErr := fmt.Sscanf(strings.TrimSpace(pStr), "%d", &p); scanErr != nil {
-				continue
-			}
-			alt = append(alt, net.TCPAddr{IP: net.ParseIP(strings.TrimSpace(h)), Port: p})
-		}
-	}
-	return host, port, user, pass, authMode, authKeyFile, authSigScheme, alt, fetchRows, trackIOBytes, nil
 }
 
 func inferStmtType(sql string) StmtType {

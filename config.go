@@ -30,26 +30,24 @@ const (
 )
 
 type Config struct {
-	Host            string
-	Port            int
-	User            string
-	Password        string
-	Database        string
-	ProxyUser       string
-	AuthMode        string
-	AuthKeyFile     string
-	AuthKeyPEM      string
-	AuthSigScheme   string
-	AlternativeHost string
-	AlternativePort int
-	FetchRows       int64
-	StatementCache  StatementCacheMode
-	IOMetrics       bool
-	TimeLocation    *time.Location
+	Host               string
+	Port               int
+	User               string
+	Password           string
+	Database           string
+	ProxyUser          string
+	AuthMode           string
+	AuthKeyFile        string
+	AuthKeyPEM         string
+	AuthSigScheme      string
+	AlternativeServers []string
+	FetchRows          int64
+	StatementCache     StatementCacheMode
+	IOMetrics          bool
+	TimeLocation       *time.Location
 
-	loginName         string
-	key               crypto.PrivateKey
-	statementCacheSet bool
+	loginName string
+	key       crypto.PrivateKey
 }
 
 func (cfg *Config) normalize() *Config {
@@ -138,7 +136,7 @@ func (cfg *Config) validate() error {
 //   - password="a\"b";password2='a\'b';
 //   - auth_mode=challenge;user=sys;auth_key_pem="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----";
 func ParseDSN(dsn string) (*Config, error) {
-	var cfg Config
+	cfg := Config{StatementCache: StatementCacheAuto}
 	dsn = strings.TrimSpace(dsn)
 	if dsn == "" {
 		return &cfg, nil
@@ -161,7 +159,7 @@ func ParseDSN(dsn string) (*Config, error) {
 }
 
 func parseKeyValueDSN(dsn string) (*Config, error) {
-	var cfg Config
+	cfg := Config{StatementCache: StatementCacheAuto}
 	parts, err := splitDSNSegments(dsn)
 	if err != nil {
 		return nil, err
@@ -181,73 +179,71 @@ func parseKeyValueDSN(dsn string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid value for %q: %w", key, err)
 		}
-		switch key {
-		case "server":
-			if err := applyServerValue(&cfg, value); err != nil {
-				return nil, err
-			}
-		case "host":
-			cfg.Host = value
-		case "port":
-			port, err := strconv.Atoi(value)
-			if err != nil {
-				return nil, fmt.Errorf("invalid port %q", value)
-			}
-			cfg.Port = port
-		case "user", "uid":
-			username, proxyname, proxied := parseUserName(value)
-			cfg.User = username
-			if proxied && proxyname != "" {
-				cfg.ProxyUser = proxyname
-			}
-		case "password", "pwd":
-			cfg.Password = value
-		case "database", "db":
-			cfg.Database = value
-		case "auth_mode":
-			cfg.AuthMode = value
-		case "auth_key_file":
-			cfg.AuthKeyFile = value
-		case "auth_key_pem":
-			cfg.AuthKeyPEM = value
-		case "auth_sig_scheme":
-			cfg.AuthSigScheme = value
-		case "fetch_rows", "fetchrows":
-			rows, err := strconv.ParseInt(value, 10, 64)
-			if err != nil {
-				return nil, fmt.Errorf("invalid fetch_rows %q", value)
-			}
-			cfg.FetchRows = rows
-		case "statement_cache", "statementcache":
-			mode, err := parseStatementCacheMode(value)
-			if err != nil {
-				return nil, err
-			}
-			cfg.StatementCache = mode
-			cfg.statementCacheSet = true
-		case "io_metrics", "iometrics":
-			enabled, err := strconv.ParseBool(value)
-			if err != nil {
-				return nil, fmt.Errorf("invalid io_metrics %q", value)
-			}
-			cfg.IOMetrics = enabled
-		case "alternative_servers":
-			if err := applyAlternativeServers(&cfg, value); err != nil {
-				return nil, err
-			}
-		case "alternative_host":
-			cfg.AlternativeHost = value
-		case "alternative_port":
-			port, err := strconv.Atoi(value)
-			if err != nil {
-				return nil, fmt.Errorf("invalid alternative_port %q", value)
-			}
-			cfg.AlternativePort = port
-		default:
+		applied, err := applyDSNOption(&cfg, key, value)
+		if err != nil {
+			return nil, err
+		}
+		if !applied {
 			return nil, fmt.Errorf("unsupported dsn key %q", key)
 		}
 	}
 	return cfg.normalize(), nil
+}
+
+func applyDSNOption(cfg *Config, key string, value string) (bool, error) {
+	switch key {
+	case "server":
+		return true, applyServerValue(cfg, value)
+	case "host":
+		cfg.Host = value
+	case "port":
+		port, err := strconv.Atoi(value)
+		if err != nil {
+			return true, fmt.Errorf("invalid port %q", value)
+		}
+		cfg.Port = port
+	case "user", "uid":
+		username, proxyname, proxied := parseUserName(value)
+		cfg.User = username
+		if proxied && proxyname != "" {
+			cfg.ProxyUser = proxyname
+		}
+	case "password", "pwd":
+		cfg.Password = value
+	case "database", "db":
+		cfg.Database = value
+	case "auth_mode":
+		cfg.AuthMode = value
+	case "auth_key_file":
+		cfg.AuthKeyFile = value
+	case "auth_key_pem":
+		cfg.AuthKeyPEM = value
+	case "auth_sig_scheme":
+		cfg.AuthSigScheme = value
+	case "fetch_rows", "fetchrows":
+		rows, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return true, fmt.Errorf("invalid fetch_rows %q", value)
+		}
+		cfg.FetchRows = rows
+	case "statement_cache", "statementcache":
+		mode, err := parseStatementCacheMode(value)
+		if err != nil {
+			return true, err
+		}
+		cfg.StatementCache = mode
+	case "io_metrics", "iometrics":
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return true, fmt.Errorf("invalid io_metrics %q", value)
+		}
+		cfg.IOMetrics = enabled
+	case "alternative_servers":
+		return true, applyAlternativeServers(cfg, value)
+	default:
+		return false, nil
+	}
+	return true, nil
 }
 
 func splitDSNSegments(dsn string) ([]string, error) {
@@ -381,54 +377,18 @@ func applyServerValue(cfg *Config, value string) error {
 			cfg.Database = strings.TrimPrefix(u.Path, "/")
 		}
 		for key, values := range u.Query() {
-			switch strings.ToLower(key) {
-			case "as":
+			key = strings.ToLower(key)
+			if key == "as" {
 				if len(values) > 0 {
 					cfg.ProxyUser = values[0]
 				}
-			case "database", "db":
-				if len(values) > 0 {
-					cfg.Database = values[0]
-				}
-			case "auth_mode":
-				cfg.AuthMode = values[0]
-			case "auth_key_file":
-				cfg.AuthKeyFile = values[0]
-			case "auth_key_pem":
-				cfg.AuthKeyPEM = values[0]
-			case "auth_sig_scheme":
-				cfg.AuthSigScheme = values[0]
-			case "fetch_rows", "fetchrows":
-				rows, err := strconv.ParseInt(values[0], 10, 64)
-				if err != nil {
-					return fmt.Errorf("invalid fetch_rows %q", values[0])
-				}
-				cfg.FetchRows = rows
-			case "statement_cache", "statementcache":
-				mode, err := parseStatementCacheMode(values[0])
-				if err != nil {
-					return err
-				}
-				cfg.StatementCache = mode
-				cfg.statementCacheSet = true
-			case "io_metrics", "iometrics":
-				enabled, err := strconv.ParseBool(values[0])
-				if err != nil {
-					return fmt.Errorf("invalid io_metrics %q", values[0])
-				}
-				cfg.IOMetrics = enabled
-			case "alternative_servers":
-				if err := applyAlternativeServers(cfg, values[0]); err != nil {
-					return err
-				}
-			case "alternative_host":
-				cfg.AlternativeHost = values[0]
-			case "alternative_port":
-				port, err := strconv.Atoi(values[0])
-				if err != nil {
-					return fmt.Errorf("invalid alternative_port %q", values[0])
-				}
-				cfg.AlternativePort = port
+				continue
+			}
+			if len(values) == 0 {
+				continue
+			}
+			if _, err := applyDSNOption(cfg, key, values[0]); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -457,7 +417,7 @@ func applyAlternativeServers(cfg *Config, value string) error {
 		if entry == "" {
 			continue
 		}
-		host, port, err := net.SplitHostPort(entry)
+		_, port, err := net.SplitHostPort(entry)
 		if err != nil {
 			return fmt.Errorf("invalid alternative server %q", entry)
 		}
@@ -465,9 +425,10 @@ func applyAlternativeServers(cfg *Config, value string) error {
 		if err != nil {
 			return fmt.Errorf("invalid alternative server port %q", port)
 		}
-		cfg.AlternativeHost = host
-		cfg.AlternativePort = parsedPort
-		return nil
+		if parsedPort <= 0 {
+			return fmt.Errorf("invalid alternative server port %q", port)
+		}
+		cfg.AlternativeServers = append(cfg.AlternativeServers, entry)
 	}
 	return nil
 }
