@@ -446,17 +446,6 @@ func spinerTypeToSqlType(spinerType int) api.SqlType {
 	}
 }
 
-func parseBoolOption(v string) (bool, error) {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "", "0", "false", "f", "no", "n", "off":
-		return false, nil
-	case "1", "true", "t", "yes", "y", "on":
-		return true, nil
-	default:
-		return false, fmt.Errorf("invalid bool value %q", v)
-	}
-}
-
 func inferStmtType(sql string) StmtType {
 	t := strings.ToUpper(stripLeadingSQLComments(sql))
 	if t == "" {
