@@ -312,58 +312,6 @@ const (
 	QPC_STMT_TYPE_APPEND StmtType = iota + 2000
 )
 
-func (typ StmtType) SuccessfulMessage() string {
-	switch typ {
-	case QPP_STMT_TYPE_CONNECT_USER:
-		return "user connected."
-	case QPP_STMT_TYPE_ALTER_SYSTEM_KILL_SESSION:
-		return "session killed."
-	case QPP_STMT_TYPE_ALTER_SYSTEM_CANCEL_SESSION:
-		return "session canceled."
-	case QPP_STMT_TYPE_ALTER_SYSTEM_FLUSH_AGER:
-		return "ager flushed."
-	case QPP_STMT_TYPE_ALTER_SYSTEM_FLUSH_RESULT_CACHE:
-		return "result cache flushed."
-	case QPP_STMT_TYPE_ALTER_SYSTEM_FLUSH_PVO_CACHE:
-		return "pvo cache flushed."
-	case QPP_STMT_TYPE_ALTER_SYSTEM_FLUSH_SYS_STAT:
-		return "system statistics flushed."
-	case QPP_STMT_TYPE_ALTER_SYSTEM_FLUSH_PAGE_CACHE:
-		return "page cache flushed."
-	case QPP_STMT_TYPE_ALTER_SYSTEM_FLUSH_KV_CACHE:
-		return "kv cache flushed."
-	case QPP_STMT_TYPE_ALTER_SYSTEM_CHECK_DISK_USAGE:
-		return "disk usage checked."
-	case QPP_STMT_TYPE_ALTER_SYSTEM_SWIPE:
-		return "system wiped."
-	case QPP_STMT_TYPE_ALTER_SYSTEM_INSTALL:
-		return "system installed."
-	case QPP_STMT_TYPE_ALTER_SYSTEM_CHECKPOINT:
-		return "checkpoint created."
-	case QPP_STMT_TYPE_ALTER_SYSTEM_SET:
-		return "system set."
-	case QPP_STMT_TYPE_ALTER_SYSTEM_UNSET:
-		return "system unset."
-	case QPP_STMT_TYPE_ALTER_SESSION_SET:
-		return "session set."
-	case QPP_STMT_TYPE_COMMIT:
-		return "commit successful."
-	case QPP_STMT_TYPE_ROLLBACK:
-		return "rollback successful."
-	case QPP_STMT_TYPE_TABLE_FLUSH:
-		return "table flushed."
-	case QPP_STMT_TYPE_INDEX_FLUSH:
-		return "index flushed."
-	case QPP_STMT_TYPE_TABLE_REFRESH:
-		return "table refreshed."
-	case QPP_STMT_TYPE_TABLE_FREEZE_TAG_INDEX:
-		return "table tag index frozen."
-	case QPP_STMT_TYPE_TABLE_UNFREEZE_TAG_INDEX:
-		return "table tag index unfrozen."
-	}
-	return ""
-}
-
 type ParamDesc struct {
 	Type        api.SqlType
 	Precision   int

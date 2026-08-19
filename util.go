@@ -361,14 +361,72 @@ func formatResultMessage(err error, stmtType machnet.StmtType, rowCount int64) s
 		return "view created."
 	case machnet.QPP_STMT_TYPE_DROP_VIEW:
 		return "view dropped."
+	case machnet.QPP_STMT_TYPE_BACKUP_DATABASE:
+		return "database backup completed."
+	case machnet.QPP_STMT_TYPE_RESTORE_DATABASE:
+		return "database restore completed."
+	case machnet.QPP_STMT_TYPE_MOUNT_DATABASE:
+		return "database mounted."
+	case machnet.QPP_STMT_TYPE_UMOUNT_DATABASE:
+		return "database unmounted."
+	case machnet.QPP_STMT_TYPE_MOUNT_TABLE:
+		return "table mounted."
+	case machnet.QPP_STMT_TYPE_UMOUNT_TABLE:
+		return "table unmounted."
+	case machnet.QPP_STMT_TYPE_BACKUP_TABLE:
+		return "table backup completed."
+	case machnet.QPP_STMT_TYPE_INC_BACKUP_DATABASE:
+		return "incremental database backup completed."
+	case machnet.QPP_STMT_TYPE_INC_BACKUP_TABLE:
+		return "incremental table backup completed."
+	case machnet.QPP_STMT_TYPE_ALTER_SYSTEM_KILL_SESSION:
+		return "session killed."
+	case machnet.QPP_STMT_TYPE_ALTER_SYSTEM_CANCEL_SESSION:
+		return "session canceled."
+	case machnet.QPP_STMT_TYPE_ALTER_SYSTEM_FLUSH_AGER:
+		return "ager flushed."
+	case machnet.QPP_STMT_TYPE_ALTER_SYSTEM_FLUSH_RESULT_CACHE:
+		return "result cache flushed."
+	case machnet.QPP_STMT_TYPE_ALTER_SYSTEM_FLUSH_PVO_CACHE:
+		return "pvo cache flushed."
+	case machnet.QPP_STMT_TYPE_ALTER_SYSTEM_FLUSH_SYS_STAT:
+		return "system statistics flushed."
+	case machnet.QPP_STMT_TYPE_ALTER_SYSTEM_FLUSH_PAGE_CACHE:
+		return "page cache flushed."
+	case machnet.QPP_STMT_TYPE_ALTER_SYSTEM_FLUSH_KV_CACHE:
+		return "kv cache flushed."
+	case machnet.QPP_STMT_TYPE_ALTER_SYSTEM_CHECK_DISK_USAGE:
+		return "disk usage checked."
+	case machnet.QPP_STMT_TYPE_ALTER_SYSTEM_SWIPE:
+		return "system swiped."
+	case machnet.QPP_STMT_TYPE_ALTER_SYSTEM_INSTALL:
+		return "system installed."
+	case machnet.QPP_STMT_TYPE_ALTER_SYSTEM_CHECKPOINT:
+		return "system checkpointed."
+	case machnet.QPP_STMT_TYPE_ALTER_SYSTEM_SET:
+		return "system set."
+	case machnet.QPP_STMT_TYPE_ALTER_SYSTEM_UNSET:
+		return "system unset."
+	case machnet.QPP_STMT_TYPE_ALTER_SESSION_SET:
+		return "session set."
+	case machnet.QPP_STMT_TYPE_COMMIT:
+		return "transaction committed."
+	case machnet.QPP_STMT_TYPE_ROLLBACK:
+		return "transaction rolled back."
+	case machnet.QPP_STMT_TYPE_TABLE_FLUSH:
+		return "table flushed."
+	case machnet.QPP_STMT_TYPE_INDEX_FLUSH:
+		return "index flushed."
+	case machnet.QPP_STMT_TYPE_TABLE_REFRESH:
+		return "table refreshed."
+	case machnet.QPP_STMT_TYPE_TABLE_FREEZE_TAG_INDEX:
+		return "table tag index frozen."
+	case machnet.QPP_STMT_TYPE_TABLE_UNFREEZE_TAG_INDEX:
+		return "table tag index unfrozen."
 	}
 
 	verb := ""
-	if stmtType >= 256 && stmtType <= 511 {
-		if msg := stmtType.SuccessfulMessage(); msg != "" {
-			return msg
-		}
-	} else if stmtType.IsSelect() {
+	if stmtType.IsSelect() {
 		verb = "selected."
 	} else if stmtType.IsInsert() {
 		verb = "inserted."
