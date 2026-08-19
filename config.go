@@ -27,6 +27,7 @@ const (
 	defaultQueryStmtPoolPerQueryCap = 8
 	defaultPort                     = 5656
 	defaultFetchRows                = 1000
+	defaultDatabase                 = "MACHBASEDB"
 )
 
 type Config struct {
@@ -65,6 +66,9 @@ func (cfg *Config) normalize() *Config {
 	}
 	if cfg.TimeLocation == nil {
 		cfg.TimeLocation = time.UTC
+	}
+	if cfg.Database == "" {
+		cfg.Database = defaultDatabase
 	}
 
 	if strings.EqualFold(cfg.User, "sys") && cfg.ProxyUser != "" && !strings.EqualFold(cfg.ProxyUser, "sys") {

@@ -145,6 +145,16 @@ func TestParseDSNStatementCacheDefaults(t *testing.T) {
 	}
 }
 
+func TestParseDSNDefaultsDatabase(t *testing.T) {
+	cfg, err := ParseDSN("host=127.0.0.1")
+	if err != nil {
+		t.Fatalf("ParseDSN() error = %v", err)
+	}
+	if cfg.Database != defaultDatabase {
+		t.Fatalf("database=%q, want %q", cfg.Database, defaultDatabase)
+	}
+}
+
 func TestParseDSNAuthKey(t *testing.T) {
 	keyFile := writeValidTestAuthKeyPEMFile(t)
 	cfg, err := ParseDSN("server=127.0.0.1:5656;user=sys;auth_mode=challenge;auth_key_file=" + keyFile + ";auth_sig_scheme=rsa_pss")

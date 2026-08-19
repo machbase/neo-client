@@ -105,7 +105,7 @@ func (cn *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 		queryStmtPoolCap:       defaultQueryStmtPoolCap,
 		queryStmtPoolPerKeyCap: defaultQueryStmtPoolPerQueryCap,
 	}
-	if strings.TrimSpace(cn.cfg.Database) != "" && !strings.EqualFold(cn.cfg.Database, "MACHBASEDB") {
+	if strings.TrimSpace(cn.cfg.Database) != "" && !strings.EqualFold(cn.cfg.Database, defaultDatabase) {
 		if err := ret.exec(ctx, "USE "+quoteIdentifier(cn.cfg.Database)).Err(); err != nil {
 			return nil, errors.Join(err, ret.Close())
 		}
