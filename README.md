@@ -167,6 +167,90 @@ func main() {
 
 For high-throughput time-series ingestion, you can use the dedicated appender API shown in `_example/append.go`.
 
+### Scan Rows into Structs
+
+Instead of listing every destination in column order, you can map columns to struct fields with the `db` tag. The helpers accept the `*sql.Rows` you already have, so they work with the standard `database/sql` API.
+
+```go
+import client "github.com/machbase/neo-client/v2"
+
+type TagRecord struct {
+	Name  string    `db:"NAME"`
+	Time  time.Time `db:"TIME"`
+	Value *float64  `db:"VALUE"` // nil when the column is NULL
+
+	cached string // unexported and untagged fields are ignored
+}
+
+records, err := client.Select[TagRecord](ctx, db,
+	`SELECT NAME, TIME, VALUE FROM EXAMPLE WHERE NAME = ? ORDER BY TIME LIMIT 100`, "sensor-1")
+```
+
+Available helpers:
+
+| Function | Purpose |
+| --- | --- |
+| `Select[T](ctx, q, query, args...)` | Run a query and scan every row into `[]T` |
+| `Get[T](ctx, q, query, args...)` | Run a query and scan the first row; returns `sql.ErrNoRows` when empty |
+| `ScanAll[T](rows)` / `ScanOne[T](rows)` | Same, for rows the caller already opened |
+| `ScanEach[T](rows, fn)` | Stream rows one at a time, keeping memory constant |
+| `NewCursor[T](rows)` | Explicit `Next` / `Value` / `Err` iterator |
+| `ScanStruct(rows, &dest)` | Scan the current row without calling `rows.Next()` |
+| `ScanRow(rows, &dest)` / `ScanRows(rows, &slice)` | Non-generic forms |
+
+`T` may be a struct, a pointer to a struct, a scalar for single-column queries, or `map[string]any`.
+
+Mapping rules:
+
+- The tag key is `db`, and `json` is used as a fallback so existing DTOs work unchanged.
+- Column names are matched case-insensitively, so `db:"id"` matches an `ID` column.
+- `db:"-"` excludes a field, and **an untagged field is excluded as well**. Call `WithNameMapper(client.NameMapperIdentity())` to map untagged fields by name.
+- Embedded structs are flattened; a named nested struct is addressed as `parent.child`.
+- A NULL column can be received either as a `*T` field, which becomes nil, or as `sql.Null[T]`.
+
+By default the mapping is strict: a column with no matching field and a field with no matching column are both errors, which keeps a changed `SELECT *` from silently dropping values. Relax it per call with `WithLaxColumns()` or `WithLaxFields()`.
+
+`Select`, `ScanAll` and `ScanRows` materialize the whole result set, so they stop with `ErrScanTooManyRows` beyond `WithMaxRows`, which defaults to 1000. Raise it with `WithMaxRows(n)`, remove it with `WithMaxRows(0)`, or stream the query with `ScanEach` or `NewCursor`, which have no limit.
+
+```go
+rows, err := db.QueryContext(ctx, `SELECT NAME, TIME, VALUE FROM EXAMPLE`)
+if err != nil {
+	panic(err)
+}
+defer rows.Close() // the helpers never close rows they receive
+
+var total float64
+err = client.ScanEach(rows, func(rec TagRecord) error {
+	if rec.Value != nil {
+		total += *rec.Value
+	}
+	return nil
+})
+```
+
+### Build Named Parameters from a Struct or Map
+
+`NamedArgs` turns a struct or a `map[string]any` into `sql.Named` arguments using the same `db` tags. It never inspects or rewrites the SQL text: the server resolves the `:name` placeholders itself.
+
+```go
+type condition struct {
+	Name string    `db:"name"`
+	From time.Time `db:"from"`
+	To   time.Time `db:"to"`
+}
+
+args, err := client.NamedArgs(condition{Name: "sensor-1", From: begin, To: end})
+if err != nil {
+	panic(err)
+}
+
+records, err := client.Select[TagRecord](ctx, db, `
+	SELECT NAME, TIME, VALUE FROM EXAMPLE
+	 WHERE NAME = :name AND TIME BETWEEN :from AND :to`, args...)
+```
+
+Named parameters require a server that reports parameter-name metadata (Machbase v8.7.0 or later). Check it with `client.SupportsNamedParameters(ctx, db)`; otherwise the query fails with `client.ErrNamedParamsUnsupported` and positional `?` markers must be used.
+
 ### Use the Standard `database/sql` Driver
 
 If your application already uses `database/sql`, import `github.com/machbase/neo-client` for driver registration and connect with `sql.Open`.
@@ -287,7 +371,7 @@ if err != nil {
 }
 ```
 
-The `database/sql` driver accepts `sql.Named` and returns DECIMAL query values as exact strings. Parameter names are case-sensitive, a repeated marker reuses one supplied value, and named and positional arguments cannot be mixed.
+The `database/sql` driver accepts `sql.Named` and returns DECIMAL query values as exact strings. Parameter names are matched case-insensitively, a repeated marker reuses one supplied value, and named and positional arguments cannot be mixed. `client.NamedArgs` builds the `sql.Named` list from a struct or a map.
 
 When connected to Machbase 8.5.x, use positional `?` parameters with the table and data types supported by that server version. Named parameters and Machbase 8.6.0 data types are not available, and nullable column information may be unknown (`ColumnType.Nullable()` returns `ok=false`).
 
@@ -315,6 +399,12 @@ Run the insert example:
 go run ./_example/insert.go -s 127.0.0.1:5656 -u sys -p manager
 ```
 
+Run the struct-tag scan and named parameter example:
+
+```sh
+go run ./_example/scanbytag.go -s 127.0.0.1:5656 -u sys -p manager
+```
+
 ## Common DSN Options
 
 - `server=tcp://user:password@host:port`: full server URL
@@ -326,7 +416,7 @@ go run ./_example/insert.go -s 127.0.0.1:5656 -u sys -p manager
 
 ## Notes
 
-- Always close `Rows`, `Stmt`, `sql.Conn`, and `sql.DB` objects after use.
+- Always close `Rows`, `Stmt`, `sql.Conn`, and `sql.DB` objects after use. The struct scan helpers never close the rows they receive.
 - `Appender.Close()` returns success and failure counts for the append session.
 - On servers that support transaction tables, the standard driver supports explicit transactions. `LastInsertId` remains unsupported.
 
@@ -335,5 +425,6 @@ go run ./_example/insert.go -s 127.0.0.1:5656 -u sys -p manager
 - [_example/query.go](./_example/query.go)
 - [_example/insert.go](./_example/insert.go)
 - [_example/append.go](./_example/append.go)
+- [_example/scanbytag.go struct tag scan and named parameters](./_example/scanbytag.go)
 - [_example/v860.go v8.6.x example](./_example/v860.go)
 - [Machbase 8.6.0 Changes](./docs/machbase-860-upgrade.md)
