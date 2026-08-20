@@ -281,10 +281,14 @@ func (typ ColumnType) DataType() DataType {
 type ColumnFlag int
 
 const (
-	ColumnFlagTagName    = 0x08000000
-	ColumnFlagBasetime   = 0x01000000
-	ColumnFlagSummarized = 0x02000000
-	ColumnFlagMetaColumn = 0x04000000
+	ColumnFlagAutoIncrement = 0x00100000
+	ColumnFlagPrimaryKey    = 0x00400000
+	ColumnFlagNotNull       = 0x00800000
+	ColumnFlagTagName       = 0x08000000
+	ColumnFlagBasetime      = 0x01000000
+	ColumnFlagSummarized    = 0x02000000
+	ColumnFlagMetaColumn    = 0x04000000
+	ColumnFlagDefault       = 0x40000000
 	// This is not a real column flag(not defined in the neo-engine),
 	// just workaround for base distance
 	ColumnFlagBaseDistance = 0x11000000
@@ -292,6 +296,12 @@ const (
 
 func (flag ColumnFlag) String() string {
 	switch flag {
+	case ColumnFlagAutoIncrement:
+		return "auto increment"
+	case ColumnFlagPrimaryKey:
+		return "primary key"
+	case ColumnFlagNotNull:
+		return "not null"
 	case ColumnFlagTagName:
 		return "tag name"
 	case ColumnFlagBasetime:
@@ -300,6 +310,8 @@ func (flag ColumnFlag) String() string {
 		return "summarized"
 	case ColumnFlagMetaColumn:
 		return "meta"
+	case ColumnFlagDefault:
+		return "default"
 	case ColumnFlagBaseDistance:
 		return "base distance"
 	default:

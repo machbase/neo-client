@@ -361,6 +361,12 @@ func formatResultMessage(err error, stmtType machnet.StmtType, rowCount int64) s
 		return "view created."
 	case machnet.QPP_STMT_TYPE_DROP_VIEW:
 		return "view dropped."
+	case machnet.QPP_STMT_TYPE_CREATE_DATABASE:
+		return "database created."
+	case machnet.QPP_STMT_TYPE_DROP_DATABASE:
+		return "database dropped."
+	case machnet.QPP_STMT_TYPE_ALTER_DATABASE:
+		return "database altered."
 	case machnet.QPP_STMT_TYPE_BACKUP_DATABASE:
 		return "database backup completed."
 	case machnet.QPP_STMT_TYPE_RESTORE_DATABASE:

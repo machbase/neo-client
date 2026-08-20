@@ -707,8 +707,7 @@ func (c *Conn) exec(ctx context.Context, query string, args ...any) *Result {
 		} else {
 			ret.stmtType = typ
 		}
-		if ret.stmtType == machnet.QPP_STMT_TYPE_ALTER_SESSION_SET ||
-			ret.stmtType == machnet.QPP_STMT_TYPE_CONNECT_USER {
+		if stmtTypeInvalidatesCatalog(ret.stmtType) {
 			c.catalogGeneration.Add(1)
 			if err := c.closeQueryStmtPool(); err != nil {
 				ret.err = err
@@ -742,6 +741,19 @@ func (c *Conn) exec(ctx context.Context, query string, args ...any) *Result {
 		ret.stmtType = typ
 	}
 	return ret
+}
+
+func stmtTypeInvalidatesCatalog(stmtType machnet.StmtType) bool {
+	switch stmtType {
+	case machnet.QPP_STMT_TYPE_ALTER_SESSION_SET,
+		machnet.QPP_STMT_TYPE_CONNECT_USER,
+		machnet.QPP_STMT_TYPE_CREATE_DATABASE,
+		machnet.QPP_STMT_TYPE_DROP_DATABASE,
+		machnet.QPP_STMT_TYPE_ALTER_DATABASE:
+		return true
+	default:
+		return false
+	}
 }
 
 // setTransactionState updates inTx/dbDirty after a statement has completed
