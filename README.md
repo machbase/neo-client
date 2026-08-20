@@ -16,6 +16,16 @@ The examples in this module show how to connect to a Machbase Neo server, execut
 - A reachable Machbase Neo server
 - A valid user account, such as `sys` / `manager` in a local development environment
 
+## Go Compatibility Guard
+
+`neo-client` is consumed as a `database/sql/driver` implementation by downstream applications, so it must remain buildable with the Go version declared in `go.mod`. Run the compatibility check before release or when touching client code:
+
+```sh
+./scripts/test-go-compat.sh
+```
+
+The script builds all packages and test packages outside the workspace (`GOWORK=off`) with the Go toolchain declared in `go.mod`, which catches newer language features and standard library APIs that a downstream user on the declared Go version could not build.
+
 The examples in this repository use the native TCP endpoint, usually `127.0.0.1:5656`.
 
 ## Install
