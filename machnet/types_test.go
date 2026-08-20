@@ -2,6 +2,26 @@ package machnet
 
 import "testing"
 
+func TestDatabaseStmtTypeValues(t *testing.T) {
+	tests := []struct {
+		name string
+		got  StmtType
+		want StmtType
+	}{
+		{name: "create", got: QPP_STMT_TYPE_CREATE_DATABASE, want: 279},
+		{name: "drop", got: QPP_STMT_TYPE_DROP_DATABASE, want: 280},
+		{name: "alter", got: QPP_STMT_TYPE_ALTER_DATABASE, want: 281},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got != tc.want {
+				t.Fatalf("statement type = %d, want %d", tc.got, tc.want)
+			}
+		})
+	}
+}
+
 func TestInferStmtTypeWithLeadingComments(t *testing.T) {
 	tests := []struct {
 		name string
