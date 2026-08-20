@@ -42,6 +42,14 @@ func newScanPlan(cfg *scanConfig, cols []string, t reflect.Type) (*scanPlan, err
 	plan := &scanPlan{cfg: cfg, cols: cols}
 	switch {
 	case t == mapStringAnyType:
+		seen := make(map[string]struct{}, len(cols))
+		for _, col := range cols {
+			key := strings.ToLower(col)
+			if _, exists := seen[key]; exists {
+				return nil, fmt.Errorf("%w: %q appears more than once in the result set", ErrScanDuplicateColumn, col)
+			}
+			seen[key] = struct{}{}
+		}
 		plan.mode = planMap
 		return plan, nil
 	case isNestedStruct(t):

@@ -1,5 +1,5 @@
-package main
 //go:build example
+// +build example
 
 package main
 
@@ -23,7 +23,7 @@ var password = "manager"
 type TagRecord struct {
 	Name  string    `db:"NAME"`
 	Time  time.Time `db:"TIME"`
-	Value *float64  `db:"VALUE"`
+	Value float64   `db:"VALUE"`
 
 	cachedLabel string // unexported fields are always ignored
 }
@@ -64,6 +64,10 @@ func main() {
 			panic(err)
 		}
 	}
+	_, err = db.ExecContext(ctx, `EXEC TABLE_FLUSH(EXAMPLE)`)
+	if err != nil {
+		panic(err)
+	}
 
 	selectAll := `SELECT NAME, TIME, VALUE FROM EXAMPLE WHERE NAME = ? ORDER BY TIME`
 
@@ -75,7 +79,7 @@ func main() {
 	}
 	fmt.Println("Select:", len(records), "records")
 	for _, rec := range records[:3] {
-		fmt.Printf("  %s %s %v\n", rec.Name, rec.Time.Format(time.RFC3339), value(rec))
+		fmt.Printf("  %s %s %v\n", rec.Name, rec.Time.Format(time.RFC3339), rec.Value)
 	}
 
 	// 2. Get scans a single row and returns sql.ErrNoRows when there is none.
@@ -84,7 +88,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println("Get:", first.Name, value(first))
+	fmt.Println("Get:", first.Name, first.Value)
 
 	// 3. ScanAll works on any *sql.Rows the caller already has.
 	//    The helpers never close rows; closing stays the caller's responsibility.
@@ -108,9 +112,7 @@ func main() {
 	defer streamRows.Close()
 	var total float64
 	err = client.ScanEach(streamRows, func(rec TagRecord) error {
-		if rec.Value != nil {
-			total += *rec.Value
-		}
+		total += rec.Value
 		return nil
 	})
 	if err != nil {
@@ -140,11 +142,4 @@ func main() {
 		panic(err)
 	}
 	fmt.Println("NamedArgs: count", count)
-}
-
-func value(rec TagRecord) any {
-	if rec.Value == nil {
-		return nil
-	}
-	return *rec.Value
 }

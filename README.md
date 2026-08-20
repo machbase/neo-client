@@ -177,7 +177,7 @@ import client "github.com/machbase/neo-client/v2"
 type TagRecord struct {
 	Name  string    `db:"NAME"`
 	Time  time.Time `db:"TIME"`
-	Value *float64  `db:"VALUE"` // nil when the column is NULL
+	Value float64  `db:"VALUE"`
 
 	cached string // unexported and untagged fields are ignored
 }
@@ -221,9 +221,7 @@ defer rows.Close() // the helpers never close rows they receive
 
 var total float64
 err = client.ScanEach(rows, func(rec TagRecord) error {
-	if rec.Value != nil {
-		total += *rec.Value
-	}
+		total += rec.Value
 	return nil
 })
 ```

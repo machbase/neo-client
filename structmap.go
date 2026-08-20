@@ -166,18 +166,16 @@ type structMapKey struct {
 	typ            reflect.Type
 	tagKey         string
 	fallbackTagKey string
-	nameMapper     uintptr
 }
 
 var structMapCache sync.Map // structMapKey -> *structMap
 
 func (cfg *scanConfig) structMapOf(t reflect.Type) (*structMap, error) {
 	key := structMapKey{typ: t, tagKey: cfg.tagKey, fallbackTagKey: cfg.fallbackTagKey}
-	if cfg.nameMapper != nil {
-		key.nameMapper = reflect.ValueOf(cfg.nameMapper).Pointer()
-	}
-	if cached, ok := structMapCache.Load(key); ok {
-		return cached.(*structMap), nil
+	if cfg.nameMapper == nil {
+		if cached, ok := structMapCache.Load(key); ok {
+			return cached.(*structMap), nil
+		}
 	}
 	sm := &structMap{byName: map[string]int{}}
 	if err := cfg.walkStruct(sm, t, "", nil); err != nil {
@@ -186,6 +184,9 @@ func (cfg *scanConfig) structMapOf(t reflect.Type) (*structMap, error) {
 	if len(sm.fields) == 0 {
 		return nil, fmt.Errorf("%w: %s has no %q tagged field; add tags or use WithNameMapper",
 			ErrScanNoMappedField, t, cfg.tagKey)
+	}
+	if cfg.nameMapper != nil {
+		return sm, nil
 	}
 	actual, _ := structMapCache.LoadOrStore(key, sm)
 	return actual.(*structMap), nil
@@ -231,12 +232,12 @@ func (cfg *scanConfig) walkStruct(sm *structMap, t reflect.Type, prefix string, 
 func (cfg *scanConfig) fieldName(field reflect.StructField) (string, bool) {
 	if cfg.tagKey != "" {
 		if tag, ok := field.Tag.Lookup(cfg.tagKey); ok {
-			return tagName(tag), true
+			return tagOrFieldName(tag, field.Name), true
 		}
 	}
 	if cfg.fallbackTagKey != "" {
 		if tag, ok := field.Tag.Lookup(cfg.fallbackTagKey); ok {
-			return tagName(tag), true
+			return tagOrFieldName(tag, field.Name), true
 		}
 	}
 	if cfg.nameMapper != nil {
@@ -250,6 +251,13 @@ func tagName(tag string) string {
 		return tag[:idx]
 	}
 	return tag
+}
+
+func tagOrFieldName(tag, fieldName string) string {
+	if name := tagName(tag); name != "" {
+		return name
+	}
+	return fieldName
 }
 
 var (
