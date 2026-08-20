@@ -171,6 +171,8 @@ For high-throughput time-series ingestion, you can use the dedicated appender AP
 
 Instead of listing every destination in column order, you can map columns to struct fields with the `db` tag. The helpers accept the `*sql.Rows` you already have, so they work with the standard `database/sql` API.
 
+See the [SQL convenience API reference](docs/sql-convenience-reference.md) for mapping rules, options, streaming, error handling, and named arguments.
+
 ```go
 import client "github.com/machbase/neo-client/v2"
 
@@ -209,6 +211,22 @@ Mapping rules:
 - A NULL column can be received either as a `*T` field, which becomes nil, or as `sql.Null[T]`.
 
 By default the mapping is strict: a column with no matching field and a field with no matching column are both errors, which keeps a changed `SELECT *` from silently dropping values. Relax it per call with `WithLaxColumns()` or `WithLaxFields()`.
+
+A DATETIME column scanned into a `string`, `int64`, or `time.Time` field honors extra `db` tag options, named to match the machbase-neo HTTP API's `timeformat`/`tz` query parameters:
+
+```go
+type Row struct {
+	Time  string    `db:"TIME,timeformat=2006-01-02 15:04:05,tz=Local"` // custom layout + display zone
+	Epoch int64     `db:"TIME,timeformat=ms"`                          // epoch in ms
+	At    time.Time `db:"TIME,tz=UTC"`                                 // per-field zone override
+}
+```
+
+- `timeformat=<Go time layout>` — for `string`/`*string` fields, a Go time layout (or `ns`/`us`/`ms`/`s` to render the epoch as a numeric string).
+- `timeformat=ns|us|ms|s` — for `int64`/`*int64` fields, the epoch unit.
+- `tz=<IANA name>|Local|UTC` — for `string`/`time.Time` fields (and their pointer forms).
+
+These options apply even without a tag: any `string`, `int64`, or `time.Time` field matched to a DATETIME column uses `WithDateTime(timeformat, tz)` as its default, or `timeformat="2006-01-02 15:04:05.999"` and `tz="Local"` when `WithDateTime` isn't set either. A field's own tag always takes precedence over `WithDateTime`. Columns that aren't actually DATETIME (e.g. a `VARCHAR` into a `string` field) are unaffected and scan normally — the ambiguity is resolved at scan time by checking whether the value is actually a `time.Time`, not by the field's Go type. The same applies to `sql.NullTime`/`sql.Null[time.Time]`/`sql.Null[int64]`/`sql.NullString`/`sql.Null[string]`, and to scalar (non-struct) targets like `Select[time.Time]` or `Select[string]` — since a bare scalar has no tag, only `WithDateTime`/the built-in default can customize it.
 
 `Select`, `ScanAll` and `ScanRows` materialize the whole result set, so they stop with `ErrScanTooManyRows` beyond `WithMaxRows`, which defaults to 1000. Raise it with `WithMaxRows(n)`, remove it with `WithMaxRows(0)`, or stream the query with `ScanEach` or `NewCursor`, which have no limit.
 

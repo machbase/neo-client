@@ -11,6 +11,7 @@ import (
 // RowsScanner is the subset of *sql.Rows used by the scan helpers.
 type RowsScanner interface {
 	Columns() ([]string, error)
+	ColumnTypes() ([]*sql.ColumnType, error)
 	Next() bool
 	Scan(dest ...any) error
 	Err() error
@@ -30,15 +31,48 @@ const (
 )
 
 type scanPlan struct {
-	cfg    *scanConfig
-	cols   []string
-	mode   planMode
-	fields []*fieldInfo // struct mode only; nil entry discards the column
+	cfg         *scanConfig
+	cols        []string
+	mode        planMode
+	fields      []*fieldInfo     // struct mode only; nil entry discards the column
+	timeOpts    []*timeFieldOpts // struct mode only; resolved per-column DATETIME options, parallel to cols
+	hasTimeOpts bool             // true if any column in timeOpts is non-nil
 }
 
 var mapStringAnyType = reflect.TypeOf(map[string]any{})
 
-func newScanPlan(cfg *scanConfig, cols []string, t reflect.Type) (*scanPlan, error) {
+// columnTypesOf returns rows.ColumnTypes(), or nil when it errors; callers
+// must treat a nil result as "unknown", not "no columns". A nil result keeps
+// bindStruct on the safe dynamic DATETIME check instead of failing the scan
+// over what is meant to be a best-effort optimization.
+func columnTypesOf(rows RowsScanner) []*sql.ColumnType {
+	cts, err := rows.ColumnTypes()
+	if err != nil {
+		return nil
+	}
+	return cts
+}
+
+// anyScanType is the sentinel ColumnType.ScanType() falls back to when a
+// driver does not report a concrete scan type for a column.
+var anyScanType = reflect.TypeOf(new(any)).Elem()
+
+// isConfirmedNonDateTime reports whether ct's scan type is concrete and is not
+// time.Time. A generic/unknown scan type is treated as inconclusive so drivers
+// that don't implement RowsColumnTypeScanType don't silently lose the dynamic
+// DATETIME check.
+func isConfirmedNonDateTime(ct *sql.ColumnType) bool {
+	if ct == nil {
+		return false
+	}
+	st := ct.ScanType()
+	return st != nil && st != anyScanType && st != timeTimeType
+}
+
+func newScanPlan(rows RowsScanner, cfg *scanConfig, cols []string, t reflect.Type) (*scanPlan, error) {
+	if cfg.optErr != nil {
+		return nil, cfg.optErr
+	}
 	plan := &scanPlan{cfg: cfg, cols: cols}
 	switch {
 	case t == mapStringAnyType:
@@ -54,22 +88,38 @@ func newScanPlan(cfg *scanConfig, cols []string, t reflect.Type) (*scanPlan, err
 		return plan, nil
 	case isNestedStruct(t):
 		plan.mode = planStruct
-		return plan, plan.bindStruct(t)
+		return plan, plan.bindStruct(t, columnTypesOf(rows))
 	default:
 		plan.mode = planScalar
 		if len(cols) != 1 {
 			return nil, fmt.Errorf("machbase: cannot scan %d columns into %s", len(cols), t)
 		}
+		opts, err := parseTimeFieldOpts("", t, "<scalar>")
+		if err != nil {
+			return nil, err
+		}
+		if opts != nil {
+			var ct *sql.ColumnType
+			if colTypes := columnTypesOf(rows); len(colTypes) > 0 {
+				ct = colTypes[0]
+			}
+			if isConfirmedNonDateTime(ct) {
+				opts = nil
+			}
+		}
+		plan.timeOpts = []*timeFieldOpts{opts}
+		plan.hasTimeOpts = opts != nil
 		return plan, nil
 	}
 }
 
-func (p *scanPlan) bindStruct(t reflect.Type) error {
+func (p *scanPlan) bindStruct(t reflect.Type, colTypes []*sql.ColumnType) error {
 	sm, err := p.cfg.structMapOf(t)
 	if err != nil {
 		return err
 	}
 	p.fields = make([]*fieldInfo, len(p.cols))
+	p.timeOpts = make([]*timeFieldOpts, len(p.cols))
 	seen := make(map[string]bool, len(p.cols))
 	matched := make(map[string]bool, len(p.cols))
 	for i, col := range p.cols {
@@ -89,6 +139,23 @@ func (p *scanPlan) bindStruct(t reflect.Type) error {
 		}
 		p.fields[i] = field
 		matched[strings.ToLower(field.name)] = true
+		if field.time == nil {
+			continue
+		}
+		var ct *sql.ColumnType
+		if i < len(colTypes) {
+			ct = colTypes[i]
+		}
+		if isConfirmedNonDateTime(ct) {
+			if field.time.timeformat != "" || field.time.tz != nil {
+				return fmt.Errorf("%w: field %s sets timeformat/tz but column %q is not DATETIME (scan type %s)",
+					ErrScanInvalidTagOption, field.name, col, ct.ScanType())
+			}
+			// Confirmed not DATETIME; keep the raw-pointer fast path for this column.
+			continue
+		}
+		p.timeOpts[i] = field.time
+		p.hasTimeOpts = true
 	}
 	if !p.cfg.laxFields {
 		for i := range sm.fields {
@@ -103,10 +170,11 @@ func (p *scanPlan) bindStruct(t reflect.Type) error {
 
 // rowReader scans consecutive rows using a single plan and a reusable target buffer.
 type rowReader struct {
-	rows RowsScanner
-	plan *scanPlan
-	buf  []any
-	sink any
+	rows    RowsScanner
+	plan    *scanPlan
+	buf     []any
+	sink    any
+	anyVals []any // scratch scan targets for datetime-eligible fields (string/int64/time.Time)
 }
 
 func newRowReader(rows RowsScanner, cfg *scanConfig, t reflect.Type) (*rowReader, error) {
@@ -114,11 +182,15 @@ func newRowReader(rows RowsScanner, cfg *scanConfig, t reflect.Type) (*rowReader
 	if err != nil {
 		return nil, err
 	}
-	plan, err := newScanPlan(cfg, cols, t)
+	plan, err := newScanPlan(rows, cfg, cols, t)
 	if err != nil {
 		return nil, err
 	}
-	return &rowReader{rows: rows, plan: plan, buf: make([]any, len(cols))}, nil
+	r := &rowReader{rows: rows, plan: plan, buf: make([]any, len(cols))}
+	if plan.hasTimeOpts {
+		r.anyVals = make([]any, len(cols))
+	}
+	return r, nil
 }
 
 // scanValue scans the current row into v, which must be an addressable value.
@@ -139,17 +211,62 @@ func (r *rowReader) scanValue(v reflect.Value) error {
 		v.Set(reflect.ValueOf(m))
 		return nil
 	case planScalar:
-		r.buf[0] = v.Addr().Interface()
-		return r.rows.Scan(r.buf...)
+		opts := r.plan.timeOpts[0]
+		switch {
+		case opts == nil, opts.postProcessOnly:
+			// postProcessOnly (sql.NullTime/sql.Null[time.Time]) scans natively via
+			// its own sql.Scanner; tz is reapplied below, same as the struct path.
+			r.buf[0] = v.Addr().Interface()
+		default:
+			r.anyVals[0] = nil
+			r.buf[0] = &r.anyVals[0]
+		}
+		if err := r.rows.Scan(r.buf...); err != nil {
+			return err
+		}
+		if opts == nil {
+			return nil
+		}
+		if opts.postProcessOnly {
+			return opts.applyTZ(v, r.plan.cfg)
+		}
+		return opts.apply(v, r.anyVals[0], r.plan.cols[0], r.plan.cfg)
 	default:
 		for i, field := range r.plan.fields {
-			if field == nil {
+			switch {
+			case field == nil:
 				r.buf[i] = &r.sink
+			case r.plan.timeOpts[i] != nil && !r.plan.timeOpts[i].postProcessOnly:
+				r.anyVals[i] = nil
+				r.buf[i] = &r.anyVals[i]
+			default:
+				// Also used for postProcessOnly fields (sql.NullTime/sql.Null[time.Time]):
+				// their own sql.Scanner already populates Valid/Time correctly.
+				r.buf[i] = v.FieldByIndex(field.index).Addr().Interface()
+			}
+		}
+		if err := r.rows.Scan(r.buf...); err != nil {
+			return err
+		}
+		if !r.plan.hasTimeOpts {
+			return nil
+		}
+		for i, opts := range r.plan.timeOpts {
+			if opts == nil {
 				continue
 			}
-			r.buf[i] = v.FieldByIndex(field.index).Addr().Interface()
+			fv := v.FieldByIndex(r.plan.fields[i].index)
+			if opts.postProcessOnly {
+				if err := opts.applyTZ(fv, r.plan.cfg); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := opts.apply(fv, r.anyVals[i], r.plan.cols[i], r.plan.cfg); err != nil {
+				return err
+			}
 		}
-		return r.rows.Scan(r.buf...)
+		return nil
 	}
 }
 
@@ -396,25 +513,44 @@ func (c *Cursor[T]) Value() T { return c.value }
 // Err returns the error, if any, that stopped the iteration.
 func (c *Cursor[T]) Err() error { return c.err }
 
+// splitScanOptions pulls ScanOption values out of args so Get/Select can accept
+// both SQL bind parameters and scan options (e.g. WithDateTime) in the same
+// trailing variadic list, forwarding only the real bind parameters to the query.
+func splitScanOptions(args []any) (queryArgs []any, opts []ScanOption) {
+	queryArgs = make([]any, 0, len(args))
+	for _, a := range args {
+		if opt, ok := a.(ScanOption); ok {
+			opts = append(opts, opt)
+			continue
+		}
+		queryArgs = append(queryArgs, a)
+	}
+	return queryArgs, opts
+}
+
 // Get runs query and scans the first row into a new T.
-// It returns sql.ErrNoRows when the result set is empty.
+// It returns sql.ErrNoRows when the result set is empty. args may include
+// ScanOption values (e.g. WithDateTime) alongside the SQL bind parameters.
 func Get[T any](ctx context.Context, q Queryer, query string, args ...any) (T, error) {
 	var zero T
-	rows, err := q.QueryContext(ctx, query, args...)
+	queryArgs, opts := splitScanOptions(args)
+	rows, err := q.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return zero, err
 	}
 	defer rows.Close()
-	return ScanOne[T](rows)
+	return ScanOne[T](rows, opts...)
 }
 
 // Select runs query and scans all rows into a new slice.
-// It is limited by the default WithMaxRows bound.
+// It is limited by the default WithMaxRows bound. args may include ScanOption
+// values (e.g. WithDateTime) alongside the SQL bind parameters.
 func Select[T any](ctx context.Context, q Queryer, query string, args ...any) ([]T, error) {
-	rows, err := q.QueryContext(ctx, query, args...)
+	queryArgs, opts := splitScanOptions(args)
+	rows, err := q.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	return ScanAll[T](rows)
+	return ScanAll[T](rows, opts...)
 }
