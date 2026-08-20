@@ -442,6 +442,11 @@ func (c *Conn) releaseQueryStmt(query string, stmt *Stmt, reusable bool) error {
 	if !reusable {
 		return stmt.Close()
 	}
+	if !stmt.handle.FetchCompleted() {
+		// the server still holds an open cursor for this statement id; freeing it
+		// is the only way to drop a partially consumed result set.
+		return stmt.Close()
+	}
 	stmt.reachEOF = false
 	if err := stmt.handle.ExecuteClean(); err != nil {
 		_ = stmt.Close()
@@ -932,6 +937,42 @@ func (s *Stmt) prepare(ctx context.Context, query string) error {
 	return nil
 }
 
+// renewHandle frees the underlying statement and allocates a freshly prepared
+// one. It is used when a result set is abandoned before the server delivered
+// its last chunk, since any further Prepare/Execute on that statement id would
+// fail with MACHCLI-ERR-3008 (fetch in progress).
+func (s *Stmt) renewHandle(ctx context.Context) error {
+	if s == nil || s.conn == nil || s.conn.handle == nil {
+		return nil
+	}
+	sqlText := s.sqlText
+	if err := s.Close(); err != nil {
+		return err
+	}
+	handle, err := s.conn.handle.AllocStmt()
+	if err != nil {
+		return normalizeError(s.conn.ErrorOf(err))
+	}
+	s.handle = handle
+	s.reachEOF = false
+	if sqlText == "" {
+		return nil
+	}
+	if err := s.prepare(context.WithoutCancel(ctx), sqlText); err != nil {
+		return normalizeError(err)
+	}
+	return nil
+}
+
+// discardOpenCursor renews the statement when its previous result set was
+// abandoned before the server sent the last chunk.
+func (s *Stmt) discardOpenCursor(ctx context.Context) error {
+	if s == nil || s.handle == nil || s.handle.FetchCompleted() {
+		return nil
+	}
+	return s.renewHandle(ctx)
+}
+
 func (s *Stmt) reprepareIfSupported(ctx context.Context) error {
 	if s == nil || s.handle == nil || !s.handle.SupportsReprepare() {
 		return nil
@@ -980,6 +1021,10 @@ func (s *Stmt) exec(ctx context.Context, vals []any) (driver.Result, error) {
 		return nil, driver.ErrBadConn
 	}
 	result := &Result{}
+	if err := s.discardOpenCursor(ctx); err != nil {
+		result.err = err
+		goto doResult
+	}
 	if err := s.reprepareIfSupported(ctx); err != nil {
 		result.err = err
 		goto doResult
@@ -1051,6 +1096,10 @@ func (s *Stmt) execute(ctx context.Context) error {
 
 func (s *Stmt) QueryRow(ctx context.Context, params ...any) *Row {
 	ret := &Row{timeLocation: s.conn.timeLocation}
+	if err := s.discardOpenCursor(ctx); err != nil {
+		ret.err = err
+		return ret
+	}
 	if err := s.reprepareIfSupported(ctx); err != nil {
 		ret.err = err
 		return ret
@@ -1093,6 +1142,9 @@ func (s *Stmt) QueryRow(ctx context.Context, params ...any) *Row {
 func (s *Stmt) queryRows(ctx context.Context, vals []any) (driver.Rows, error) {
 	if s == nil || s.handle == nil {
 		return nil, driver.ErrBadConn
+	}
+	if err := s.discardOpenCursor(ctx); err != nil {
+		return nil, normalizeError(err)
 	}
 	if err := s.reprepareIfSupported(ctx); err != nil {
 		return nil, normalizeError(err)
@@ -1470,6 +1522,9 @@ func (r *Rows) Close() error {
 	r.stmt = nil
 	if r.isPrepared {
 		stmt.reachEOF = false
+		if !stmt.handle.FetchCompleted() {
+			return stmt.renewHandle(r.ctx)
+		}
 		return stmt.handle.ExecuteClean()
 	}
 	if r.queryStmtPooled && stmt.conn != nil {
