@@ -1343,10 +1343,12 @@ func (s *Stmt) mapNamedParams(args []any, numParam int) ([]any, error) {
 		if named.Name == "" {
 			return nil, fmt.Errorf("named parameter name is empty")
 		}
-		if _, exists := provided[named.Name]; exists {
+		// Parameter names are matched case-insensitively, like column names.
+		key := strings.ToLower(named.Name)
+		if _, exists := provided[key]; exists {
 			return nil, fmt.Errorf("duplicate named parameter %q", named.Name)
 		}
-		provided[named.Name] = named.Value
+		provided[key] = named.Value
 	}
 	ret := make([]any, numParam)
 	required := make(map[string]struct{}, numParam)
@@ -1356,14 +1358,16 @@ func (s *Stmt) mapNamedParams(args []any, numParam int) ([]any, error) {
 			return nil, s.ErrorOf(err)
 		}
 		if desc.Name == "" {
-			return nil, fmt.Errorf("named parameters require Machbase protocol 4.0.3 metadata and cannot be mixed with anonymous markers")
+			return nil, fmt.Errorf("%w: the server returned no parameter name metadata, "+
+				"which also happens when named and anonymous markers are mixed", ErrNamedParamsUnsupported)
 		}
-		value, exists := provided[desc.Name]
+		key := strings.ToLower(desc.Name)
+		value, exists := provided[key]
 		if !exists {
 			return nil, fmt.Errorf("missing named parameter %q", desc.Name)
 		}
 		ret[idx] = value
-		required[desc.Name] = struct{}{}
+		required[key] = struct{}{}
 	}
 	for name := range provided {
 		if _, exists := required[name]; !exists {

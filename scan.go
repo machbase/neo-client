@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -82,6 +83,24 @@ This document summarizes the type-handling matrix in scan.go for:
 | []byte, *[]byte, sql.RawBytes, *sql.RawBytes | Routed to scanBytes            |
 | net.IP, *net.IP                              | Routed to scanIP               |
 | Decimal, *Decimal                            | Decimal-specific path          |
+
+## Pointer Destinations (NULL as nil)
+
+Any destination whose type is a pointer to a supported destination type is handled
+generically, so a NULL column can be represented as a nil pointer.
+
+| Destination                                          | Scan dst | ScanNull dst | Notes                                    |
+| ---------------------------------------------------- | -------- | ------------ | ---------------------------------------- |
+| **bool                                               | Y        | Y            | Allocated on value, reset to nil on NULL |
+| **int, **int16/32/64, **uint, **uint16/32/64         | Y        | Y            |                                          |
+| **float32, **float64                                 | Y        | Y            |                                          |
+| **string, **JSONString                               | Y        | Y            |                                          |
+| **time.Time                                          | Y        | Y            |                                          |
+| **net.IP                                             | Y        | Y            |                                          |
+| **Decimal                                            | Y        | Y            |                                          |
+
+Implemented by scanIndirect in each scanXxx default branch and by the reflect-based
+default branch of ScanNull. *[]byte already carries NULL as nil and is unchanged.
 
 ## Review Summary
 
@@ -275,6 +294,10 @@ func Scan(src any, dst any, loc *time.Location) error {
 			d.V = sv
 			d.Valid = true
 			return nil
+		default:
+			if ok, err := scanIndirect(dst, func(d any) error { return Scan(sv, d, loc) }); ok {
+				return err
+			}
 		}
 	case *api.Decimal:
 		if sv != nil {
@@ -286,6 +309,26 @@ func Scan(src any, dst any, loc *time.Location) error {
 		}
 	}
 	return fmt.Errorf("cannot convert value from %T to %T", src, dst)
+}
+
+// scanIndirect handles pointer destinations such as **float64 by allocating a new
+// value, scanning into it, and storing its address. It reports whether pDst was a
+// pointer-to-pointer destination.
+func scanIndirect(pDst any, scan func(dst any) error) (bool, error) {
+	rv := reflect.ValueOf(pDst)
+	if rv.Kind() != reflect.Pointer || rv.IsNil() {
+		return false, nil
+	}
+	elemType := rv.Type().Elem()
+	if elemType.Kind() != reflect.Pointer {
+		return false, nil
+	}
+	nv := reflect.New(elemType.Elem())
+	if err := scan(nv.Interface()); err != nil {
+		return true, err
+	}
+	rv.Elem().Set(nv)
+	return true, nil
 }
 
 func ScanNull(dst any) bool {
@@ -373,7 +416,11 @@ func ScanNull(dst any) bool {
 	case *driver.Value:
 		*d = nil
 	default:
-		return false
+		rv := reflect.ValueOf(dst)
+		if rv.Kind() != reflect.Pointer || rv.IsNil() || rv.Type().Elem().Kind() != reflect.Pointer {
+			return false
+		}
+		rv.Elem().SetZero()
 	}
 	return true
 }
@@ -434,6 +481,9 @@ func scanInt16(src int16, pDst any) error {
 	case *driver.Value:
 		*dst = driver.Value(src)
 	default:
+		if ok, err := scanIndirect(pDst, func(d any) error { return scanInt16(src, d) }); ok {
+			return err
+		}
 		return fmt.Errorf("scan convert from INT16 to %T not supported", pDst)
 	}
 	return nil
@@ -494,6 +544,9 @@ func scanInt32(src int32, pDst any) error {
 	case *driver.Value:
 		*dst = driver.Value(src)
 	default:
+		if ok, err := scanIndirect(pDst, func(d any) error { return scanInt32(src, d) }); ok {
+			return err
+		}
 		return fmt.Errorf("scan convert from INT32 to %T not supported", pDst)
 	}
 	return nil
@@ -547,6 +600,9 @@ func scanInt64(src int64, pDst any) error {
 	case *driver.Value:
 		*dst = driver.Value(src)
 	default:
+		if ok, err := scanIndirect(pDst, func(d any) error { return scanInt64(src, d) }); ok {
+			return err
+		}
 		return fmt.Errorf("scan convert from INT64 to %T not supported", pDst)
 	}
 	return nil
@@ -569,6 +625,9 @@ func scanDatetime(src time.Time, pDst any, loc *time.Location) error {
 	case *driver.Value:
 		*dst = driver.Value(src)
 	default:
+		if ok, err := scanIndirect(pDst, func(d any) error { return scanDatetime(src, d, loc) }); ok {
+			return err
+		}
 		return fmt.Errorf("scan convert from DATETIME to %T not supported", pDst)
 	}
 	return nil
@@ -600,6 +659,9 @@ func scanFloat32(src float32, pDst any) error {
 	case *int64:
 		*dst = int64(src)
 	default:
+		if ok, err := scanIndirect(pDst, func(d any) error { return scanFloat32(src, d) }); ok {
+			return err
+		}
 		return fmt.Errorf("scan convert from FLOAT32 to %T not supported", pDst)
 	}
 	return nil
@@ -631,6 +693,9 @@ func scanFloat64(src float64, pDst any) error {
 	case *int64:
 		*dst = int64(src)
 	default:
+		if ok, err := scanIndirect(pDst, func(d any) error { return scanFloat64(src, d) }); ok {
+			return err
+		}
 		return fmt.Errorf("scan convert from FLOAT64 to %T not supported", pDst)
 	}
 	return nil
@@ -679,6 +744,9 @@ func scanString(src string, pDst any) error {
 		dst.Valid = true
 		dst.V = api.JSONString(src)
 	default:
+		if ok, err := scanIndirect(pDst, func(d any) error { return scanString(src, d) }); ok {
+			return err
+		}
 		return fmt.Errorf("scan convert from STRING to %T not supported", pDst)
 	}
 	return nil
@@ -696,6 +764,9 @@ func scanBytes(src []byte, pDst any) error {
 		dst.Valid = true
 		dst.V = src
 	default:
+		if ok, err := scanIndirect(pDst, func(d any) error { return scanBytes(src, d) }); ok {
+			return err
+		}
 		return fmt.Errorf("scan convert from BYTES to %T not supported", pDst)
 	}
 	return nil
@@ -713,6 +784,9 @@ func scanIP(src net.IP, pDst any) error {
 		dst.Valid = true
 		dst.V = src
 	default:
+		if ok, err := scanIndirect(pDst, func(d any) error { return scanIP(src, d) }); ok {
+			return err
+		}
 		return fmt.Errorf("scan convert from IPv4 to %T not supported", pDst)
 	}
 	return nil
@@ -733,6 +807,9 @@ func scanBool(src bool, pDst any) error {
 	case *driver.Value:
 		*dst = driver.Value(src)
 	default:
+		if ok, err := scanIndirect(pDst, func(d any) error { return scanBool(src, d) }); ok {
+			return err
+		}
 		return fmt.Errorf("scan convert from BOOL to %T not supported", pDst)
 	}
 	return nil
