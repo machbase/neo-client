@@ -413,6 +413,19 @@ func (stmt *StmtHandle) ExecuteClean() error {
 	return nil
 }
 
+// FetchCompleted reports whether the server already delivered the last chunk of
+// the current result set. While it is false the server keeps the cursor open
+// ("Fetch in progress") and rejects the next Prepare/Execute on this statement
+// id with MACHCLI-ERR-3008.
+func (stmt *StmtHandle) FetchCompleted() bool {
+	if stmt == nil {
+		return true
+	}
+	stmt.mu.Lock()
+	defer stmt.mu.Unlock()
+	return stmt.fetchLast
+}
+
 func (stmt *StmtHandle) NumParam() (int, error) {
 	if stmt == nil {
 		return 0, makeClientErr("invalid statement")

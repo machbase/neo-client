@@ -505,6 +505,11 @@ func (c *Conn) releaseQueryStmt(query string, stmt *Stmt, reusable bool) error {
 	if !reusable {
 		return stmt.Close()
 	}
+	if !stmt.handle.FetchCompleted() {
+		// The server still holds an open cursor for this statement id.
+		// Freeing it is the only way to drop a partially consumed result set.
+		return stmt.Close()
+	}
 	stmt.reachEOF = false
 	if err := stmt.handle.ExecuteClean(); err != nil {
 		_ = stmt.Close()
@@ -816,6 +821,10 @@ func (pStmt *PreparedStmt) Close() error {
 
 func (pStmt *PreparedStmt) Exec(ctx context.Context, params ...any) api.Result {
 	ret := &Result{}
+	if err := pStmt.stmt.discardOpenCursor(); err != nil {
+		ret.err = err
+		return ret
+	}
 	if err := pStmt.stmt.reprepareIfSupported(); err != nil {
 		ret.err = err
 		return ret
@@ -841,6 +850,9 @@ func (pStmt *PreparedStmt) Exec(ctx context.Context, params ...any) api.Result {
 }
 
 func (pStmt *PreparedStmt) Query(ctx context.Context, params ...any) (api.Rows, error) {
+	if err := pStmt.stmt.discardOpenCursor(); err != nil {
+		return nil, err
+	}
 	if err := pStmt.stmt.reprepareIfSupported(); err != nil {
 		return nil, err
 	}
@@ -870,6 +882,10 @@ func (pStmt *PreparedStmt) Query(ctx context.Context, params ...any) (api.Rows, 
 
 func (pStmt *PreparedStmt) QueryRow(ctx context.Context, params ...any) api.Row {
 	ret := &Row{timeLocation: pStmt.stmt.conn.timeLocation}
+	if err := pStmt.stmt.discardOpenCursor(); err != nil {
+		ret.err = err
+		return ret
+	}
 	if err := pStmt.stmt.reprepareIfSupported(); err != nil {
 		ret.err = err
 		return ret
@@ -919,6 +935,42 @@ func (stmt *Stmt) prepare(query string) error {
 	stmt.execCount = 0
 	stmt.reachEOF = false
 	return nil
+}
+
+// renewHandle frees the underlying statement and allocates a freshly prepared
+// one. It is used when a result set is abandoned before the server delivered
+// its last chunk, since any further Prepare/Execute on that statement id would
+// fail with MACHCLI-ERR-3008 (fetch in progress).
+func (stmt *Stmt) renewHandle() error {
+	if stmt == nil || stmt.conn == nil || stmt.conn.handle == nil {
+		return nil
+	}
+	sqlText := stmt.sqlText
+	if err := stmt.Close(); err != nil {
+		return err
+	}
+	handle, err := stmt.conn.handle.AllocStmt()
+	if err != nil {
+		return stmt.conn.ErrorOf(err)
+	}
+	stmt.handle = handle
+	stmt.reachEOF = false
+	if sqlText == "" {
+		return nil
+	}
+	if err := stmt.prepare(sqlText); err != nil {
+		return err
+	}
+	return nil
+}
+
+// discardOpenCursor renews the statement when its previous result set was
+// abandoned before the server sent the last chunk.
+func (stmt *Stmt) discardOpenCursor() error {
+	if stmt == nil || stmt.handle == nil || stmt.handle.FetchCompleted() {
+		return nil
+	}
+	return stmt.renewHandle()
 }
 
 func (stmt *Stmt) reprepareIfSupported() error {
@@ -1403,6 +1455,9 @@ func (r *Rows) Close() error {
 	r.stmt = nil
 	if r.isPrepared {
 		stmt.reachEOF = false
+		if !stmt.handle.FetchCompleted() {
+			return stmt.renewHandle()
+		}
 		return stmt.handle.ExecuteClean()
 	}
 	if r.queryStmtPooled && stmt.conn != nil {
