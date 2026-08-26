@@ -295,26 +295,35 @@ const (
 )
 
 func (flag ColumnFlag) String() string {
-	switch flag {
-	case ColumnFlagAutoIncrement:
-		return "auto increment"
-	case ColumnFlagPrimaryKey:
-		return "primary key"
-	case ColumnFlagNotNull:
-		return "not null"
-	case ColumnFlagTagName:
-		return "tag name"
-	case ColumnFlagBasetime:
-		return "base time"
-	case ColumnFlagSummarized:
-		return "summarized"
-	case ColumnFlagMetaColumn:
-		return "meta"
-	case ColumnFlagDefault:
-		return "default"
-	case ColumnFlagBaseDistance:
-		return "base distance"
-	default:
-		return ""
+	var rt []string
+	if flag&ColumnFlagPrimaryKey == ColumnFlagPrimaryKey {
+		rt = append(rt, "primary key")
+	} else if flag&ColumnFlagNotNull == ColumnFlagNotNull {
+		// because a primary key is implicitly not null,
+		// we only append "not null" if it's not a primary key.
+		rt = append(rt, "not null")
 	}
+
+	if flag&ColumnFlagAutoIncrement == ColumnFlagAutoIncrement {
+		rt = append(rt, "auto_increment")
+	}
+	if flag&ColumnFlagTagName == ColumnFlagTagName {
+		rt = append(rt, "tag name")
+	}
+	if flag&ColumnFlagBasetime == ColumnFlagBasetime {
+		rt = append(rt, "base time")
+	}
+	if flag&ColumnFlagBaseDistance == ColumnFlagBaseDistance {
+		rt = append(rt, "base distance")
+	}
+	if flag&ColumnFlagSummarized == ColumnFlagSummarized {
+		rt = append(rt, "summarized")
+	}
+	if flag&ColumnFlagMetaColumn == ColumnFlagMetaColumn {
+		rt = append(rt, "meta")
+	}
+	if flag&ColumnFlagDefault == ColumnFlagDefault {
+		rt = append(rt, "default")
+	}
+	return strings.Join(rt, ", ")
 }
