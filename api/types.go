@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -13,6 +14,12 @@ type JSONString string
 
 func (j JSONString) String() string {
 	return string(j)
+}
+
+var _ driver.Valuer = (*JSONString)(nil)
+
+func (j JSONString) Value() (driver.Value, error) {
+	return string(j), nil
 }
 
 func ErrIncompatible(dstType string, src any) error {
