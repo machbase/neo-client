@@ -1,7 +1,6 @@
 package client
 
 import (
-	"database/sql"
 	"database/sql/driver"
 	"fmt"
 	"math"
@@ -83,17 +82,6 @@ func normalizeNamedValue(value any) (any, error) {
 		return *v, nil
 	case bool:
 		return nil, fmt.Errorf("machbase does not support bool parameter type")
-	case driver.Valuer:
-		resolved, err := v.Value()
-		if err != nil {
-			return nil, err
-		}
-		return normalizeNamedValue(resolved)
-	case *sql.NamedArg:
-		if v == nil {
-			return nil, nil
-		}
-		return normalizeNamedValue(v.Value)
 	case uint:
 		if uint64(v) > math.MaxInt64 {
 			return nil, fmt.Errorf("uint value %d overflows int64", v)
@@ -135,6 +123,12 @@ func normalizeNamedValue(value any) (any, error) {
 			return nil, nil
 		}
 		return normalizeNamedValue(*v)
+	case driver.Valuer:
+		resolved, err := v.Value()
+		if err != nil {
+			return nil, err
+		}
+		return normalizeNamedValue(resolved)
 	default:
 		return nil, fmt.Errorf("machbase does not support parameter type %T", value)
 	}

@@ -1238,7 +1238,7 @@ func (s *Stmt) bindParams(args ...any) error {
 				sqlType = pd.Type
 				value = nil
 			} else {
-				return fmt.Errorf("bind unknown type at column %d %T, expect: %d", idx, val, pd.Type)
+				return fmt.Errorf("bind unknown type at column %d %T, expect: %s(%d)", idx, val, pd.Type.String(), pd.Type)
 			}
 		case int16:
 			sqlType = api.SqlTypeInt16
