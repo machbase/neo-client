@@ -1,6 +1,7 @@
 package client
 
 import (
+	"database/sql"
 	"database/sql/driver"
 	"fmt"
 	"math"
@@ -88,6 +89,11 @@ func normalizeNamedValue(value any) (any, error) {
 			return nil, err
 		}
 		return normalizeNamedValue(resolved)
+	case *sql.NamedArg:
+		if v == nil {
+			return nil, nil
+		}
+		return normalizeNamedValue(v.Value)
 	case uint:
 		if uint64(v) > math.MaxInt64 {
 			return nil, fmt.Errorf("uint value %d overflows int64", v)
