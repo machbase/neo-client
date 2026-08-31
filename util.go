@@ -21,7 +21,8 @@ func queryHead(query string) string {
 	return strings.ToUpper(parts[0])
 }
 
-func quoteIdentifier(name string) string {
+// QuoteIdentifier quotes name as a SQL identifier, escaping embedded double quotes.
+func QuoteIdentifier(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 

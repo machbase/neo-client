@@ -106,7 +106,7 @@ func (cn *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 		queryStmtPoolPerKeyCap: defaultQueryStmtPoolPerQueryCap,
 	}
 	if strings.TrimSpace(cn.cfg.Database) != "" && !strings.EqualFold(cn.cfg.Database, defaultDatabase) {
-		if err := ret.exec(ctx, "USE "+quoteIdentifier(cn.cfg.Database)).Err(); err != nil {
+		if err := ret.exec(ctx, "USE "+QuoteIdentifier(cn.cfg.Database)).Err(); err != nil {
 			return nil, errors.Join(err, ret.Close())
 		}
 	}
@@ -613,7 +613,7 @@ func (c *Conn) ResetSession(ctx context.Context) error {
 	dbDirty := c.dbDirty
 	c.txMu.Unlock()
 	if dbDirty && strings.TrimSpace(database) != "" {
-		result := c.resetExec(ctx, "USE "+quoteIdentifier(database))
+		result := c.resetExec(ctx, "USE "+QuoteIdentifier(database))
 		if result == nil || normalizeError(result.Err()) != nil {
 			_ = c.closeUnderlying()
 			return driver.ErrBadConn

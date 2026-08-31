@@ -180,7 +180,7 @@ func (ap *Appender) appender(ctx context.Context, c *Conn, tableName string) (*A
 			return nil, err
 		}
 		if !strings.EqualFold(currentDB, db) {
-			if err := c.exec(ctx, "USE "+quoteIdentifier(db)).Err(); err != nil {
+			if err := c.exec(ctx, "USE "+QuoteIdentifier(db)).Err(); err != nil {
 				stmt.Close()
 				return nil, err
 			}
@@ -191,7 +191,7 @@ func (ap *Appender) appender(ctx context.Context, c *Conn, tableName string) (*A
 
 	openErr := stmt.handle.AppendOpen(openName, ap.errCheckCount)
 	if restoreDB != "" {
-		if restoreErr := c.exec(ctx, "USE "+quoteIdentifier(restoreDB)).Err(); restoreErr != nil {
+		if restoreErr := c.exec(ctx, "USE "+QuoteIdentifier(restoreDB)).Err(); restoreErr != nil {
 			var cleanupErr error
 			var appendOpenErr error
 			if openErr != nil {
