@@ -166,52 +166,7 @@ func (ap *Appender) appender(ctx context.Context, c *Conn, tableName string) (*A
 	}
 	ap.stmt = stmt
 
-	openName := ap.tableName
-	restoreDB := ""
-	if db != "" {
-		var currentDB string
-		row := c.queryRow(ctx, "SELECT CURRENT_DATABASE()")
-		if row.Err() != nil {
-			stmt.Close()
-			return nil, row.Err()
-		}
-		if err := row.Scan(&currentDB); err != nil {
-			stmt.Close()
-			return nil, err
-		}
-		if !strings.EqualFold(currentDB, db) {
-			if err := c.exec(ctx, "USE "+QuoteIdentifier(db)).Err(); err != nil {
-				stmt.Close()
-				return nil, err
-			}
-			restoreDB = currentDB
-		}
-		openName = user + "." + table
-	}
-
-	openErr := stmt.handle.AppendOpen(openName, ap.errCheckCount)
-	if restoreDB != "" {
-		if restoreErr := c.exec(ctx, "USE "+QuoteIdentifier(restoreDB)).Err(); restoreErr != nil {
-			var cleanupErr error
-			var appendOpenErr error
-			if openErr != nil {
-				appendOpenErr = stmt.ErrorOf(openErr)
-			}
-			if openErr == nil {
-				if _, _, err := stmt.handle.AppendClose(); err != nil {
-					cleanupErr = stmt.ErrorOf(err)
-				}
-			}
-			if err := stmt.Close(); err != nil {
-				cleanupErr = errors.Join(cleanupErr, err)
-			}
-			if err := c.Close(); err != nil {
-				cleanupErr = errors.Join(cleanupErr, err)
-			}
-			restoreErr = fmt.Errorf("restore current database %s: %w", restoreDB, restoreErr)
-			return nil, errors.Join(appendOpenErr, restoreErr, cleanupErr)
-		}
-	}
+	openErr := stmt.handle.AppendOpen(ap.tableName, ap.errCheckCount)
 	if openErr != nil {
 		err := stmt.ErrorOf(openErr)
 		stmt.Close()
