@@ -20,6 +20,10 @@ import (
 
 const (
 	DefaultDriverName = "machbase"
+
+	// resetDatabaseTimeout bounds the "USE <database>" issued while the connection
+	// is being returned to the pool, where no caller context is available.
+	resetDatabaseTimeout = 5 * time.Second
 )
 
 func init() {
@@ -608,25 +612,59 @@ func (c *Conn) ResetSession(ctx context.Context) error {
 		}
 		c.setTransactionState("ROLLBACK")
 	}
-	c.txMu.Lock()
-	database := c.database
-	dbDirty := c.dbDirty
-	c.txMu.Unlock()
-	if dbDirty && strings.TrimSpace(database) != "" {
-		result := c.resetExec(ctx, "USE "+QuoteIdentifier(database))
-		if result == nil || normalizeError(result.Err()) != nil {
-			_ = c.closeUnderlying()
-			return driver.ErrBadConn
-		}
-		c.txMu.Lock()
-		c.dbDirty = false
-		c.txMu.Unlock()
+	if err := c.resetDatabase(ctx); err != nil {
+		_ = c.closeUnderlying()
+		return driver.ErrBadConn
 	}
 	return nil
 }
 
+// resetDatabase restores the database the connection was established with when a
+// previous statement switched it with "USE <db>". It is a no-op unless a switch
+// actually happened.
+func (c *Conn) resetDatabase(ctx context.Context) error {
+	c.txMu.Lock()
+	database := c.database
+	dbDirty := c.dbDirty
+	c.txMu.Unlock()
+	if !dbDirty || strings.TrimSpace(database) == "" {
+		return nil
+	}
+	result := c.resetExec(ctx, "USE "+QuoteIdentifier(database))
+	if result == nil || normalizeError(result.Err()) != nil {
+		return driver.ErrBadConn
+	}
+	c.txMu.Lock()
+	c.dbDirty = false
+	c.txMu.Unlock()
+	return nil
+}
+
+// IsValid is called by database/sql right before the connection is put back into
+// the idle pool, so it is the only hook where the database can be restored eagerly.
+// Restoring it lazily in ResetSession is not enough: an idle connection that is
+// still attached to another database holds a session there, which makes
+// "DROP DATABASE" fail until the connection happens to be handed out again.
 func (c *Conn) IsValid() bool {
-	return c != nil && c.handle != nil && c.handle.IsOpen()
+	if c == nil || (c.handle == nil && c.testResetConn == nil) {
+		return false
+	}
+	if c.handle != nil && !c.handle.IsOpen() {
+		return false
+	}
+	c.txMu.Lock()
+	dbDirty := c.dbDirty
+	c.txMu.Unlock()
+	if dbDirty {
+		// no caller context is available on this path
+		ctx, cancel := context.WithTimeout(context.Background(), resetDatabaseTimeout)
+		defer cancel()
+		if err := c.resetDatabase(ctx); err != nil {
+			_ = c.closeUnderlying()
+			return false
+		}
+	}
+	return true
 }
 
 // Implement driver.NamedValueChecker

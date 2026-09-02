@@ -59,6 +59,40 @@ func TestSetTransactionStateMarksDatabaseDirty(t *testing.T) {
 	}
 }
 
+func TestIsValidRestoresDatabaseBeforePooling(t *testing.T) {
+	native := &resetTestConn{}
+	conn := &Conn{testResetConn: native, database: "DATABASE_A", dbDirty: true}
+
+	if !conn.IsValid() {
+		t.Fatal("IsValid() = false, want true")
+	}
+	if len(native.queries) != 1 || native.queries[0] != `USE "DATABASE_A"` {
+		t.Fatalf("queries=%q", native.queries)
+	}
+	if conn.dbDirty {
+		t.Fatal("database remained dirty")
+	}
+
+	if !conn.IsValid() {
+		t.Fatal("second IsValid() = false, want true")
+	}
+	if len(native.queries) != 1 {
+		t.Fatalf("clean connection executed another USE: %q", native.queries)
+	}
+}
+
+func TestIsValidDiscardsConnectionWhenRestoreFails(t *testing.T) {
+	native := &resetTestConn{err: errors.New("database unavailable")}
+	conn := &Conn{testResetConn: native, database: "DATABASE_A", dbDirty: true}
+
+	if conn.IsValid() {
+		t.Fatal("IsValid() = true, want false")
+	}
+	if !native.closed || conn.testResetConn != nil || conn.handle != nil {
+		t.Fatal("failed restore did not close the connection")
+	}
+}
+
 func TestCheckNamedValue(t *testing.T) {
 	ip := net.ParseIP("127.0.0.1")
 	tm := time.Unix(0, 1)
