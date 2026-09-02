@@ -877,13 +877,16 @@ func (c *Conn) queryRow(ctx context.Context, query string, args ...any) *Row {
 	ret.columns = make(Columns, len(stmt.columnDesc))
 	for i, desc := range stmt.columnDesc {
 		ret.columns[i] = &Column{
-			Name:        desc.Name,
-			Length:      desc.Size,
-			Type:        desc.Type.ColumnType(),
-			DataType:    desc.Type.DataType(),
-			Nullable:    desc.Nullable,
-			Nullability: desc.Nullability,
-			PrimaryKey:  desc.PrimaryKey,
+			Name:             desc.Name,
+			Length:           desc.Size,
+			Type:             desc.Type.ColumnType(),
+			DataType:         desc.Type.DataType(),
+			Nullable:         desc.Nullable,
+			Nullability:      desc.Nullability,
+			PrimaryKey:       desc.PrimaryKey,
+			ElementType:      desc.ElementType,
+			ElementPrecision: desc.ElementPrecision,
+			Scale:            desc.Scale,
 		}
 	}
 	if values, err := stmt.fetch(ctx); err != nil {
@@ -1101,6 +1104,11 @@ func (s *Stmt) execute(ctx context.Context) error {
 		if err := s.handle.DescribeColEx(i, &d.Name, (*api.SqlType)(&d.Type), &d.Size, &d.Scale, &d.Nullable, &d.Nullability, &d.PrimaryKey); err != nil {
 			return s.ErrorOf(err)
 		}
+		if d.Type.IsArray() {
+			if err := s.handle.DescribeArrayCol(i, &d.ElementType, &d.ElementPrecision); err != nil {
+				return s.ErrorOf(err)
+			}
+		}
 		s.columnDesc[i] = d
 	}
 	return nil
@@ -1139,13 +1147,16 @@ func (s *Stmt) QueryRow(ctx context.Context, params ...any) *Row {
 	ret.columns = make(Columns, len(s.columnDesc))
 	for i, desc := range s.columnDesc {
 		ret.columns[i] = &Column{
-			Name:        desc.Name,
-			Length:      desc.Size,
-			Type:        desc.Type.ColumnType(),
-			DataType:    desc.Type.DataType(),
-			Nullable:    desc.Nullable,
-			Nullability: desc.Nullability,
-			PrimaryKey:  desc.PrimaryKey,
+			Name:             desc.Name,
+			Length:           desc.Size,
+			Type:             desc.Type.ColumnType(),
+			DataType:         desc.Type.DataType(),
+			Nullable:         desc.Nullable,
+			Nullability:      desc.Nullability,
+			PrimaryKey:       desc.PrimaryKey,
+			ElementType:      desc.ElementType,
+			ElementPrecision: desc.ElementPrecision,
+			Scale:            desc.Scale,
 		}
 	}
 	return ret
@@ -1328,6 +1339,21 @@ func (s *Stmt) bindParams(args ...any) error {
 			if val != nil {
 				value = *val
 			}
+		case api.Array:
+			sqlType = val.SqlType()
+			value = val
+		case *api.Array:
+			if val == nil {
+				pd, err := s.handle.DescribeParam(idx)
+				if err != nil {
+					return s.ErrorOf(err)
+				}
+				sqlType = pd.Type
+				value = nil
+			} else {
+				sqlType = val.SqlType()
+				value = val
+			}
 		}
 		if err := s.handle.BindParam(idx, sqlType, value); err != nil {
 			return s.ErrorOf(err)
@@ -1459,13 +1485,16 @@ func (r *Rows) columns() (Columns, error) {
 	ret := make(Columns, len(r.stmt.columnDesc))
 	for i, desc := range r.stmt.columnDesc {
 		ret[i] = &Column{
-			Name:        desc.Name,
-			Length:      desc.Size,
-			Type:        desc.Type.ColumnType(),
-			DataType:    desc.Type.DataType(),
-			Nullable:    desc.Nullable,
-			Nullability: desc.Nullability,
-			PrimaryKey:  desc.PrimaryKey,
+			Name:             desc.Name,
+			Length:           desc.Size,
+			Type:             desc.Type.ColumnType(),
+			DataType:         desc.Type.DataType(),
+			Nullable:         desc.Nullable,
+			Nullability:      desc.Nullability,
+			PrimaryKey:       desc.PrimaryKey,
+			ElementType:      desc.ElementType,
+			ElementPrecision: desc.ElementPrecision,
+			Scale:            desc.Scale,
 		}
 	}
 	return ret, nil
@@ -1649,6 +1678,10 @@ func (r *Rows) ColumnTypePrecisionScale(index int) (precision, scale int64, ok b
 			return 0, int64(desc.Scale), false
 		}
 		return int64(desc.Size), int64(desc.Scale), true
+	case api.SqlTypeInt16Array, api.SqlTypeUInt16Array, api.SqlTypeInt32Array,
+		api.SqlTypeUInt32Array, api.SqlTypeInt64Array, api.SqlTypeUInt64Array,
+		api.SqlTypeFloatArray, api.SqlTypeDoubleArray, api.SqlTypeDecimalArray:
+		return int64(desc.ElementPrecision), int64(desc.Scale), true
 	default:
 		return 0, 0, false
 	}
@@ -1679,6 +1712,10 @@ func (r *Rows) ColumnTypeScanType(index int) reflect.Type {
 	case api.ColumnTypeDatetime:
 		return reflect.TypeOf(time.Time{})
 	case api.ColumnTypeDecimal:
+		return reflect.TypeOf("")
+	case api.ColumnTypeInt16Array, api.ColumnTypeUInt16Array, api.ColumnTypeInt32Array,
+		api.ColumnTypeUInt32Array, api.ColumnTypeInt64Array, api.ColumnTypeUInt64Array,
+		api.ColumnTypeFloatArray, api.ColumnTypeDoubleArray, api.ColumnTypeDecimalArray:
 		return reflect.TypeOf("")
 	case api.ColumnTypeBinary, api.ColumnTypeBlob, api.ColumnTypeClob:
 		return reflect.TypeOf([]byte(nil))

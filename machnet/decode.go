@@ -13,17 +13,18 @@ import (
 )
 
 type ColumnMeta struct {
-	name        string
-	cmType      uint64
-	precision   int
-	scale       int
-	spinerType  int
-	length      int
-	isVariable  bool
-	sqlType     api.SqlType
-	nullable    bool
-	nullability api.Nullability
-	primaryKey  bool
+	name             string
+	cmType           uint64
+	precision        int
+	elementPrecision int
+	scale            int
+	spinerType       int
+	length           int
+	isVariable       bool
+	sqlType          api.SqlType
+	nullable         bool
+	nullability      api.Nullability
+	primaryKey       bool
 }
 
 func buildColumns(units map[uint32][]MarshalUnit, v403 bool) []ColumnMeta {
@@ -40,15 +41,27 @@ func buildColumns(units map[uint32][]MarshalUnit, v403 bool) []ColumnMeta {
 			cmType = binary.LittleEndian.Uint64(types[i].data)
 		}
 		spiner := extractSpinerType(cmType)
-		precision := extractPrecision(cmType)
+		wirePrecision := extractPrecision(cmType)
+		precision := wirePrecision
+		elementPrecision := 0
+		if isArraySpinerType(spiner) {
+			precision = wirePrecision & cmiArrayCardinalityMask
+			elementPrecision = (wirePrecision >> cmiArrayElementPrecisionShift) & cmiArrayElementPrecisionMask
+		}
 		nullability := extractNullability(cmType, v403)
 		meta := ColumnMeta{
-			name:        string(names[i].data),
-			cmType:      cmType,
-			precision:   precision,
-			scale:       extractScale(cmType, v403),
-			spinerType:  spiner,
-			length:      computeColumnLength(spiner, precision),
+			name:             string(names[i].data),
+			cmType:           cmType,
+			precision:        precision,
+			elementPrecision: elementPrecision,
+			scale:            extractScale(cmType, v403),
+			spinerType:       spiner,
+			length: func() int {
+				if isArraySpinerType(spiner) {
+					return computeArrayColumnLength(spiner, precision, elementPrecision)
+				}
+				return computeColumnLength(spiner, precision)
+			}(),
 			isVariable:  isVariableSpinerType(spiner),
 			sqlType:     spinerTypeToSqlType(spiner),
 			nullable:    nullability == api.NullabilityNullable,
@@ -71,7 +84,12 @@ func buildParamDesc(units map[uint32][]MarshalUnit, count int, v403 bool) []Para
 		if i < len(typUnits) && len(typUnits[i].data) >= 8 {
 			cmType := binary.LittleEndian.Uint64(typUnits[i].data)
 			d.Type = spinerTypeToSqlType(extractSpinerType(cmType))
-			d.Precision = extractPrecision(cmType)
+			wirePrecision := extractPrecision(cmType)
+			d.Precision = wirePrecision
+			if isArraySpinerType(extractSpinerType(cmType)) {
+				d.Precision = wirePrecision & cmiArrayCardinalityMask
+				d.ElementPrecision = (wirePrecision >> cmiArrayElementPrecisionShift) & cmiArrayElementPrecisionMask
+			}
 			d.Scale = extractScale(cmType, v403)
 			d.Nullability = extractNullability(cmType, v403)
 			d.Nullable = d.Nullability == api.NullabilityNullable
@@ -168,7 +186,11 @@ func decodeRowInto(ret []any, data []byte, columns []ColumnMeta) error {
 			}
 			field := data[off : off+l]
 			off += l
-			ret[i] = decodeVariableField(col, field)
+			value, err := decodeVariableField(col, field)
+			if err != nil {
+				return err
+			}
+			ret[i] = value
 			continue
 		}
 		length := col.length
@@ -194,20 +216,25 @@ func decodeRowInto(ret []any, data []byte, columns []ColumnMeta) error {
 	return nil
 }
 
-func decodeVariableField(col ColumnMeta, field []byte) any {
+func decodeVariableField(col ColumnMeta, field []byte) (any, error) {
 	switch col.spinerType {
+	case cmdInt16ArrayType, cmdUInt16ArrayType, cmdInt32ArrayType, cmdUInt32ArrayType,
+		cmdInt64ArrayType, cmdUInt64ArrayType, cmdFlt32ArrayType, cmdFlt64ArrayType,
+		cmdDecimalArrayType:
+		value, err := decodeArrayPayload(col, field)
+		return value, err
 	case cmdVarcharType, cmdTextType, cmdCharType, cmdJSONType, cmdClobType:
-		return string(field)
+		return string(field), nil
 	case cmdIPNetType:
-		return string(field)
+		return string(field), nil
 	case cmdBinaryType, cmdBlobType:
 		b := make([]byte, len(field))
 		copy(b, field)
-		return b
+		return b, nil
 	default:
 		b := make([]byte, len(field))
 		copy(b, field)
-		return b
+		return b, nil
 	}
 }
 

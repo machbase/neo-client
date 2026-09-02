@@ -1,0 +1,217 @@
+package machnet
+
+import (
+	"encoding/binary"
+	"testing"
+
+	"github.com/machbase/neo-client/v2/api"
+)
+
+func TestSparseArrayEncodeDecode(t *testing.T) {
+	value, err := api.NewSparseArray(api.SqlTypeInt32, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = value.Set(1, int32(10))
+	_ = value.Set(1024, int32(20))
+	col := ColumnMeta{spinerType: cmdInt32ArrayType, precision: 1024}
+	payload, err := encodeArrayPayload(value, col, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) >= computeArrayColumnLength(cmdInt32ArrayType, 1024, 0)/20 {
+		t.Fatalf("sparse payload too large: %d", len(payload))
+	}
+	if binary.BigEndian.Uint16(payload[:2]) != 0 || payload[2] != sparseArrayFormatVersion {
+		t.Fatalf("invalid sparse envelope: %x", payload[:4])
+	}
+
+	dense, err := encodeArrayPayload(value, col, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := decodeArrayPayload(col, dense)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := decoded.String(); got[:3] != "[10" || got[len(got)-3:] != "20]" {
+		t.Fatalf("decoded boundary mismatch: %s", got)
+	}
+}
+
+func TestAppendTargetEncoding(t *testing.T) {
+	payload, err := encodeAppendTargets([]string{"ID", "VALUES_ARRAY[1]", "VALUES_ARRAY[6]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binary.BigEndian.Uint16(payload[:2]) != 1 || binary.BigEndian.Uint16(payload[2:4]) != 3 {
+		t.Fatalf("invalid target header: %x", payload[:4])
+	}
+	if _, err := encodeAppendTargets([]string{"A[0]"}); err == nil {
+		t.Fatal("position zero accepted")
+	}
+	if _, err := encodeAppendTargets([]string{"A[1]", "A[1]"}); err == nil {
+		t.Fatal("duplicate accepted")
+	}
+	if _, err := encodeAppendTargets([]string{"A", "A[1]"}); err == nil {
+		t.Fatal("whole/element conflict accepted")
+	}
+}
+
+func TestArrayMetadataAndBind(t *testing.T) {
+	wirePrecision := uint64(8 | (12 << cmiArrayElementPrecisionShift))
+	cmType := (uint64(cmdDecimalArrayType) << 56) | (wirePrecision << 28) | (uint64(4) << 23)
+	nameWriter := newMarshalWriter(cmiAppendOpenProtocol, 1, 0)
+	nameWriter.addString(cmiPColNameID, "A")
+	nameWriter.addUInt64(cmiPColTypeID, cmType)
+	packets := nameWriter.finalize()
+	if len(packets) != 1 {
+		t.Fatalf("packets=%d", len(packets))
+	}
+	units, err := collectUnits(packets[0][packetHeaderSize:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	columns := buildColumns(units, true)
+	if len(columns) != 1 || columns[0].precision != 8 || columns[0].elementPrecision != 12 || columns[0].scale != 4 {
+		t.Fatalf("invalid ARRAY metadata: %+v", columns)
+	}
+
+	value, err := api.NewSparseArray(api.SqlTypeInt32, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = value.Set(1, int32(10))
+	typ, payload, err := encodeBoundParam(BoundParam{
+		sqlType:     api.SqlTypeInt32Array,
+		value:       value,
+		cardinality: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if typ != cmdInt32ArrayType || len(payload) == 0 || binary.BigEndian.Uint16(payload[:2]) != 0 {
+		t.Fatalf("invalid sparse ARRAY bind type=%d payload=%x", typ, payload)
+	}
+}
+
+func TestArrayDecodeRejectsMalformedCanonicalPayload(t *testing.T) {
+	value, err := api.NewArray(api.SqlTypeInt32,
+		[]any{int32(10), nil, int32(30)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	col := ColumnMeta{spinerType: cmdInt32ArrayType, precision: 3}
+	payload, err := encodeArrayPayload(value, col, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	invalidPadding := append([]byte(nil), payload...)
+	invalidPadding[2] |= 0x80
+	if _, err := decodeArrayPayload(col, invalidPadding); err == nil {
+		t.Fatal("non-zero NULL bitmap padding accepted")
+	}
+
+	nullSentinel := append([]byte(nil), payload...)
+	binary.BigEndian.PutUint32(nullSentinel[3:7], uint32(1)<<31)
+	if _, err := decodeArrayPayload(col, nullSentinel); err == nil {
+		t.Fatal("non-NULL element scalar NULL sentinel accepted")
+	}
+}
+
+func TestDenseArrayRoundTripAllElementTypes(t *testing.T) {
+	decimalValue, err := api.ParseDecimal("12345678.1250", 12, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name             string
+		elementType      api.SqlType
+		spinerType       int
+		elementPrecision int
+		scale            int
+		values           []any
+	}{
+		{"int16", api.SqlTypeInt16, cmdInt16ArrayType, 0, 0, []any{int16(-32767), nil, int16(32767)}},
+		{"uint16", api.SqlTypeUInt16, cmdUInt16ArrayType, 0, 0, []any{uint16(0), nil, uint16(65534)}},
+		{"int32", api.SqlTypeInt32, cmdInt32ArrayType, 0, 0, []any{int32(-2147483647), nil, int32(2147483647)}},
+		{"uint32", api.SqlTypeUInt32, cmdUInt32ArrayType, 0, 0, []any{uint32(0), nil, uint32(0xfffffffe)}},
+		{"int64", api.SqlTypeInt64, cmdInt64ArrayType, 0, 0, []any{int64(-9223372036854775807), nil, int64(9223372036854775807)}},
+		{"uint64", api.SqlTypeUInt64, cmdUInt64ArrayType, 0, 0, []any{uint64(0), nil, uint64(0xfffffffffffffffe)}},
+		{"float", api.SqlTypeFloat, cmdFlt32ArrayType, 0, 0, []any{float32(-1.25), nil, float32(3.5)}},
+		{"double", api.SqlTypeDouble, cmdFlt64ArrayType, 0, 0, []any{float64(-1.25), nil, float64(3.5)}},
+		{"decimal", api.SqlTypeDecimal, cmdDecimalArrayType, 12, 4, []any{decimalValue, nil, decimalValue}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			value, err := api.NewArray(test.elementType, test.values)
+			if err != nil {
+				t.Fatal(err)
+			}
+			col := ColumnMeta{
+				spinerType:       test.spinerType,
+				precision:        len(test.values),
+				elementPrecision: test.elementPrecision,
+				scale:            test.scale,
+			}
+			payload, err := encodeArrayPayload(value, col, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded, err := decodeArrayPayload(col, payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := decoded.String(), value.String(); got != want {
+				t.Fatalf("round trip got %s, want %s", got, want)
+			}
+		})
+	}
+}
+
+func TestArrayEncodeRejectsInvalidMetadataWithoutPanic(t *testing.T) {
+	value, err := api.NewArray(api.SqlTypeDecimal,
+		[]any{"1.0", nil, "3.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	col := ColumnMeta{
+		spinerType: cmdDecimalArrayType,
+		precision:  3,
+		scale:      0,
+	}
+	if _, err := encodeArrayPayload(value, col, true); err == nil {
+		t.Fatal("invalid DECIMAL ARRAY element precision accepted")
+	}
+}
+
+func TestProjectedNumericElementSentinelParity(t *testing.T) {
+	tests := []struct {
+		name       string
+		spinerType int
+		value      any
+	}{
+		{"int16", cmdInt16Type, int16(-32768)},
+		{"uint16", cmdUInt16Type, uint16(0xffff)},
+		{"int32", cmdInt32Type, int32(-2147483648)},
+		{"uint32", cmdUInt32Type, uint32(0xffffffff)},
+		{"int64", cmdInt64Type, int64(-9223372036854775808)},
+		{"uint64", cmdUInt64Type, uint64(0xffffffffffffffff)},
+		{"float", cmdFlt32Type, floatNull},
+		{"double", cmdFlt64Type, doubleNull},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			col := ColumnMeta{name: "A[1]", spinerType: test.spinerType}
+			if _, err := encodeAppendColumnValue(col, test.value, 0); err == nil {
+				t.Fatal("reserved scalar NULL sentinel accepted")
+			}
+		})
+	}
+	col := ColumnMeta{name: "A[1]", spinerType: cmdUInt64Type}
+	if _, err := encodeAppendColumnValue(
+		col, uint64(0xfffffffffffffffe), 0); err != nil {
+		t.Fatalf("valid UINT64 ARRAY element rejected: %v", err)
+	}
+}

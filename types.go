@@ -15,15 +15,18 @@ func ParseDecimal(text string, precision, scale int) (api.Decimal, error) {
 }
 
 type Column struct {
-	Id          uint64          `json:"id,omitempty"`       // if the column came from database table
-	Name        string          `json:"name"`               //
-	Type        api.ColumnType  `json:"type"`               //
-	Length      int             `json:"length,omitempty"`   //
-	DataType    api.DataType    `json:"data_type"`          //
-	Flag        api.ColumnFlag  `json:"flag,omitempty"`     // database column flag
-	Nullable    bool            `json:"nullable,omitempty"` // is column nullable
-	Nullability api.Nullability `json:"nullability,omitempty"`
-	PrimaryKey  bool            `json:"primary_key,omitempty"`
+	Id               uint64          `json:"id,omitempty"`       // if the column came from database table
+	Name             string          `json:"name"`               //
+	Type             api.ColumnType  `json:"type"`               //
+	Length           int             `json:"length,omitempty"`   //
+	DataType         api.DataType    `json:"data_type"`          //
+	Flag             api.ColumnFlag  `json:"flag,omitempty"`     // database column flag
+	Nullable         bool            `json:"nullable,omitempty"` // is column nullable
+	Nullability      api.Nullability `json:"nullability,omitempty"`
+	PrimaryKey       bool            `json:"primary_key,omitempty"`
+	ElementType      api.SqlType     `json:"element_type,omitempty"`
+	ElementPrecision int             `json:"element_precision,omitempty"`
+	Scale            int             `json:"scale,omitempty"`
 }
 
 func (col Column) String() string {
@@ -206,13 +209,15 @@ func (cols Columns) MakeBuffer() ([]any, error) {
 }
 
 type ColumnDesc struct {
-	Name        string
-	Type        api.SqlType
-	Size        int
-	Scale       int
-	Nullable    bool
-	Nullability api.Nullability
-	PrimaryKey  bool
+	Name             string
+	Type             api.SqlType
+	Size             int
+	Scale            int
+	Nullable         bool
+	Nullability      api.Nullability
+	PrimaryKey       bool
+	ElementType      api.SqlType
+	ElementPrecision int
 }
 
 func MakeColumnRownum() *Column {
