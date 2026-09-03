@@ -1309,11 +1309,29 @@ func (s *Stmt) bindParams(args ...any) error {
 				value = []byte(val.To16().String())
 			}
 		case string:
+			pd, err := s.handle.DescribeParam(idx)
+			if err != nil {
+				return s.ErrorOf(err)
+			}
+			// Preserve datetime strings for the engine, which accepts more formats than RFC3339.
 			sqlType = api.SqlTypeString
+			if pd.Type != api.SqlTypeDatetime {
+				sqlType = pd.Type
+			}
 			value = val
 		case *string:
+			pd, err := s.handle.DescribeParam(idx)
+			if err != nil {
+				return s.ErrorOf(err)
+			}
+			// Preserve datetime strings for the engine, which accepts more formats than RFC3339.
 			sqlType = api.SqlTypeString
-			value = *val
+			if pd.Type != api.SqlTypeDatetime {
+				sqlType = pd.Type
+			}
+			if val != nil {
+				value = *val
+			}
 		case api.JSONString:
 			sqlType = api.SqlTypeJSON
 			value = string(val)
