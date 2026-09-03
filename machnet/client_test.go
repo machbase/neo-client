@@ -70,8 +70,8 @@ func TestParseGeneratedRowIDVersionGateAndBits(t *testing.T) {
 }
 
 func TestGeneratedRowIDVersionGate(t *testing.T) {
-	if got := protocolVersion(); got != cmiGeneratedRowIDVersion {
-		t.Fatalf("client protocol version = %#x, want %#x", got, cmiGeneratedRowIDVersion)
+	if got := protocolVersion(); got != cmiArrayVersion {
+		t.Fatalf("client protocol version = %#x, want %#x", got, cmiArrayVersion)
 	}
 
 	legacy := &NativeConn{serverVersion: (4 << 48) | 2}
@@ -82,6 +82,20 @@ func TestGeneratedRowIDVersionGate(t *testing.T) {
 	current := &NativeConn{serverVersion: cmiGeneratedRowIDVersion}
 	if !current.supportsGeneratedRowID() {
 		t.Fatal("CMI 4.0.3 server must advertise generated ROWID")
+	}
+}
+
+func TestArrayVersionGate(t *testing.T) {
+	legacy := &NativeConn{serverVersion: cmiGeneratedRowIDVersion}
+	if legacy.supportsArray() {
+		t.Fatal("CMI 4.0.3 server must not advertise ARRAY")
+	}
+	if _, err := legacy.appendOpen(1, "T", []string{"A[1]"}, 0); err == nil {
+		t.Fatal("CMI 4.0.3 indexed append target was not rejected before send")
+	}
+	current := &NativeConn{serverVersion: cmiArrayVersion}
+	if !current.supportsArray() {
+		t.Fatal("CMI 4.0.4 server must advertise ARRAY")
 	}
 }
 

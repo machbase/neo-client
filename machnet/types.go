@@ -9,15 +9,16 @@ import (
 	"github.com/machbase/neo-client/v2/api"
 )
 
-// cmi protocol version: 4.0.3
+// cmi protocol version: 4.0.4
 const (
 	cmiProtocolMajor = 4
 	cmiProtocolMinor = 0
-	cmiProtocolFix   = 3
+	cmiProtocolFix   = 4
 )
 
 const cmiV403MetadataVersion uint64 = (4 << 48) | 3
 const cmiGeneratedRowIDVersion uint64 = (4 << 48) | 3
+const cmiArrayVersion uint64 = (4 << 48) | 4
 
 const (
 	cmiPacketMaxBody = 64 * 1024
@@ -75,6 +76,7 @@ const (
 	cmiPParamTypeID      = 0x00000029
 	cmiPParamMetaV2ID    = 0x0000002A
 	cmiPGeneratedRowIDID = 0x0000002C
+	cmiPAppendTargetsID  = 0x0000002D
 
 	cmiEParamID   = 0x00000031
 	cmiEParamV2ID = 0x00000033
@@ -117,28 +119,43 @@ const (
 	cmdVarFlag  = 0x0001
 	cmdTimeFlag = 0x0002
 
-	cmdVarcharType = (0x0001 << 2) | cmdVarFlag
-	cmdDateType    = (0x0001 << 2) | cmdTimeFlag
-	cmdInt16Type   = (0x0001 << 2) | cmdFixFlag
-	cmdInt32Type   = (0x0002 << 2) | cmdFixFlag
-	cmdInt64Type   = (0x0003 << 2) | cmdFixFlag
-	cmdFlt32Type   = (0x0004 << 2) | cmdFixFlag
-	cmdFlt64Type   = (0x0005 << 2) | cmdFixFlag
-	cmdNulType     = (0x0006 << 2) | cmdFixFlag
-	cmdIpv4Type    = (0x0008 << 2) | cmdFixFlag
-	cmdIpv6Type    = (0x0009 << 2) | cmdFixFlag
-	cmdBoolType    = (0x000a << 2) | cmdFixFlag
-	cmdCharType    = (0x000b << 2) | cmdVarFlag
-	cmdTextType    = (0x000c << 2) | cmdVarFlag
-	cmdClobType    = (0x000d << 2) | cmdVarFlag
-	cmdBlobType    = (0x000e << 2) | cmdVarFlag
-	cmdJSONType    = (0x000f << 2) | cmdVarFlag
-	cmdBinaryType  = (0x0018 << 2) | cmdVarFlag
-	cmdIPNetType   = (0x0019 << 2) | cmdVarFlag
-	cmdUInt16Type  = (0x001a << 2) | cmdFixFlag
-	cmdUInt32Type  = (0x001b << 2) | cmdFixFlag
-	cmdUInt64Type  = (0x001c << 2) | cmdFixFlag
-	cmdDecimalType = (0x0021 << 2) | cmdFixFlag
+	cmdVarcharType      = (0x0001 << 2) | cmdVarFlag
+	cmdDateType         = (0x0001 << 2) | cmdTimeFlag
+	cmdInt16Type        = (0x0001 << 2) | cmdFixFlag
+	cmdInt32Type        = (0x0002 << 2) | cmdFixFlag
+	cmdInt64Type        = (0x0003 << 2) | cmdFixFlag
+	cmdFlt32Type        = (0x0004 << 2) | cmdFixFlag
+	cmdFlt64Type        = (0x0005 << 2) | cmdFixFlag
+	cmdNulType          = (0x0006 << 2) | cmdFixFlag
+	cmdIpv4Type         = (0x0008 << 2) | cmdFixFlag
+	cmdIpv6Type         = (0x0009 << 2) | cmdFixFlag
+	cmdBoolType         = (0x000a << 2) | cmdFixFlag
+	cmdCharType         = (0x000b << 2) | cmdVarFlag
+	cmdTextType         = (0x000c << 2) | cmdVarFlag
+	cmdClobType         = (0x000d << 2) | cmdVarFlag
+	cmdBlobType         = (0x000e << 2) | cmdVarFlag
+	cmdJSONType         = (0x000f << 2) | cmdVarFlag
+	cmdBinaryType       = (0x0018 << 2) | cmdVarFlag
+	cmdIPNetType        = (0x0019 << 2) | cmdVarFlag
+	cmdUInt16Type       = (0x001a << 2) | cmdFixFlag
+	cmdUInt32Type       = (0x001b << 2) | cmdFixFlag
+	cmdUInt64Type       = (0x001c << 2) | cmdFixFlag
+	cmdDecimalType      = (0x0021 << 2) | cmdFixFlag
+	cmdInt16ArrayType   = (0x0022 << 2) | cmdVarFlag
+	cmdUInt16ArrayType  = (0x0023 << 2) | cmdVarFlag
+	cmdInt32ArrayType   = (0x0024 << 2) | cmdVarFlag
+	cmdUInt32ArrayType  = (0x0025 << 2) | cmdVarFlag
+	cmdInt64ArrayType   = (0x0026 << 2) | cmdVarFlag
+	cmdUInt64ArrayType  = (0x0027 << 2) | cmdVarFlag
+	cmdFlt32ArrayType   = (0x0028 << 2) | cmdVarFlag
+	cmdFlt64ArrayType   = (0x0029 << 2) | cmdVarFlag
+	cmdDecimalArrayType = (0x002a << 2) | cmdVarFlag
+)
+
+const (
+	cmiArrayCardinalityMask       = 0x7ff
+	cmiArrayElementPrecisionShift = 11
+	cmiArrayElementPrecisionMask  = 0x7f
 )
 
 const (
@@ -319,13 +336,14 @@ const (
 )
 
 type ParamDesc struct {
-	Type        api.SqlType
-	Precision   int
-	Scale       int
-	Nullable    bool
-	Nullability api.Nullability
-	Ordinal     int
-	Name        string
+	Type             api.SqlType
+	Precision        int
+	ElementPrecision int
+	Scale            int
+	Nullable         bool
+	Nullability      api.Nullability
+	Ordinal          int
+	Name             string
 }
 
 type StatusError struct {
@@ -412,6 +430,24 @@ func sqlTypeToCmdType(sqlType api.SqlType) int {
 		return cmdJSONType
 	case api.SqlTypeDecimal:
 		return cmdDecimalType
+	case api.SqlTypeInt16Array:
+		return cmdInt16ArrayType
+	case api.SqlTypeUInt16Array:
+		return cmdUInt16ArrayType
+	case api.SqlTypeInt32Array:
+		return cmdInt32ArrayType
+	case api.SqlTypeUInt32Array:
+		return cmdUInt32ArrayType
+	case api.SqlTypeInt64Array:
+		return cmdInt64ArrayType
+	case api.SqlTypeUInt64Array:
+		return cmdUInt64ArrayType
+	case api.SqlTypeFloatArray:
+		return cmdFlt32ArrayType
+	case api.SqlTypeDoubleArray:
+		return cmdFlt64ArrayType
+	case api.SqlTypeDecimalArray:
+		return cmdDecimalArrayType
 	default:
 		return cmdVarcharType
 	}
@@ -447,6 +483,24 @@ func spinerTypeToSqlType(spinerType int) api.SqlType {
 		return api.SqlTypeJSON
 	case cmdDecimalType:
 		return api.SqlTypeDecimal
+	case cmdInt16ArrayType:
+		return api.SqlTypeInt16Array
+	case cmdUInt16ArrayType:
+		return api.SqlTypeUInt16Array
+	case cmdInt32ArrayType:
+		return api.SqlTypeInt32Array
+	case cmdUInt32ArrayType:
+		return api.SqlTypeUInt32Array
+	case cmdInt64ArrayType:
+		return api.SqlTypeInt64Array
+	case cmdUInt64ArrayType:
+		return api.SqlTypeUInt64Array
+	case cmdFlt32ArrayType:
+		return api.SqlTypeFloatArray
+	case cmdFlt64ArrayType:
+		return api.SqlTypeDoubleArray
+	case cmdDecimalArrayType:
+		return api.SqlTypeDecimalArray
 	default:
 		return api.SqlTypeString
 	}
@@ -518,6 +572,36 @@ func isVariableSpinerType(spinerType int) bool {
 	return (spinerType & cmdVarFlag) == cmdVarFlag
 }
 
+func isArraySpinerType(spinerType int) bool {
+	return spinerType >= cmdInt16ArrayType && spinerType <= cmdDecimalArrayType &&
+		(spinerType-cmdInt16ArrayType)%4 == 0
+}
+
+func arrayBaseSpinerType(spinerType int) int {
+	switch spinerType {
+	case cmdInt16ArrayType:
+		return cmdInt16Type
+	case cmdUInt16ArrayType:
+		return cmdUInt16Type
+	case cmdInt32ArrayType:
+		return cmdInt32Type
+	case cmdUInt32ArrayType:
+		return cmdUInt32Type
+	case cmdInt64ArrayType:
+		return cmdInt64Type
+	case cmdUInt64ArrayType:
+		return cmdUInt64Type
+	case cmdFlt32ArrayType:
+		return cmdFlt32Type
+	case cmdFlt64ArrayType:
+		return cmdFlt64Type
+	case cmdDecimalArrayType:
+		return cmdDecimalType
+	default:
+		return 0
+	}
+}
+
 func computeColumnLength(spinerType int, precision int) int {
 	switch spinerType {
 	case cmdInt16Type, cmdUInt16Type:
@@ -548,6 +632,17 @@ func computeColumnLength(spinerType int, precision int) int {
 	default:
 		return precision
 	}
+}
+
+func computeArrayColumnLength(spinerType, cardinality, elementPrecision int) int {
+	if !isArraySpinerType(spinerType) || cardinality < api.ArrayMinCardinality || cardinality > api.ArrayMaxCardinality {
+		return 0
+	}
+	elementSize := computeColumnLength(arrayBaseSpinerType(spinerType), elementPrecision)
+	if elementSize <= 0 {
+		return 0
+	}
+	return 2 + ((cardinality + 7) / 8) + elementSize*cardinality
 }
 
 func extractSpinerType(cmType uint64) int {

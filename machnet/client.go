@@ -552,6 +552,10 @@ func (c *NativeConn) supportsGeneratedRowID() bool {
 	return protocolVersion() >= cmiGeneratedRowIDVersion && c.serverVersion >= cmiGeneratedRowIDVersion
 }
 
+func (c *NativeConn) supportsArray() bool {
+	return protocolVersion() >= cmiArrayVersion && c.serverVersion >= cmiArrayVersion
+}
+
 func parseStmtResponse(body []byte, sql string, fallbackCols []ColumnMeta) (*StmtExecResult, error) {
 	return parseStmtResponseVersion(body, sql, fallbackCols, true, false, false)
 }
@@ -826,12 +830,28 @@ func (c *NativeConn) free(stmtID uint32) error {
 	return nil
 }
 
-func (c *NativeConn) appendOpen(stmtID uint32, table string, errCheckCount int) (*StmtExecResult, error) {
+func (c *NativeConn) appendOpen(stmtID uint32, table string, targets []string, errCheckCount int) (*StmtExecResult, error) {
 	_ = errCheckCount
+	if len(targets) > 0 && !c.supportsArray() {
+		for _, target := range targets {
+			if _, position, err := parseAppendTarget(target); err != nil {
+				return nil, err
+			} else if position != 0 {
+				return nil, makeClientErr("ARRAY element projection requires CMI 4.0.4 or later")
+			}
+		}
+	}
 	w := newMarshalWriter(cmiAppendOpenProtocol, stmtID, 0)
 	w.addUInt64(cmiPIDID, uint64(stmtID))
 	w.addString(cmiPTableID, table)
 	w.addUInt64(cmiEEndianID, 0)
+	if len(targets) > 0 && c.supportsArray() {
+		projection, err := encodeAppendTargets(targets)
+		if err != nil {
+			return nil, err
+		}
+		w.addBinary(cmiPAppendTargetsID, projection)
+	}
 	body, err := c.sendPackets(context.Background(), w.finalize(), cmiAppendOpenProtocol, c.queryTimeout)
 	if err != nil {
 		return nil, err

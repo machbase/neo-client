@@ -4,7 +4,11 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"reflect"
+	"strconv"
 	"strings"
+
+	"github.com/machbase/neo-client/v2/api"
 )
 
 const (
@@ -15,6 +19,84 @@ const (
 type AppendBindings struct {
 	byColumn   []int
 	arrivalArg int
+}
+
+func parseAppendTarget(target string) (string, int, error) {
+	trimmed := strings.TrimSpace(target)
+	if trimmed == "" {
+		return "", 0, fmt.Errorf("append column name is empty")
+	}
+	if !strings.HasSuffix(trimmed, "]") {
+		return normalizeIdentifier(trimmed), 0, nil
+	}
+	open := strings.LastIndexByte(trimmed, '[')
+	if open <= 0 || open == len(trimmed)-2 {
+		return "", 0, fmt.Errorf("invalid append ARRAY target %q", target)
+	}
+	position, err := strconv.Atoi(strings.TrimSpace(trimmed[open+1 : len(trimmed)-1]))
+	if err != nil || position < 1 || position > api.ArrayMaxCardinality {
+		return "", 0, fmt.Errorf("invalid append ARRAY position in %q", target)
+	}
+	name := normalizeIdentifier(trimmed[:open])
+	if name == "" {
+		return "", 0, fmt.Errorf("append column name is empty")
+	}
+	return name, position, nil
+}
+
+func encodeAppendTargets(targets []string) ([]byte, error) {
+	if len(targets) == 0 || len(targets) > 0xffff {
+		return nil, fmt.Errorf("invalid append target count %d", len(targets))
+	}
+	type entry struct {
+		name     string
+		position int
+	}
+	entries := make([]entry, len(targets))
+	size := 4
+	seen := make(map[string]struct{}, len(targets))
+	whole := make(map[string]bool, len(targets))
+	elements := make(map[string]bool, len(targets))
+	for i, target := range targets {
+		name, position, err := parseAppendTarget(target)
+		if err != nil {
+			return nil, err
+		}
+		key := fmt.Sprintf("%s[%d]", name, position)
+		if _, ok := seen[key]; ok {
+			return nil, fmt.Errorf("duplicate append target %s", target)
+		}
+		seen[key] = struct{}{}
+		if position == 0 {
+			if elements[name] {
+				return nil, fmt.Errorf("whole ARRAY and element targets conflict for %s", name)
+			}
+			whole[name] = true
+		} else {
+			if whole[name] {
+				return nil, fmt.Errorf("whole ARRAY and element targets conflict for %s", name)
+			}
+			elements[name] = true
+		}
+		if len(name) > 0xffff {
+			return nil, fmt.Errorf("append column name is too long")
+		}
+		entries[i] = entry{name: name, position: position}
+		size += 2 + len(name) + 2
+	}
+	ret := make([]byte, size)
+	binary.BigEndian.PutUint16(ret[:2], 1)
+	binary.BigEndian.PutUint16(ret[2:4], uint16(len(entries)))
+	offset := 4
+	for _, item := range entries {
+		binary.BigEndian.PutUint16(ret[offset:offset+2], uint16(len(item.name)))
+		offset += 2
+		copy(ret[offset:offset+len(item.name)], item.name)
+		offset += len(item.name)
+		binary.BigEndian.PutUint16(ret[offset:offset+2], uint16(item.position))
+		offset += 2
+	}
+	return ret, nil
 }
 
 func normalizeIdentifier(name string) string {
@@ -130,7 +212,7 @@ func encodeAppendRow(columns []ColumnMeta, bindings AppendBindings, args []any, 
 			continue
 		}
 		value := args[argIdx]
-		if value == nil {
+		if isNilAppendValue(value) {
 			setAppendNullBit(row[nullOffset:], idx)
 			continue
 		}
@@ -141,6 +223,15 @@ func encodeAppendRow(columns []ColumnMeta, bindings AppendBindings, args []any, 
 		row = append(row, field...)
 	}
 	return row, nil
+}
+
+func isNilAppendValue(value any) bool {
+	if value == nil {
+		return true
+	}
+	ref := reflect.ValueOf(value)
+	return (ref.Kind() == reflect.Pointer || ref.Kind() == reflect.Interface) &&
+		ref.IsNil()
 }
 
 func setAppendNullBit(bits []byte, ordinal int) {
@@ -187,7 +278,31 @@ func encodeAppendVarField(data []byte, serverEndian uint32) []byte {
 }
 
 func encodeAppendColumnValue(col ColumnMeta, value any, serverEndian uint32) ([]byte, error) {
+	isArrayElement := isProjectedAppendArrayElement(col.name)
 	switch col.spinerType {
+	case cmdInt16ArrayType, cmdUInt16ArrayType, cmdInt32ArrayType, cmdUInt32ArrayType,
+		cmdInt64ArrayType, cmdUInt64ArrayType, cmdFlt32ArrayType, cmdFlt64ArrayType,
+		cmdDecimalArrayType:
+		var array *api.Array
+		switch typed := value.(type) {
+		case *api.Array:
+			array = typed
+		case api.Array:
+			array = typed.Clone()
+		case []any:
+			var err error
+			array, err = api.NewArray(spinerTypeToSqlType(arrayBaseSpinerType(col.spinerType)), typed)
+			if err != nil {
+				return nil, err
+			}
+		default:
+			return nil, fmt.Errorf("ARRAY column %s expects api.Array or []any", col.name)
+		}
+		payload, err := encodeArrayPayload(array, col, true)
+		if err != nil {
+			return nil, err
+		}
+		return encodeAppendVarField(payload, serverEndian), nil
 	case cmdBoolType:
 		b, err := toAppendBool(value)
 		if err != nil {
@@ -205,18 +320,18 @@ func encodeAppendColumnValue(col ColumnMeta, value any, serverEndian uint32) ([]
 		if err != nil {
 			return nil, err
 		}
-		if v < math.MinInt16 || v > math.MaxInt16 {
+		if v < math.MinInt16 || v > math.MaxInt16 || (isArrayElement && v == math.MinInt16) {
 			return nil, fmt.Errorf("out of int16 range: %v", value)
 		}
 		var ret [2]byte
 		putUint16ByEndian(ret[:], uint16(int16(v)), serverEndian)
 		return ret[:], nil
 	case cmdUInt16Type:
-		v, err := toInt64(value)
+		v, err := toUint64(value)
 		if err != nil {
 			return nil, err
 		}
-		if v < 0 || v > math.MaxUint16 {
+		if v > math.MaxUint16 || (isArrayElement && v == math.MaxUint16) {
 			return nil, fmt.Errorf("out of uint16 range: %v", value)
 		}
 		var ret [2]byte
@@ -227,18 +342,18 @@ func encodeAppendColumnValue(col ColumnMeta, value any, serverEndian uint32) ([]
 		if err != nil {
 			return nil, err
 		}
-		if v < math.MinInt32 || v > math.MaxInt32 {
+		if v < math.MinInt32 || v > math.MaxInt32 || (isArrayElement && v == math.MinInt32) {
 			return nil, fmt.Errorf("out of int32 range: %v", value)
 		}
 		var ret [4]byte
 		putUint32ByEndian(ret[:], uint32(int32(v)), serverEndian)
 		return ret[:], nil
 	case cmdUInt32Type:
-		v, err := toInt64(value)
+		v, err := toUint64(value)
 		if err != nil {
 			return nil, err
 		}
-		if v < 0 || v > math.MaxUint32 {
+		if v > math.MaxUint32 || (isArrayElement && v == math.MaxUint32) {
 			return nil, fmt.Errorf("out of uint32 range: %v", value)
 		}
 		var ret [4]byte
@@ -249,16 +364,19 @@ func encodeAppendColumnValue(col ColumnMeta, value any, serverEndian uint32) ([]
 		if err != nil {
 			return nil, err
 		}
+		if isArrayElement && v == math.MinInt64 {
+			return nil, fmt.Errorf("INT64 value uses NULL sentinel")
+		}
 		var ret [8]byte
 		putUint64ByEndian(ret[:], uint64(v), serverEndian)
 		return ret[:], nil
 	case cmdUInt64Type:
-		v, err := toInt64(value)
+		v, err := toUint64(value)
 		if err != nil {
 			return nil, err
 		}
-		if v < 0 {
-			return nil, fmt.Errorf("out of uint64 range: %v", value)
+		if v == math.MaxUint64 {
+			return nil, fmt.Errorf("UINT64 value uses NULL sentinel")
 		}
 		var ret [8]byte
 		putUint64ByEndian(ret[:], uint64(v), serverEndian)
@@ -268,16 +386,24 @@ func encodeAppendColumnValue(col ColumnMeta, value any, serverEndian uint32) ([]
 		if err != nil {
 			return nil, err
 		}
+		bits := math.Float32bits(float32(v))
+		if isArrayElement && bits == math.Float32bits(floatNull) {
+			return nil, fmt.Errorf("FLOAT value uses NULL sentinel")
+		}
 		var ret [4]byte
-		putUint32ByEndian(ret[:], math.Float32bits(float32(v)), serverEndian)
+		putUint32ByEndian(ret[:], bits, serverEndian)
 		return ret[:], nil
 	case cmdFlt64Type:
 		v, err := toFloat64(value)
 		if err != nil {
 			return nil, err
 		}
+		bits := math.Float64bits(v)
+		if isArrayElement && bits == math.Float64bits(doubleNull) {
+			return nil, fmt.Errorf("DOUBLE value uses NULL sentinel")
+		}
 		var ret [8]byte
-		putUint64ByEndian(ret[:], math.Float64bits(v), serverEndian)
+		putUint64ByEndian(ret[:], bits, serverEndian)
 		return ret[:], nil
 	case cmdDateType:
 		v, err := toDateTimeInt64(value)
@@ -341,6 +467,11 @@ func encodeAppendColumnValue(col ColumnMeta, value any, serverEndian uint32) ([]
 		}
 		return nil, fmt.Errorf("unsupported append spiner type %d", col.spinerType)
 	}
+}
+
+func isProjectedAppendArrayElement(name string) bool {
+	_, position, err := parseAppendTarget(name)
+	return err == nil && position > 0
 }
 
 func toAppendBool(value any) (bool, error) {

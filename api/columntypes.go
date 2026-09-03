@@ -10,29 +10,38 @@ import (
 type ColumnType int
 
 const (
-	ColumnTypeShort    ColumnType = iota + 4 // cmdInt16Type
-	ColumnTypeUShort   ColumnType = 104      // cmdUInt16Type
-	ColumnTypeInteger  ColumnType = 8        // cmdInt32Type
-	ColumnTypeUInteger ColumnType = 108      // cmdUInt32Type
-	ColumnTypeLong     ColumnType = 12       // cmdInt64Type
-	ColumnTypeULong    ColumnType = 112      // cmdUInt64Type
-	ColumnTypeFloat    ColumnType = 16       // cmdFlt32Type
-	ColumnTypeDouble   ColumnType = 20       // cmdFlt64Type
-	ColumnTypeVarchar  ColumnType = 5        // cmdVarcharType
-	ColumnTypeText     ColumnType = 49       // cmdTextType
-	ColumnTypeClob     ColumnType = 53       // cmdClobType
-	ColumnTypeBlob     ColumnType = 57       // cmdBlobType
-	ColumnTypeBinary   ColumnType = 97       // cmdBinaryType
-	ColumnTypeDatetime ColumnType = 6        // cmdDateType
-	ColumnTypeIPv4     ColumnType = 32       // cmdIPv4Type
-	ColumnTypeIPv6     ColumnType = 36       // cmdIPv6Type
-	ColumnTypeIPNet    ColumnType = 101      // cmdIPNetType
-	ColumnTypeJSON     ColumnType = 61       // cmdJSONType
-	ColumnTypeNull     ColumnType = 24       // cmdNullType
-	ColumnTypeBool     ColumnType = 40       // cmdBoolType
-	ColumnTypeDecimal  ColumnType = 132      // cmdDecimalType
-	ColumnTypeChar     ColumnType = 45       // cmdCharType
-	ColumnTypeUnknown  ColumnType = 0
+	ColumnTypeShort        ColumnType = iota + 4 // cmdInt16Type
+	ColumnTypeUShort       ColumnType = 104      // cmdUInt16Type
+	ColumnTypeInteger      ColumnType = 8        // cmdInt32Type
+	ColumnTypeUInteger     ColumnType = 108      // cmdUInt32Type
+	ColumnTypeLong         ColumnType = 12       // cmdInt64Type
+	ColumnTypeULong        ColumnType = 112      // cmdUInt64Type
+	ColumnTypeFloat        ColumnType = 16       // cmdFlt32Type
+	ColumnTypeDouble       ColumnType = 20       // cmdFlt64Type
+	ColumnTypeVarchar      ColumnType = 5        // cmdVarcharType
+	ColumnTypeText         ColumnType = 49       // cmdTextType
+	ColumnTypeClob         ColumnType = 53       // cmdClobType
+	ColumnTypeBlob         ColumnType = 57       // cmdBlobType
+	ColumnTypeBinary       ColumnType = 97       // cmdBinaryType
+	ColumnTypeDatetime     ColumnType = 6        // cmdDateType
+	ColumnTypeIPv4         ColumnType = 32       // cmdIPv4Type
+	ColumnTypeIPv6         ColumnType = 36       // cmdIPv6Type
+	ColumnTypeIPNet        ColumnType = 101      // cmdIPNetType
+	ColumnTypeJSON         ColumnType = 61       // cmdJSONType
+	ColumnTypeNull         ColumnType = 24       // cmdNullType
+	ColumnTypeBool         ColumnType = 40       // cmdBoolType
+	ColumnTypeDecimal      ColumnType = 132      // cmdDecimalType
+	ColumnTypeInt16Array   ColumnType = 137
+	ColumnTypeUInt16Array  ColumnType = 141
+	ColumnTypeInt32Array   ColumnType = 145
+	ColumnTypeUInt32Array  ColumnType = 149
+	ColumnTypeInt64Array   ColumnType = 153
+	ColumnTypeUInt64Array  ColumnType = 157
+	ColumnTypeFloatArray   ColumnType = 161
+	ColumnTypeDoubleArray  ColumnType = 165
+	ColumnTypeDecimalArray ColumnType = 169
+	ColumnTypeChar         ColumnType = 45 // cmdCharType
+	ColumnTypeUnknown      ColumnType = 0
 )
 
 const (
@@ -94,6 +103,24 @@ func (typ ColumnType) String() string {
 		return COLUMN_TYPE_JSON
 	case ColumnTypeDecimal:
 		return COLUMN_TYPE_DECIMAL
+	case ColumnTypeInt16Array:
+		return "int16_array"
+	case ColumnTypeUInt16Array:
+		return "uint16_array"
+	case ColumnTypeInt32Array:
+		return "int32_array"
+	case ColumnTypeUInt32Array:
+		return "uint32_array"
+	case ColumnTypeInt64Array:
+		return "int64_array"
+	case ColumnTypeUInt64Array:
+		return "uint64_array"
+	case ColumnTypeFloatArray:
+		return "float_array"
+	case ColumnTypeDoubleArray:
+		return "double_array"
+	case ColumnTypeDecimalArray:
+		return "decimal_array"
 	default:
 		return fmt.Sprintf("UndefinedColumnType-%d", typ)
 	}
@@ -137,6 +164,24 @@ func ParseColumnType(typeName string) ColumnType {
 		return ColumnTypeJSON
 	case COLUMN_TYPE_DECIMAL:
 		return ColumnTypeDecimal
+	case "int16_array":
+		return ColumnTypeInt16Array
+	case "uint16_array":
+		return ColumnTypeUInt16Array
+	case "int32_array":
+		return ColumnTypeInt32Array
+	case "uint32_array":
+		return ColumnTypeUInt32Array
+	case "int64_array":
+		return ColumnTypeInt64Array
+	case "uint64_array":
+		return ColumnTypeUInt64Array
+	case "float_array":
+		return ColumnTypeFloatArray
+	case "double_array":
+		return ColumnTypeDoubleArray
+	case "decimal_array":
+		return ColumnTypeDecimalArray
 	default:
 		return ColumnTypeUnknown
 	}
@@ -172,6 +217,24 @@ func (typ ColumnType) ToSqlType() SqlType {
 		return SqlTypeBinary
 	case ColumnTypeDecimal:
 		return SqlTypeDecimal
+	case ColumnTypeInt16Array:
+		return SqlTypeInt16Array
+	case ColumnTypeUInt16Array:
+		return SqlTypeUInt16Array
+	case ColumnTypeInt32Array:
+		return SqlTypeInt32Array
+	case ColumnTypeUInt32Array:
+		return SqlTypeUInt32Array
+	case ColumnTypeInt64Array:
+		return SqlTypeInt64Array
+	case ColumnTypeUInt64Array:
+		return SqlTypeUInt64Array
+	case ColumnTypeFloatArray:
+		return SqlTypeFloatArray
+	case ColumnTypeDoubleArray:
+		return SqlTypeDoubleArray
+	case ColumnTypeDecimalArray:
+		return SqlTypeDecimalArray
 	default:
 		return SqlTypeString
 	}
@@ -225,6 +288,10 @@ func (typ ColumnType) MakeBuffer() (any, error) {
 		return new(sql.Null[[]byte]), nil
 	case ColumnTypeDecimal:
 		return new(sql.Null[Decimal]), nil
+	case ColumnTypeInt16Array, ColumnTypeUInt16Array, ColumnTypeInt32Array,
+		ColumnTypeUInt32Array, ColumnTypeInt64Array, ColumnTypeUInt64Array,
+		ColumnTypeFloatArray, ColumnTypeDoubleArray, ColumnTypeDecimalArray:
+		return new(*Array), nil
 		//return new([]byte), nil
 	default:
 		return nil, fmt.Errorf("unsupported column type: %d", typ)
@@ -273,6 +340,10 @@ func (typ ColumnType) DataType() DataType {
 		return DataTypeJSON
 	case ColumnTypeDecimal:
 		return DataTypeDecimal
+	case ColumnTypeInt16Array, ColumnTypeUInt16Array, ColumnTypeInt32Array,
+		ColumnTypeUInt32Array, ColumnTypeInt64Array, ColumnTypeUInt64Array,
+		ColumnTypeFloatArray, ColumnTypeDoubleArray, ColumnTypeDecimalArray:
+		return DataTypeArray
 	default:
 		return DataType(fmt.Sprintf("UndefinedColumnType-%d", typ))
 	}
@@ -305,7 +376,7 @@ func (flag ColumnFlag) String() string {
 	}
 
 	if flag&ColumnFlagAutoIncrement == ColumnFlagAutoIncrement {
-		rt = append(rt, "auto_increment")
+		rt = append(rt, "auto increment")
 	}
 	if flag&ColumnFlagTagName == ColumnFlagTagName {
 		rt = append(rt, "tag name")

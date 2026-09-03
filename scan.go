@@ -307,6 +307,25 @@ func Scan(src any, dst any, loc *time.Location) error {
 		if sv.Valid {
 			return Scan(sv.V, dst, loc)
 		}
+	case api.Array:
+		switch d := dst.(type) {
+		case *api.Array:
+			*d = *sv.Clone()
+			return nil
+		case **api.Array:
+			*d = sv.Clone()
+			return nil
+		case *string:
+			*d = sv.String()
+			return nil
+		case *driver.Value:
+			*d = sv.String()
+			return nil
+		}
+	case *api.Array:
+		if sv != nil {
+			return Scan(*sv, dst, loc)
+		}
 	}
 	return fmt.Errorf("cannot convert value from %T to %T", src, dst)
 }
@@ -408,6 +427,10 @@ func ScanNull(dst any) bool {
 	case *sql.Null[api.Decimal]:
 		d.V = api.Decimal{}
 		d.Valid = false
+	case *api.Array:
+		*d = api.Array{}
+	case **api.Array:
+		*d = nil
 	case *sql.Null[any]:
 		d.V = nil
 		d.Valid = false

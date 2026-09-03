@@ -29,6 +29,7 @@ const (
 	DataTypeUInt64   DataType = "uint64"
 	DataTypeJSON     DataType = "json"
 	DataTypeDecimal  DataType = "decimal"
+	DataTypeArray    DataType = "array"
 	// exceptional case
 	DataTypeBoolean DataType = "bool"
 	DataTypeByte    DataType = "int8"
@@ -65,6 +66,8 @@ func DataTypeOf(v any) DataType {
 		return DataTypeFloat64
 	case *Decimal, Decimal:
 		return DataTypeDecimal
+	case *Array, Array:
+		return DataTypeArray
 	}
 }
 
@@ -381,6 +384,8 @@ func (typ DataType) MakeBuffer(nullable bool) (any, error) {
 			return new(sql.Null[Decimal]), nil
 		}
 		return new(Decimal), nil
+	case DataTypeArray:
+		return new(*Array), nil
 	case DataTypeBoolean:
 		if nullable {
 			return new(sql.NullBool), nil

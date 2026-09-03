@@ -59,6 +59,7 @@ type AppendState struct {
 	errCheckCnt   int
 	columns       []ColumnMeta
 	bindings      AppendBindings
+	bindingNames  []string
 	bindingsReady bool
 	addCount      int64
 	sentCount     int64
@@ -71,6 +72,18 @@ type AppendState struct {
 	appendBatchMaxRows  int
 	appendBatchMaxBytes int
 	appendBatchMaxDelay time.Duration
+}
+
+func sameAppendBindingNames(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if normalizeIdentifier(left[i]) != normalizeIdentifier(right[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // See the lock hierarchy note above EnvHandle: stmt.mu is only ever nested
@@ -490,7 +503,17 @@ func (stmt *StmtHandle) BindParam(paramNo int, sqlType api.SqlType, value any) e
 		stmt.lastErr.setErr(err)
 		return err
 	}
+	if sqlType.IsArray() && !stmt.conn.native.supportsArray() {
+		err := makeClientErr("ARRAY requires CMI 4.0.4 or later")
+		stmt.lastErr.setErr(err)
+		return err
+	}
 	bp := BoundParam{sqlType: sqlType, value: value, isNull: value == nil}
+	if paramNo < len(stmt.paramDesc) && stmt.paramDesc[paramNo].Type.IsArray() {
+		bp.cardinality = stmt.paramDesc[paramNo].Precision
+		bp.elementPrecision = stmt.paramDesc[paramNo].ElementPrecision
+		bp.scale = stmt.paramDesc[paramNo].Scale
+	}
 	stmt.bound[paramNo] = bp
 	stmt.lastErr.setErr(nil)
 	return nil
@@ -560,7 +583,9 @@ func (stmt *StmtHandle) DescribeColEx(columnNo int, pName *string, pType *api.Sq
 	}
 	if pSize != nil {
 		sz := col.length
-		if col.spinerType == cmdDecimalType {
+		if isArraySpinerType(col.spinerType) {
+			sz = col.precision
+		} else if col.spinerType == cmdDecimalType {
 			sz = col.precision
 		} else if col.isVariable {
 			if sz <= 0 {
@@ -583,6 +608,28 @@ func (stmt *StmtHandle) DescribeColEx(columnNo int, pName *string, pType *api.Sq
 	}
 	if pPrimaryKey != nil {
 		*pPrimaryKey = col.primaryKey
+	}
+	return nil
+}
+
+func (stmt *StmtHandle) DescribeArrayCol(columnNo int, pElementType *api.SqlType, pElementPrecision *int) error {
+	if stmt == nil {
+		return makeClientErr("invalid statement")
+	}
+	stmt.mu.Lock()
+	defer stmt.mu.Unlock()
+	if columnNo < 0 || columnNo >= len(stmt.columns) {
+		return makeClientErr("invalid column index")
+	}
+	col := stmt.columns[columnNo]
+	if !isArraySpinerType(col.spinerType) {
+		return makeClientErr("column is not ARRAY")
+	}
+	if pElementType != nil {
+		*pElementType = spinerTypeToSqlType(arrayBaseSpinerType(col.spinerType))
+	}
+	if pElementPrecision != nil {
+		*pElementPrecision = col.elementPrecision
 	}
 	return nil
 }
@@ -627,6 +674,10 @@ func (stmt *StmtHandle) Fetch(ctx context.Context) ([]any, error) {
 }
 
 func (stmt *StmtHandle) AppendOpen(tableName string, errCheckCount int) error {
+	return stmt.AppendOpenColumns(tableName, nil, errCheckCount)
+}
+
+func (stmt *StmtHandle) AppendOpenColumns(tableName string, columns []string, errCheckCount int) error {
 	if stmt == nil {
 		return makeClientErr("invalid statement")
 	}
@@ -637,7 +688,7 @@ func (stmt *StmtHandle) AppendOpen(tableName string, errCheckCount int) error {
 		stmt.lastErr.setErr(err)
 		return err
 	}
-	res, err := stmt.conn.native.appendOpen(stmt.id, tableName, errCheckCount)
+	res, err := stmt.conn.native.appendOpen(stmt.id, tableName, columns, errCheckCount)
 	stmt.lastErr.setErr(err)
 	stmt.conn.lastErr.setErr(err)
 	if err != nil {
@@ -736,7 +787,7 @@ func (stmt *StmtHandle) AppendData(types []api.SqlType, names []string, args []a
 		stmt.lastErr.setErr(err)
 		return err
 	}
-	if !stmt.app.bindingsReady {
+	if !stmt.app.bindingsReady || !sameAppendBindingNames(stmt.app.bindingNames, names) {
 		bindings, err := buildAppendBindings(stmt.app.columns, names)
 		if err != nil {
 			stmt.lastErr.setErr(err)
@@ -745,6 +796,7 @@ func (stmt *StmtHandle) AppendData(types []api.SqlType, names []string, args []a
 			return err
 		}
 		stmt.app.bindings = bindings
+		stmt.app.bindingNames = append(stmt.app.bindingNames[:0], names...)
 		stmt.app.bindingsReady = true
 	}
 	rowPayload, err := encodeAppendRow(stmt.app.columns, stmt.app.bindings, args, stmt.conn.native.serverEndian)

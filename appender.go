@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -26,9 +27,11 @@ type Appender struct {
 	columnNames   []string
 	columnTypes   []api.SqlType
 	inputColumns  []AppenderInputColumn
+	inputAtOpen   bool
 	inputFormats  []string
 	opened        bool
 	closed        bool
+	closeErr      error
 	successCount  int64
 	failCount     int64
 
@@ -37,6 +40,10 @@ type Appender struct {
 }
 
 func (ap *Appender) Connect(ctx context.Context, dsn string, table string, columns ...string) error {
+	if ap.opened && !ap.closed {
+		return errors.New("appender is already opened")
+	}
+	ap.resetForConnect()
 	if ctx == nil {
 		ap.ctx = context.Background()
 	} else {
@@ -51,7 +58,9 @@ func (ap *Appender) Connect(ctx context.Context, dsn string, table string, colum
 	}
 
 	if conn, err := ap.cn.Connect(ap.ctx); err != nil {
-		return err
+		closeErr := closeAppenderResources(nil, ap.cn)
+		ap.cn = nil
+		return errors.Join(err, closeErr)
 	} else {
 		ap.conn = conn.(*Conn)
 	}
@@ -59,17 +68,57 @@ func (ap *Appender) Connect(ctx context.Context, dsn string, table string, colum
 	if meta, ok := ap.ctx.Value(MetaKey).(*Meta); ok && meta != nil {
 		meta.cbIOMetrics = ap.conn.IOMetrics
 	}
-	if _, err := ap.appender(ap.ctx, ap.conn, table); err != nil {
-		return err
-	} else {
-		if len(columns) > 0 {
-			ap.WithInputColumns(columns...)
+	requested := columns
+	if len(requested) == 0 && len(ap.inputColumns) > 0 {
+		requested = make([]string, len(ap.inputColumns))
+		for i := range ap.inputColumns {
+			requested[i] = ap.inputColumns[i].Name
 		}
+	}
+	if _, err := ap.appender(ap.ctx, ap.conn, table, requested); err != nil {
+		closeErr := closeAppenderResources(ap.conn, ap.cn)
+		ap.conn = nil
+		ap.cn = nil
+		return errors.Join(err, closeErr)
 	}
 	return nil
 }
 
-func (ap *Appender) appender(ctx context.Context, c *Conn, tableName string) (*Appender, error) {
+func (ap *Appender) resetForConnect() {
+	ap.ctx = nil
+	ap.cn = nil
+	ap.conn = nil
+	ap.stmt = nil
+	ap.tableName = ""
+	ap.tableType = TableType(-1)
+	ap.errCheckCount = 0
+	ap.columns = nil
+	ap.columnNames = nil
+	ap.columnTypes = nil
+	ap.inputAtOpen = false
+	ap.opened = false
+	ap.closed = false
+	ap.closeErr = nil
+	ap.successCount = 0
+	ap.failCount = 0
+	ap.stringColumns = nil
+	ap.stringColumnTypes = nil
+	for i := range ap.inputColumns {
+		ap.inputColumns[i].Idx = -1
+	}
+}
+
+func closeAppenderResources(resources ...io.Closer) error {
+	errs := make([]error, 0, len(resources))
+	for _, resource := range resources {
+		if resource != nil {
+			errs = append(errs, resource.Close())
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (ap *Appender) appender(ctx context.Context, c *Conn, tableName string, inputColumns []string) (*Appender, error) {
 	c.sessionMu.Lock()
 	defer c.sessionMu.Unlock()
 
@@ -165,11 +214,22 @@ func (ap *Appender) appender(ctx context.Context, c *Conn, tableName string) (*A
 		return nil, err
 	}
 	ap.stmt = stmt
+	projectionColumns := appenderProjectionColumns(tableType, inputColumns)
+	ap.inputAtOpen = len(inputColumns) > 0
+	if len(inputColumns) > 0 {
+		ap.WithInputColumns(inputColumns...)
+	}
 
-	openErr := stmt.handle.AppendOpen(ap.tableName, ap.errCheckCount)
+	var openErr error
+	if len(projectionColumns) > 0 {
+		openErr = stmt.handle.AppendOpenColumns(ap.tableName, projectionColumns, ap.errCheckCount)
+	} else {
+		openErr = stmt.handle.AppendOpen(ap.tableName, ap.errCheckCount)
+	}
 	if openErr != nil {
 		err := stmt.ErrorOf(openErr)
-		stmt.Close()
+		_ = stmt.Close()
+		ap.stmt = nil
 		return nil, err
 	}
 	ap.opened = true
@@ -182,28 +242,23 @@ func (ap *Appender) Close() (int64, int64, error) {
 		return 0, 0, fmt.Errorf("appender is not opened")
 	}
 	if ap.closed {
-		return ap.successCount, ap.failCount, nil
+		return ap.successCount, ap.failCount, ap.closeErr
 	}
 	ap.closed = true
 
-	var err error
-	//// even if error occurred, we should close the statement
-	ap.successCount, ap.failCount, err = ap.stmt.handle.AppendClose()
-
-	if errClose := ap.stmt.Close(); errClose != nil {
-		return ap.successCount, ap.failCount, ap.stmt.ErrorOf(errClose)
-	}
-	if ap.conn != nil {
-		if e := ap.conn.Close(); e != nil && err == nil {
-			err = e
+	var appendErr error
+	if ap.stmt != nil && ap.stmt.handle != nil {
+		ap.successCount, ap.failCount, appendErr = ap.stmt.handle.AppendClose()
+		if appendErr != nil {
+			appendErr = ap.stmt.ErrorOf(appendErr)
 		}
 	}
-	if ap.cn != nil {
-		if e := ap.cn.Close(); e != nil && err == nil {
-			err = e
-		}
-	}
-	return ap.successCount, ap.failCount, err
+	cleanupErr := closeAppenderResources(ap.stmt, ap.conn, ap.cn)
+	ap.stmt = nil
+	ap.conn = nil
+	ap.cn = nil
+	ap.closeErr = errors.Join(appendErr, cleanupErr)
+	return ap.successCount, ap.failCount, ap.closeErr
 }
 
 func (ap *Appender) TableType() TableType {
@@ -248,6 +303,12 @@ func (ap *Appender) ColumnTypes() []string {
 }
 
 func (ap *Appender) Flush() error {
+	if !ap.opened {
+		return errors.New("appender is not opened")
+	}
+	if ap.closed || ap.stmt == nil || ap.stmt.handle == nil {
+		return errors.New("closed appender")
+	}
 	if err := ap.stmt.handle.AppendFlush(); err == nil {
 		return nil
 	} else {
@@ -259,40 +320,110 @@ func (ap *Appender) AppendLogTime(ts time.Time, values ...any) error {
 	if ap.tableType != TableTypeLog {
 		return fmt.Errorf("%s is not a log table, use Append() instead", ap.tableName)
 	}
-	values = append([]any{ts}, values...)
-	return ap.append(values...)
+	names := ap.appendColumnNames()
+	if ap.requiresExplicitArrival(names) {
+		return fmt.Errorf("log input columns configured after Connect must include _ARRIVAL_TIME")
+	}
+	names, values = withAppenderArrival(names, values, ts)
+	return ap.appendNamed(names, values...)
 }
 
 func (ap *Appender) Append(values ...any) error {
 	switch ap.tableType {
 	case TableTypeTag, TableTypeTransaction:
-		return ap.append(values...)
+		return ap.appendNamed(ap.appendColumnNames(), values...)
 	case TableTypeLog:
-		var valuesWithTime []any
-		if len(values) == len(ap.columns) {
-			valuesWithTime = values
-		} else {
-			valuesWithTime = append([]any{time.Time{}}, values...)
+		names := ap.appendColumnNames()
+		if ap.requiresExplicitArrival(names) {
+			return fmt.Errorf("log input columns configured after Connect must include _ARRIVAL_TIME")
 		}
-		return ap.append(valuesWithTime...)
+		if arrivalIdx := appenderArrivalIndex(names); arrivalIdx >= 0 {
+			if len(values) == len(names)-1 {
+				values = insertAppenderValue(values, arrivalIdx, time.Time{})
+			}
+		} else {
+			names, values = withAppenderArrival(names, values, time.Time{})
+		}
+		return ap.appendNamed(names, values...)
 	default:
 		return fmt.Errorf("%s can not be appended", ap.tableName)
 	}
 }
 
-func (ap *Appender) append(values ...any) error {
+func (ap *Appender) requiresExplicitArrival(names []string) bool {
+	return len(ap.inputColumns) > 0 && !ap.inputAtOpen && appenderArrivalIndex(names) < 0
+}
+
+func (ap *Appender) appendColumnNames() []string {
+	if len(ap.inputColumns) == 0 {
+		return ap.columnNames
+	}
+	names := make([]string, len(ap.inputColumns))
+	for i := range ap.inputColumns {
+		names[i] = ap.inputColumns[i].Name
+	}
+	return names
+}
+
+func isAppenderArrivalColumn(name string) bool {
+	normalized := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(name), `"`, ""))
+	return normalized == "_ARRIVAL_TIME" || normalized == "ARRIVAL_TIME"
+}
+
+func appenderProjectionColumns(tableType TableType, names []string) []string {
+	if tableType != TableTypeLog {
+		return names
+	}
+	ret := make([]string, 0, len(names))
+	for _, name := range names {
+		if !isAppenderArrivalColumn(name) {
+			ret = append(ret, name)
+		}
+	}
+	return ret
+}
+
+func appenderArrivalIndex(names []string) int {
+	for i, name := range names {
+		if isAppenderArrivalColumn(name) {
+			return i
+		}
+	}
+	return -1
+}
+
+func insertAppenderValue(values []any, idx int, value any) []any {
+	if idx < 0 || idx > len(values) {
+		return values
+	}
+	ret := make([]any, len(values)+1)
+	copy(ret, values[:idx])
+	ret[idx] = value
+	copy(ret[idx+1:], values[idx:])
+	return ret
+}
+
+func withAppenderArrival(names []string, values []any, value any) ([]string, []any) {
+	if idx := appenderArrivalIndex(names); idx >= 0 {
+		return names, insertAppenderValue(values, idx, value)
+	}
+	retNames := make([]string, 1, len(names)+1)
+	retNames[0] = "_ARRIVAL_TIME"
+	retNames = append(retNames, names...)
+	retValues := make([]any, 1, len(values)+1)
+	retValues[0] = value
+	retValues = append(retValues, values...)
+	return retNames, retValues
+}
+
+func (ap *Appender) appendNamed(names []string, values ...any) error {
 	if len(ap.columns) == 0 {
 		return fmt.Errorf("table '%s' has no columns", ap.tableName)
 	}
 	if len(ap.inputColumns) > 0 {
-		if len(ap.inputColumns) != len(values) {
-			return fmt.Errorf("value count %d, table '%s' requires %d columns to append", len(values), ap.tableName, len(ap.columns))
+		if len(names) != len(values) {
+			return fmt.Errorf("value count %d, table '%s' requires %d projected columns to append", len(values), ap.tableName, len(names))
 		}
-		newValues := make([]any, len(ap.columns))
-		for i, inputCol := range ap.inputColumns {
-			newValues[inputCol.Idx] = values[i]
-		}
-		values = newValues
 	} else {
 		if len(ap.columns) != len(values) {
 			return fmt.Errorf("value count %d, table '%s' requires %d columns to append", len(values), ap.tableName, len(ap.columns))
@@ -305,7 +436,7 @@ func (ap *Appender) append(values ...any) error {
 		return errors.New("invalid connection")
 	}
 
-	if err := ap.stmt.handle.AppendData(ap.columnTypes, ap.columnNames, values, ap.inputFormats); err != nil {
+	if err := ap.stmt.handle.AppendData(ap.columnTypes, names, values, ap.inputFormats); err != nil {
 		return ap.stmt.ErrorOf(err)
 	}
 	return nil

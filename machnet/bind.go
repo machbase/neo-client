@@ -13,9 +13,12 @@ import (
 )
 
 type BoundParam struct {
-	sqlType api.SqlType
-	value   any
-	isNull  bool
+	sqlType          api.SqlType
+	value            any
+	isNull           bool
+	cardinality      int
+	elementPrecision int
+	scale            int
 }
 
 func encodeParams(params []BoundParam, v403 bool) ([]byte, error) {
@@ -115,6 +118,29 @@ func encodeBoundParam(p BoundParam) (int, []byte, error) {
 		default:
 			return cmdType, nil, nil
 		}
+	}
+	if p.sqlType.IsArray() {
+		value, ok := p.value.(*api.Array)
+		if !ok {
+			if plain, plainOK := p.value.(api.Array); plainOK {
+				value = plain.Clone()
+			} else {
+				return 0, nil, fmt.Errorf("unsupported ARRAY type %T", p.value)
+			}
+		}
+		cardinality := p.cardinality
+		if cardinality == 0 {
+			cardinality = value.Cardinality()
+		}
+		elementPrecision := p.elementPrecision
+		scale := p.scale
+		if p.sqlType.ElementType() == api.SqlTypeDecimal && elementPrecision == 0 {
+			elementPrecision = value.Precision()
+			scale = value.Scale()
+		}
+		col := ColumnMeta{spinerType: cmdType, precision: cardinality, elementPrecision: elementPrecision, scale: scale}
+		data, err := encodeArrayPayload(value, col, true)
+		return cmdType, data, err
 	}
 
 	switch p.sqlType {
@@ -272,12 +298,18 @@ func toInt64(v any) (int64, error) {
 	case int64:
 		return x, nil
 	case uint:
+		if uint64(x) > math.MaxInt64 {
+			return 0, fmt.Errorf("unsigned integer %d overflows int64", x)
+		}
 		return int64(x), nil
 	case uint16:
 		return int64(x), nil
 	case uint32:
 		return int64(x), nil
 	case uint64:
+		if x > math.MaxInt64 {
+			return 0, fmt.Errorf("unsigned integer %d overflows int64", x)
+		}
 		return int64(x), nil
 	case float32:
 		return int64(x), nil

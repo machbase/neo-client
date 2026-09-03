@@ -71,7 +71,7 @@ func normalizeNamedValue(value any) (any, error) {
 			return int64(v), nil
 		}
 		return v, nil
-	case int16, *int16, int32, *int32, int64, *int64, float32, *float32, float64, *float64, string, *string, []byte, time.Time, *time.Time, net.IP, api.Decimal, *api.Decimal:
+	case int16, *int16, int32, *int32, int64, *int64, float32, *float32, float64, *float64, string, *string, []byte, time.Time, *time.Time, net.IP, api.Decimal, *api.Decimal, api.Array, *api.Array:
 		return v, nil
 	case *int:
 		if v == nil {
@@ -298,6 +298,13 @@ func toDriverValue(value any) (driver.Value, error) {
 	case api.Decimal:
 		return v.String(), nil
 	case *api.Decimal:
+		if v == nil {
+			return nil, nil
+		}
+		return v.String(), nil
+	case api.Array:
+		return v.String(), nil
+	case *api.Array:
 		if v == nil {
 			return nil, nil
 		}
