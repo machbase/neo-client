@@ -168,6 +168,36 @@ func encodeBoundParam(p BoundParam) (int, []byte, error) {
 		b := make([]byte, 8)
 		binary.BigEndian.PutUint64(b, uint64(v))
 		return cmdType, b, nil
+	case api.SqlTypeUInt16:
+		v, err := toUint64(p.value)
+		if err != nil {
+			return 0, nil, err
+		}
+		if v > math.MaxUint16 {
+			return 0, nil, fmt.Errorf("uint16 value %d overflows", v)
+		}
+		b := make([]byte, 2)
+		binary.BigEndian.PutUint16(b, uint16(v))
+		return cmdType, b, nil
+	case api.SqlTypeUInt32:
+		v, err := toUint64(p.value)
+		if err != nil {
+			return 0, nil, err
+		}
+		if v > math.MaxUint32 {
+			return 0, nil, fmt.Errorf("uint32 value %d overflows", v)
+		}
+		b := make([]byte, 4)
+		binary.BigEndian.PutUint32(b, uint32(v))
+		return cmdType, b, nil
+	case api.SqlTypeUInt64:
+		v, err := toUint64(p.value)
+		if err != nil {
+			return 0, nil, err
+		}
+		b := make([]byte, 8)
+		binary.BigEndian.PutUint64(b, v)
+		return cmdType, b, nil
 	case api.SqlTypeDatetime:
 		v, err := toDateTimeInt64(p.value)
 		if err != nil {
@@ -219,7 +249,11 @@ func encodeBoundParam(p BoundParam) (int, []byte, error) {
 		case []byte:
 			return cmdType, append([]byte(nil), v...), nil
 		case string:
-			return cmdType, []byte(v), nil
+			value, err := api.DataTypeBinary.Apply(v, "", nil)
+			if err != nil {
+				return 0, nil, err
+			}
+			return cmdType, value.([]byte), nil
 		default:
 			return 0, nil, fmt.Errorf("unsupported binary type %T", p.value)
 		}
@@ -289,6 +323,43 @@ func toInt64(v any) (int64, error) {
 		return n, nil
 	default:
 		return 0, fmt.Errorf("unsupported integer type %T", v)
+	}
+}
+
+func toUint64(v any) (uint64, error) {
+	switch x := v.(type) {
+	case int:
+		if x < 0 {
+			return 0, fmt.Errorf("negative unsigned integer %d", x)
+		}
+		return uint64(x), nil
+	case int16:
+		if x < 0 {
+			return 0, fmt.Errorf("negative unsigned integer %d", x)
+		}
+		return uint64(x), nil
+	case int32:
+		if x < 0 {
+			return 0, fmt.Errorf("negative unsigned integer %d", x)
+		}
+		return uint64(x), nil
+	case int64:
+		if x < 0 {
+			return 0, fmt.Errorf("negative unsigned integer %d", x)
+		}
+		return uint64(x), nil
+	case uint:
+		return uint64(x), nil
+	case uint16:
+		return uint64(x), nil
+	case uint32:
+		return uint64(x), nil
+	case uint64:
+		return x, nil
+	case string:
+		return strconv.ParseUint(strings.TrimSpace(x), 10, 64)
+	default:
+		return 0, fmt.Errorf("unsupported unsigned integer type %T", v)
 	}
 }
 

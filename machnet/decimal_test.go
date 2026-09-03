@@ -1,6 +1,7 @@
 package machnet
 
 import (
+	"bytes"
 	"encoding/binary"
 	"math/big"
 	"testing"
@@ -169,6 +170,32 @@ func TestEncodeParamsLegacyAndV2(t *testing.T) {
 	}
 	if len(encoded) == 0 {
 		t.Fatalf("v2 encoding returned empty payload")
+	}
+}
+
+func TestEncodeBoundParamStringRepresentations(t *testing.T) {
+	tests := []struct {
+		name  string
+		typ   api.SqlType
+		value string
+		want  []byte
+	}{
+		{name: "uint16", typ: api.SqlTypeUInt16, value: "65535", want: []byte{0xff, 0xff}},
+		{name: "uint32", typ: api.SqlTypeUInt32, value: "4294967295", want: []byte{0xff, 0xff, 0xff, 0xff}},
+		{name: "uint64", typ: api.SqlTypeUInt64, value: "18446744073709551615", want: []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}},
+		{name: "binary hex", typ: api.SqlTypeBinary, value: "0x0102", want: []byte{0x01, 0x02}},
+		{name: "binary base64", typ: api.SqlTypeBinary, value: "AQI=", want: []byte{0x01, 0x02}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, got, err := encodeBoundParam(BoundParam{sqlType: tc.typ, value: tc.value})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, tc.want) {
+				t.Fatalf("encoded value=%x, want %x", got, tc.want)
+			}
+		})
 	}
 }
 

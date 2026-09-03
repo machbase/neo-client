@@ -273,33 +273,3 @@ func encodeArrayElement(spinerType int, value any, precision, scale int) ([]byte
 		return nil, fmt.Errorf("unsupported ARRAY element type %d", spinerType)
 	}
 }
-
-func toUint64(value any) (uint64, error) {
-	switch v := value.(type) {
-	case uint:
-		return uint64(v), nil
-	case uint16:
-		return uint64(v), nil
-	case uint32:
-		return uint64(v), nil
-	case uint64:
-		return v, nil
-	case int:
-		if v >= 0 {
-			return uint64(v), nil
-		}
-	case int16:
-		if v >= 0 {
-			return uint64(v), nil
-		}
-	case int32:
-		if v >= 0 {
-			return uint64(v), nil
-		}
-	case int64:
-		if v >= 0 {
-			return uint64(v), nil
-		}
-	}
-	return 0, fmt.Errorf("unsupported unsigned integer type %T", value)
-}
