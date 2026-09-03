@@ -133,10 +133,12 @@ func encodeBoundParam(p BoundParam) (int, []byte, error) {
 			cardinality = value.Cardinality()
 		}
 		elementPrecision := p.elementPrecision
+		scale := p.scale
 		if p.sqlType.ElementType() == api.SqlTypeDecimal && elementPrecision == 0 {
 			elementPrecision = value.Precision()
+			scale = value.Scale()
 		}
-		col := ColumnMeta{spinerType: cmdType, precision: cardinality, elementPrecision: elementPrecision, scale: p.scale}
+		col := ColumnMeta{spinerType: cmdType, precision: cardinality, elementPrecision: elementPrecision, scale: scale}
 		data, err := encodeArrayPayload(value, col, true)
 		return cmdType, data, err
 	}
@@ -262,12 +264,18 @@ func toInt64(v any) (int64, error) {
 	case int64:
 		return x, nil
 	case uint:
+		if uint64(x) > math.MaxInt64 {
+			return 0, fmt.Errorf("unsigned integer %d overflows int64", x)
+		}
 		return int64(x), nil
 	case uint16:
 		return int64(x), nil
 	case uint32:
 		return int64(x), nil
 	case uint64:
+		if x > math.MaxInt64 {
+			return 0, fmt.Errorf("unsigned integer %d overflows int64", x)
+		}
 		return int64(x), nil
 	case float32:
 		return int64(x), nil

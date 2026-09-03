@@ -1,10 +1,13 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/machbase/neo-client/v2/api"
 )
 
 type appenderTestCloser struct {
@@ -17,18 +20,72 @@ func (c *appenderTestCloser) Close() error {
 	return c.err
 }
 
-func TestCloseAppenderConnectResources(t *testing.T) {
+func TestCloseAppenderResourcesAttemptsEveryClose(t *testing.T) {
+	stmtErr := errors.New("statement close")
 	connErr := errors.New("connection close")
 	connectorErr := errors.New("connector close")
+	stmt := &appenderTestCloser{err: stmtErr}
 	conn := &appenderTestCloser{err: connErr}
 	connector := &appenderTestCloser{err: connectorErr}
 
-	err := closeAppenderConnectResources(conn, connector)
-	if !conn.closed || !connector.closed {
-		t.Fatalf("resources not closed: conn=%v connector=%v", conn.closed, connector.closed)
+	err := closeAppenderResources(stmt, conn, connector)
+	if !stmt.closed || !conn.closed || !connector.closed {
+		t.Fatalf("resources not closed: stmt=%v conn=%v connector=%v",
+			stmt.closed, conn.closed, connector.closed)
 	}
-	if !errors.Is(err, connErr) || !errors.Is(err, connectorErr) {
+	if !errors.Is(err, stmtErr) || !errors.Is(err, connErr) || !errors.Is(err, connectorErr) {
 		t.Fatalf("cleanup errors not preserved: %v", err)
+	}
+}
+
+func TestAppenderResetForConnectPreservesProjection(t *testing.T) {
+	closeErr := errors.New("prior close")
+	ap := &Appender{
+		ctx:               context.Background(),
+		tableName:         "OLD_TABLE",
+		tableType:         TableTypeLog,
+		columns:           Columns{&Column{Name: "OLD"}},
+		columnNames:       []string{"OLD"},
+		columnTypes:       []api.SqlType{api.SqlTypeInt64},
+		inputColumns:      []AppenderInputColumn{{Name: "ID", Idx: 3}, {Name: "A[2]", Idx: 4}},
+		inputAtOpen:       true,
+		opened:            true,
+		closed:            true,
+		closeErr:          closeErr,
+		successCount:      7,
+		failCount:         2,
+		stringColumns:     []string{"OLD"},
+		stringColumnTypes: []string{"LONG"},
+	}
+
+	ap.resetForConnect()
+	if ap.opened || ap.closed || ap.closeErr != nil || ap.successCount != 0 || ap.failCount != 0 {
+		t.Fatalf("lifecycle state not reset: %+v", ap)
+	}
+	if ap.tableName != "" || ap.tableType != TableType(-1) || ap.columns != nil ||
+		ap.columnNames != nil || ap.columnTypes != nil || ap.stringColumns != nil ||
+		ap.stringColumnTypes != nil || ap.inputAtOpen {
+		t.Fatalf("metadata state not reset: %+v", ap)
+	}
+	if got, want := ap.appendColumnNames(), []string{"ID", "A[2]"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("projection not preserved: got=%v want=%v", got, want)
+	}
+	for _, column := range ap.inputColumns {
+		if column.Idx != -1 {
+			t.Fatalf("stale projection index preserved: %+v", column)
+		}
+	}
+}
+
+func TestAppenderRepeatedCloseReturnsStableResult(t *testing.T) {
+	closeErr := errors.New("close failed")
+	ap := &Appender{opened: true, closed: true, successCount: 3, failCount: 1, closeErr: closeErr}
+	success, failure, err := ap.Close()
+	if success != 3 || failure != 1 || !errors.Is(err, closeErr) {
+		t.Fatalf("repeated Close = (%d,%d,%v)", success, failure, err)
+	}
+	if err := ap.Flush(); err == nil || err.Error() != "closed appender" {
+		t.Fatalf("Flush after Close error = %v", err)
 	}
 }
 

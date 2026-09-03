@@ -291,7 +291,7 @@ func (typ ColumnType) MakeBuffer() (any, error) {
 	case ColumnTypeInt16Array, ColumnTypeUInt16Array, ColumnTypeInt32Array,
 		ColumnTypeUInt32Array, ColumnTypeInt64Array, ColumnTypeUInt64Array,
 		ColumnTypeFloatArray, ColumnTypeDoubleArray, ColumnTypeDecimalArray:
-		return new(Array), nil
+		return new(*Array), nil
 		//return new([]byte), nil
 	default:
 		return nil, fmt.Errorf("unsupported column type: %d", typ)

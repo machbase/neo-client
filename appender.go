@@ -31,6 +31,7 @@ type Appender struct {
 	inputFormats  []string
 	opened        bool
 	closed        bool
+	closeErr      error
 	successCount  int64
 	failCount     int64
 
@@ -39,6 +40,10 @@ type Appender struct {
 }
 
 func (ap *Appender) Connect(ctx context.Context, dsn string, table string, columns ...string) error {
+	if ap.opened && !ap.closed {
+		return errors.New("appender is already opened")
+	}
+	ap.resetForConnect()
 	if ctx == nil {
 		ap.ctx = context.Background()
 	} else {
@@ -53,7 +58,7 @@ func (ap *Appender) Connect(ctx context.Context, dsn string, table string, colum
 	}
 
 	if conn, err := ap.cn.Connect(ap.ctx); err != nil {
-		closeErr := closeAppenderConnectResources(nil, ap.cn)
+		closeErr := closeAppenderResources(nil, ap.cn)
 		ap.cn = nil
 		return errors.Join(err, closeErr)
 	} else {
@@ -71,7 +76,7 @@ func (ap *Appender) Connect(ctx context.Context, dsn string, table string, colum
 		}
 	}
 	if _, err := ap.appender(ap.ctx, ap.conn, table, requested); err != nil {
-		closeErr := closeAppenderConnectResources(ap.conn, ap.cn)
+		closeErr := closeAppenderResources(ap.conn, ap.cn)
 		ap.conn = nil
 		ap.cn = nil
 		return errors.Join(err, closeErr)
@@ -79,16 +84,38 @@ func (ap *Appender) Connect(ctx context.Context, dsn string, table string, colum
 	return nil
 }
 
-func closeAppenderConnectResources(conn, connector io.Closer) error {
-	var connErr error
-	if conn != nil {
-		connErr = conn.Close()
+func (ap *Appender) resetForConnect() {
+	ap.ctx = nil
+	ap.cn = nil
+	ap.conn = nil
+	ap.stmt = nil
+	ap.tableName = ""
+	ap.tableType = TableType(-1)
+	ap.errCheckCount = 0
+	ap.columns = nil
+	ap.columnNames = nil
+	ap.columnTypes = nil
+	ap.inputAtOpen = false
+	ap.opened = false
+	ap.closed = false
+	ap.closeErr = nil
+	ap.successCount = 0
+	ap.failCount = 0
+	ap.stringColumns = nil
+	ap.stringColumnTypes = nil
+	for i := range ap.inputColumns {
+		ap.inputColumns[i].Idx = -1
 	}
-	var connectorErr error
-	if connector != nil {
-		connectorErr = connector.Close()
+}
+
+func closeAppenderResources(resources ...io.Closer) error {
+	errs := make([]error, 0, len(resources))
+	for _, resource := range resources {
+		if resource != nil {
+			errs = append(errs, resource.Close())
+		}
 	}
-	return errors.Join(connErr, connectorErr)
+	return errors.Join(errs...)
 }
 
 func (ap *Appender) appender(ctx context.Context, c *Conn, tableName string, inputColumns []string) (*Appender, error) {
@@ -215,28 +242,23 @@ func (ap *Appender) Close() (int64, int64, error) {
 		return 0, 0, fmt.Errorf("appender is not opened")
 	}
 	if ap.closed {
-		return ap.successCount, ap.failCount, nil
+		return ap.successCount, ap.failCount, ap.closeErr
 	}
 	ap.closed = true
 
-	var err error
-	//// even if error occurred, we should close the statement
-	ap.successCount, ap.failCount, err = ap.stmt.handle.AppendClose()
-
-	if errClose := ap.stmt.Close(); errClose != nil {
-		return ap.successCount, ap.failCount, ap.stmt.ErrorOf(errClose)
-	}
-	if ap.conn != nil {
-		if e := ap.conn.Close(); e != nil && err == nil {
-			err = e
+	var appendErr error
+	if ap.stmt != nil && ap.stmt.handle != nil {
+		ap.successCount, ap.failCount, appendErr = ap.stmt.handle.AppendClose()
+		if appendErr != nil {
+			appendErr = ap.stmt.ErrorOf(appendErr)
 		}
 	}
-	if ap.cn != nil {
-		if e := ap.cn.Close(); e != nil && err == nil {
-			err = e
-		}
-	}
-	return ap.successCount, ap.failCount, err
+	cleanupErr := closeAppenderResources(ap.stmt, ap.conn, ap.cn)
+	ap.stmt = nil
+	ap.conn = nil
+	ap.cn = nil
+	ap.closeErr = errors.Join(appendErr, cleanupErr)
+	return ap.successCount, ap.failCount, ap.closeErr
 }
 
 func (ap *Appender) TableType() TableType {
@@ -281,6 +303,12 @@ func (ap *Appender) ColumnTypes() []string {
 }
 
 func (ap *Appender) Flush() error {
+	if !ap.opened {
+		return errors.New("appender is not opened")
+	}
+	if ap.closed || ap.stmt == nil || ap.stmt.handle == nil {
+		return errors.New("closed appender")
+	}
 	if err := ap.stmt.handle.AppendFlush(); err == nil {
 		return nil
 	} else {

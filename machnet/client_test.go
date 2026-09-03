@@ -90,6 +90,9 @@ func TestArrayVersionGate(t *testing.T) {
 	if legacy.supportsArray() {
 		t.Fatal("CMI 4.0.3 server must not advertise ARRAY")
 	}
+	if _, err := legacy.appendOpen(1, "T", []string{"A[1]"}, 0); err == nil {
+		t.Fatal("CMI 4.0.3 indexed append target was not rejected before send")
+	}
 	current := &NativeConn{serverVersion: cmiArrayVersion}
 	if !current.supportsArray() {
 		t.Fatal("CMI 4.0.4 server must advertise ARRAY")

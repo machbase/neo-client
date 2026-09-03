@@ -9,7 +9,7 @@ import (
 	"github.com/machbase/neo-client/v2/api"
 )
 
-// cmi protocol version: 4.0.3
+// cmi protocol version: 4.0.4
 const (
 	cmiProtocolMajor = 4
 	cmiProtocolMinor = 0

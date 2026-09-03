@@ -278,6 +278,7 @@ func encodeAppendVarField(data []byte, serverEndian uint32) []byte {
 }
 
 func encodeAppendColumnValue(col ColumnMeta, value any, serverEndian uint32) ([]byte, error) {
+	isArrayElement := isProjectedAppendArrayElement(col.name)
 	switch col.spinerType {
 	case cmdInt16ArrayType, cmdUInt16ArrayType, cmdInt32ArrayType, cmdUInt32ArrayType,
 		cmdInt64ArrayType, cmdUInt64ArrayType, cmdFlt32ArrayType, cmdFlt64ArrayType,
@@ -319,7 +320,7 @@ func encodeAppendColumnValue(col ColumnMeta, value any, serverEndian uint32) ([]
 		if err != nil {
 			return nil, err
 		}
-		if v <= math.MinInt16 || v > math.MaxInt16 {
+		if v < math.MinInt16 || v > math.MaxInt16 || (isArrayElement && v == math.MinInt16) {
 			return nil, fmt.Errorf("out of int16 range: %v", value)
 		}
 		var ret [2]byte
@@ -330,7 +331,7 @@ func encodeAppendColumnValue(col ColumnMeta, value any, serverEndian uint32) ([]
 		if err != nil {
 			return nil, err
 		}
-		if v >= math.MaxUint16 {
+		if v > math.MaxUint16 || (isArrayElement && v == math.MaxUint16) {
 			return nil, fmt.Errorf("out of uint16 range: %v", value)
 		}
 		var ret [2]byte
@@ -341,7 +342,7 @@ func encodeAppendColumnValue(col ColumnMeta, value any, serverEndian uint32) ([]
 		if err != nil {
 			return nil, err
 		}
-		if v <= math.MinInt32 || v > math.MaxInt32 {
+		if v < math.MinInt32 || v > math.MaxInt32 || (isArrayElement && v == math.MinInt32) {
 			return nil, fmt.Errorf("out of int32 range: %v", value)
 		}
 		var ret [4]byte
@@ -352,7 +353,7 @@ func encodeAppendColumnValue(col ColumnMeta, value any, serverEndian uint32) ([]
 		if err != nil {
 			return nil, err
 		}
-		if v >= math.MaxUint32 {
+		if v > math.MaxUint32 || (isArrayElement && v == math.MaxUint32) {
 			return nil, fmt.Errorf("out of uint32 range: %v", value)
 		}
 		var ret [4]byte
@@ -363,7 +364,7 @@ func encodeAppendColumnValue(col ColumnMeta, value any, serverEndian uint32) ([]
 		if err != nil {
 			return nil, err
 		}
-		if v == math.MinInt64 {
+		if isArrayElement && v == math.MinInt64 {
 			return nil, fmt.Errorf("INT64 value uses NULL sentinel")
 		}
 		var ret [8]byte
@@ -386,7 +387,7 @@ func encodeAppendColumnValue(col ColumnMeta, value any, serverEndian uint32) ([]
 			return nil, err
 		}
 		bits := math.Float32bits(float32(v))
-		if bits == math.Float32bits(floatNull) {
+		if isArrayElement && bits == math.Float32bits(floatNull) {
 			return nil, fmt.Errorf("FLOAT value uses NULL sentinel")
 		}
 		var ret [4]byte
@@ -398,7 +399,7 @@ func encodeAppendColumnValue(col ColumnMeta, value any, serverEndian uint32) ([]
 			return nil, err
 		}
 		bits := math.Float64bits(v)
-		if bits == math.Float64bits(doubleNull) {
+		if isArrayElement && bits == math.Float64bits(doubleNull) {
 			return nil, fmt.Errorf("DOUBLE value uses NULL sentinel")
 		}
 		var ret [8]byte
@@ -466,6 +467,11 @@ func encodeAppendColumnValue(col ColumnMeta, value any, serverEndian uint32) ([]
 		}
 		return nil, fmt.Errorf("unsupported append spiner type %d", col.spinerType)
 	}
+}
+
+func isProjectedAppendArrayElement(name string) bool {
+	_, position, err := parseAppendTarget(name)
+	return err == nil && position > 0
 }
 
 func toAppendBool(value any) (bool, error) {

@@ -384,6 +384,8 @@ func (typ DataType) MakeBuffer(nullable bool) (any, error) {
 			return new(sql.Null[Decimal]), nil
 		}
 		return new(Decimal), nil
+	case DataTypeArray:
+		return new(*Array), nil
 	case DataTypeBoolean:
 		if nullable {
 			return new(sql.NullBool), nil
