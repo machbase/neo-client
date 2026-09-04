@@ -21,6 +21,17 @@ type AppendBindings struct {
 	arrivalArg int
 }
 
+func appendInputBindingKey(name string) (string, error) {
+	column, position, err := parseAppendTarget(name)
+	if err != nil {
+		return "", err
+	}
+	if position == 0 {
+		return column, nil
+	}
+	return fmt.Sprintf("%s[%d]", column, position), nil
+}
+
 func parseAppendTarget(target string) (string, int, error) {
 	trimmed := strings.TrimSpace(target)
 	if trimmed == "" {
@@ -34,14 +45,14 @@ func parseAppendTarget(target string) (string, int, error) {
 		return "", 0, fmt.Errorf("invalid append ARRAY target %q", target)
 	}
 	position, err := strconv.Atoi(strings.TrimSpace(trimmed[open+1 : len(trimmed)-1]))
-	if err != nil || position < 1 || position > api.ArrayMaxCardinality {
+	if err != nil || position < 0 || position >= api.ArrayMaxCardinality {
 		return "", 0, fmt.Errorf("invalid append ARRAY position in %q", target)
 	}
 	name := normalizeIdentifier(trimmed[:open])
 	if name == "" {
 		return "", 0, fmt.Errorf("append column name is empty")
 	}
-	return name, position, nil
+	return name, position + 1, nil
 }
 
 func encodeAppendTargets(targets []string) ([]byte, error) {
@@ -121,7 +132,10 @@ func buildAppendBindings(columns []ColumnMeta, names []string) (AppendBindings, 
 	matched := make([]bool, len(names))
 	arrivalArg := -1
 	for idx, name := range names {
-		key := normalizeIdentifier(name)
+		key, err := appendInputBindingKey(name)
+		if err != nil {
+			return AppendBindings{}, err
+		}
 		if key == "" {
 			continue
 		}
@@ -155,7 +169,10 @@ func buildAppendBindings(columns []ColumnMeta, names []string) (AppendBindings, 
 		}
 	}
 	for idx, name := range names {
-		key := normalizeIdentifier(name)
+		key, err := appendInputBindingKey(name)
+		if err != nil {
+			return AppendBindings{}, err
+		}
 		if key == "" || key == "_ARRIVAL_TIME" || key == "ARRIVAL_TIME" {
 			continue
 		}

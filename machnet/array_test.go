@@ -14,8 +14,8 @@ func TestSparseArrayEncodeDecode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = value.Set(1, int32(10))
-	_ = value.Set(1024, int32(20))
+	_ = value.Set(0, int32(10))
+	_ = value.Set(1023, int32(20))
 	col := ColumnMeta{spinerType: cmdInt32ArrayType, precision: 1024}
 	payload, err := encodeArrayPayload(value, col, true)
 	if err != nil {
@@ -42,20 +42,30 @@ func TestSparseArrayEncodeDecode(t *testing.T) {
 }
 
 func TestAppendTargetEncoding(t *testing.T) {
-	payload, err := encodeAppendTargets([]string{"ID", "VALUES_ARRAY[1]", "VALUES_ARRAY[6]"})
+	payload, err := encodeAppendTargets([]string{"ID", "VALUES_ARRAY[0]", "VALUES_ARRAY[5]"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if binary.BigEndian.Uint16(payload[:2]) != 1 || binary.BigEndian.Uint16(payload[2:4]) != 3 {
 		t.Fatalf("invalid target header: %x", payload[:4])
 	}
-	if _, err := encodeAppendTargets([]string{"A[0]"}); err == nil {
-		t.Fatal("position zero accepted")
+	offset := 4
+	wantPositions := []uint16{0, 1, 6}
+	for index, want := range wantPositions {
+		nameLength := int(binary.BigEndian.Uint16(payload[offset : offset+2]))
+		offset += 2 + nameLength
+		if got := binary.BigEndian.Uint16(payload[offset : offset+2]); got != want {
+			t.Fatalf("wire position[%d]=%d, want %d", index, got, want)
+		}
+		offset += 2
 	}
-	if _, err := encodeAppendTargets([]string{"A[1]", "A[1]"}); err == nil {
+	if _, err := encodeAppendTargets([]string{"A[-1]"}); err == nil {
+		t.Fatal("negative position accepted")
+	}
+	if _, err := encodeAppendTargets([]string{"A[0]", "A[0]"}); err == nil {
 		t.Fatal("duplicate accepted")
 	}
-	if _, err := encodeAppendTargets([]string{"A", "A[1]"}); err == nil {
+	if _, err := encodeAppendTargets([]string{"A", "A[0]"}); err == nil {
 		t.Fatal("whole/element conflict accepted")
 	}
 }
@@ -83,7 +93,7 @@ func TestArrayMetadataAndBind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = value.Set(1, int32(10))
+	_ = value.Set(0, int32(10))
 	typ, payload, err := encodeBoundParam(BoundParam{
 		sqlType:     api.SqlTypeInt32Array,
 		value:       value,
@@ -215,10 +225,10 @@ func TestSparseArrayEncodingAllElementTypes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := value.Set(1, test.first); err != nil {
+			if err := value.Set(0, test.first); err != nil {
 				t.Fatal(err)
 			}
-			if err := value.Set(32, test.last); err != nil {
+			if err := value.Set(31, test.last); err != nil {
 				t.Fatal(err)
 			}
 			col := ColumnMeta{
@@ -283,7 +293,7 @@ func TestDecimalArrayBindFallbackPreservesValueScale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := value.Set(1, decimalValue); err != nil {
+	if err := value.Set(0, decimalValue); err != nil {
 		t.Fatal(err)
 	}
 	typ, payload, err := encodeBoundParam(BoundParam{
@@ -343,13 +353,13 @@ func TestProjectedNumericElementSentinelParity(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			col := ColumnMeta{name: "A[1]", spinerType: test.spinerType}
+			col := ColumnMeta{name: "A[0]", spinerType: test.spinerType}
 			if _, err := encodeAppendColumnValue(col, test.value, 0); err == nil {
 				t.Fatal("reserved scalar NULL sentinel accepted")
 			}
 		})
 	}
-	col := ColumnMeta{name: "A[1]", spinerType: cmdUInt64Type}
+	col := ColumnMeta{name: "A[0]", spinerType: cmdUInt64Type}
 	if _, err := encodeAppendColumnValue(
 		col, uint64(0xfffffffffffffffe), 0); err != nil {
 		t.Fatalf("valid UINT64 ARRAY element rejected: %v", err)

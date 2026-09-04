@@ -1,8 +1,8 @@
 # ARRAY type and sparse append
 
-CMI 4.0.4 adds fixed-cardinality numeric ARRAY values. The client supports
+Client-server protocol 4.0.4 adds fixed-cardinality numeric ARRAY values. The client supports
 INT16, UINT16, INT32, UINT32, INT64, UINT64, FLOAT, DOUBLE and DECIMAL arrays.
-ARRAY positions in the public API are 1-based.
+ARRAY positions in the public API are 0-based.
 
 ## Dense and sparse values
 
@@ -20,8 +20,8 @@ value, err := api.NewSparseArray(api.SqlTypeInt32, 1024)
 if err != nil {
     return err
 }
-value.Set(1, int32(10))
-value.Set(1024, int32(40))
+value.Set(0, int32(10))
+value.Set(1023, int32(40))
 ```
 
 A nil `*api.Array` is a whole-ARRAY NULL. An empty sparse Array is a non-NULL
@@ -50,7 +50,7 @@ err := appender.Connect(ctx, dsn, "SENSOR", "ID", "VALUES_ARRAY")
 err = appender.Append(int64(1), value)
 ```
 
-The client chooses the smaller dense or sparse CMI input representation. The
+The client chooses the smaller dense or sparse input representation. The
 database always stores the canonical fixed-cardinality ARRAY representation.
 
 ## Append with fixed positions
@@ -65,8 +65,8 @@ err := appender.Connect(
     dsn,
     "SENSOR",
     "ID",
-    "VALUES_ARRAY[1]",
-    "VALUES_ARRAY[1024]",
+    "VALUES_ARRAY[0]",
+    "VALUES_ARRAY[1023]",
 )
 err = appender.Append(int64(1), int32(10), int32(40))
 ```
@@ -76,11 +76,13 @@ element target produces a non-NULL ARRAY; unlisted positions are element NULLs.
 
 ## Compatibility
 
+- ARRAY positions changed from 1-based to 0-based. Update `Set`, `Get`,
+  `Entries`, and indexed append target callers before upgrading.
 - Existing Appender calls and full-row ordering are unchanged.
 - Existing `Connect`-then-`WithInputColumns` and explicit `_ARRIVAL_TIME`
   patterns remain supported. `Append` and `AppendLogTime` may be mixed in one
   projected LOG appender.
-- CMI 4.0.4 peers use ARRAY metadata, sparse values and element projection.
-- CMI 4.0.3 peers retain existing scalar append behavior.
-- ARRAY values and indexed targets are rejected before sending to a CMI 4.0.3
+- Protocol 4.0.4 peers use ARRAY metadata, sparse values and element projection.
+- Protocol 4.0.3 peers retain existing scalar append behavior.
+- ARRAY values and indexed targets are rejected before sending to a protocol 4.0.3
   server.

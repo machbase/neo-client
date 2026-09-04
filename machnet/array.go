@@ -55,7 +55,7 @@ func decodeArrayPayload(col ColumnMeta, payload []byte) (*api.Array, error) {
 		if value == nil {
 			return nil, fmt.Errorf("non-NULL ARRAY element uses NULL sentinel")
 		}
-		if err := ret.Set(idx+1, value); err != nil {
+		if err := ret.Set(idx, value); err != nil {
 			return nil, err
 		}
 	}
@@ -151,7 +151,7 @@ func encodeArrayPayload(value *api.Array, col ColumnMeta, allowSparse bool) ([]b
 		binary.BigEndian.PutUint16(ret[6:8], uint16(len(positions)))
 		offset := 8
 		for _, position := range positions {
-			binary.BigEndian.PutUint16(ret[offset:offset+2], uint16(position))
+			binary.BigEndian.PutUint16(ret[offset:offset+2], uint16(position+1))
 			offset += 2
 			encoded, err := encodeArrayElement(elementType, entries[position], col.elementPrecision, col.scale)
 			if err != nil {
@@ -173,8 +173,8 @@ func encodeArrayPayload(value *api.Array, col ColumnMeta, allowSparse bool) ([]b
 		if err != nil {
 			return nil, err
 		}
-		ret[2+(position-1)/8] &^= 1 << uint((position-1)%8)
-		copy(ret[2+bitmapSize+(position-1)*elementSize:], encoded)
+		ret[2+position/8] &^= 1 << uint(position%8)
+		copy(ret[2+bitmapSize+position*elementSize:], encoded)
 	}
 	return ret, nil
 }
