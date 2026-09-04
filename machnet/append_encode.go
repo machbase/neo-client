@@ -21,6 +21,17 @@ type AppendBindings struct {
 	arrivalArg int
 }
 
+func appendInputBindingKey(name string) (string, error) {
+	column, position, err := parseAppendTarget(name)
+	if err != nil {
+		return "", err
+	}
+	if position == 0 {
+		return column, nil
+	}
+	return fmt.Sprintf("%s[%d]", column, position), nil
+}
+
 func parseAppendTarget(target string) (string, int, error) {
 	trimmed := strings.TrimSpace(target)
 	if trimmed == "" {
@@ -121,7 +132,10 @@ func buildAppendBindings(columns []ColumnMeta, names []string) (AppendBindings, 
 	matched := make([]bool, len(names))
 	arrivalArg := -1
 	for idx, name := range names {
-		key := normalizeIdentifier(name)
+		key, err := appendInputBindingKey(name)
+		if err != nil {
+			return AppendBindings{}, err
+		}
 		if key == "" {
 			continue
 		}
@@ -155,7 +169,10 @@ func buildAppendBindings(columns []ColumnMeta, names []string) (AppendBindings, 
 		}
 	}
 	for idx, name := range names {
-		key := normalizeIdentifier(name)
+		key, err := appendInputBindingKey(name)
+		if err != nil {
+			return AppendBindings{}, err
+		}
 		if key == "" || key == "_ARRIVAL_TIME" || key == "ARRIVAL_TIME" {
 			continue
 		}
