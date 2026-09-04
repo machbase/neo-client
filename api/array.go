@@ -55,7 +55,7 @@ func NewSparseArrayWithMeta(elementType SqlType, cardinality, precision, scale i
 	}, nil
 }
 
-func NewArray(elementType SqlType, values []any) (*Array, error) {
+func NewArray(elementType SqlType, values ...any) (*Array, error) {
 	ret, err := NewSparseArray(elementType, len(values))
 	if err != nil {
 		return nil, err
@@ -117,7 +117,11 @@ func (a *Array) Set(position int, value any) error {
 		delete(a.entries, position)
 		return nil
 	}
-	a.entries[position] = value
+	normalized, err := normalizeArrayElement(a.elementType, value, a.precision, a.scale)
+	if err != nil {
+		return err
+	}
+	a.entries[position] = normalized
 	return nil
 }
 
@@ -126,6 +130,154 @@ func isNilArrayElement(value any) bool {
 	return ref.IsValid() &&
 		(ref.Kind() == reflect.Pointer || ref.Kind() == reflect.Interface) &&
 		ref.IsNil()
+}
+
+// normalizeArrayElement converts value to the canonical Go type of elementType,
+// accepting any compatible numeric (or numeric-string) primitive.
+func normalizeArrayElement(elementType SqlType, value any, precision, scale int) (any, error) {
+	switch elementType {
+	case SqlTypeInt16:
+		v, ok := arrayElementToInt64(value)
+		if !ok || v < math.MinInt16 || v > math.MaxInt16 {
+			return nil, fmt.Errorf("invalid INT16 ARRAY element %v", value)
+		}
+		return int16(v), nil
+	case SqlTypeUInt16:
+		v, ok := arrayElementToUint64(value)
+		if !ok || v > math.MaxUint16 {
+			return nil, fmt.Errorf("invalid UINT16 ARRAY element %v", value)
+		}
+		return uint16(v), nil
+	case SqlTypeInt32:
+		v, ok := arrayElementToInt64(value)
+		if !ok || v < math.MinInt32 || v > math.MaxInt32 {
+			return nil, fmt.Errorf("invalid INT32 ARRAY element %v", value)
+		}
+		return int32(v), nil
+	case SqlTypeUInt32:
+		v, ok := arrayElementToUint64(value)
+		if !ok || v > math.MaxUint32 {
+			return nil, fmt.Errorf("invalid UINT32 ARRAY element %v", value)
+		}
+		return uint32(v), nil
+	case SqlTypeInt64:
+		v, ok := arrayElementToInt64(value)
+		if !ok {
+			return nil, fmt.Errorf("invalid INT64 ARRAY element %v", value)
+		}
+		return v, nil
+	case SqlTypeUInt64:
+		v, ok := arrayElementToUint64(value)
+		if !ok {
+			return nil, fmt.Errorf("invalid UINT64 ARRAY element %v", value)
+		}
+		return v, nil
+	case SqlTypeFloat:
+		v, ok := arrayElementToFloat64(value)
+		if !ok {
+			return nil, fmt.Errorf("invalid FLOAT ARRAY element %v", value)
+		}
+		return float32(v), nil
+	case SqlTypeDouble:
+		v, ok := arrayElementToFloat64(value)
+		if !ok {
+			return nil, fmt.Errorf("invalid DOUBLE ARRAY element %v", value)
+		}
+		return v, nil
+	case SqlTypeDecimal:
+		switch v := value.(type) {
+		case Decimal:
+			return v, nil
+		case *Decimal:
+			return ParseDecimal(v.String(), precision, scale)
+		case string:
+			return ParseDecimal(v, precision, scale)
+		case []byte:
+			return ParseDecimal(string(v), precision, scale)
+		default:
+			return ParseDecimal(fmt.Sprint(v), precision, scale)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported ARRAY element type %s", elementType)
+	}
+}
+
+// arrayElementToInt64 accepts any signed/unsigned integer, float or numeric
+// string kind and converts it to int64.
+func arrayElementToInt64(value any) (int64, bool) {
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return rv.Int(), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		u := rv.Uint()
+		if u > math.MaxInt64 {
+			return 0, false
+		}
+		return int64(u), true
+	case reflect.Float32, reflect.Float64:
+		return int64(rv.Float()), true
+	case reflect.String:
+		n, err := strconv.ParseInt(rv.String(), 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	default:
+		return 0, false
+	}
+}
+
+// arrayElementToUint64 accepts any signed/unsigned integer, float or numeric
+// string kind and converts it to uint64.
+func arrayElementToUint64(value any) (uint64, bool) {
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return rv.Uint(), true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		n := rv.Int()
+		if n < 0 {
+			return 0, false
+		}
+		return uint64(n), true
+	case reflect.Float32, reflect.Float64:
+		f := rv.Float()
+		if f < 0 {
+			return 0, false
+		}
+		return uint64(f), true
+	case reflect.String:
+		n, err := strconv.ParseUint(rv.String(), 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	default:
+		return 0, false
+	}
+}
+
+// arrayElementToFloat64 accepts any signed/unsigned integer, float or numeric
+// string kind and converts it to float64.
+func arrayElementToFloat64(value any) (float64, bool) {
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.Float32, reflect.Float64:
+		return rv.Float(), true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return float64(rv.Uint()), true
+	case reflect.String:
+		f, err := strconv.ParseFloat(rv.String(), 64)
+		if err != nil {
+			return 0, false
+		}
+		return f, true
+	default:
+		return 0, false
+	}
 }
 
 func (a *Array) Get(position int) (any, error) {

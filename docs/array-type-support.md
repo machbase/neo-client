@@ -6,11 +6,13 @@ ARRAY positions in the public API are 0-based.
 
 ## Dense and sparse values
 
-Use `api.NewArray` when most elements have values:
+Use `api.NewArray` when most elements have values. Elements are normalized to
+the element type's canonical Go type, so plain untyped literals work without
+explicit casting:
 
 ```go
 value, err := api.NewArray(api.SqlTypeInt32,
-    []any{int32(10), nil, nil, int32(40)})
+    10, nil, nil, 40)
 ```
 
 Use `api.NewSparseArray` when only a few positions have values:
@@ -20,8 +22,8 @@ value, err := api.NewSparseArray(api.SqlTypeInt32, 1024)
 if err != nil {
     return err
 }
-value.Set(0, int32(10))
-value.Set(1023, int32(40))
+value.Set(0, 10)
+value.Set(1023, 40)
 ```
 
 A nil `*api.Array` is a whole-ARRAY NULL. An empty sparse Array is a non-NULL
@@ -40,6 +42,13 @@ valid non-NULL ARRAY elements. The client rejects those values for both whole
 ARRAY input and indexed append targets. A typed nil pointer passed to
 `Array.Set` is normalized to an element NULL.
 
+More generally, `Array.Set` (and therefore `NewArray`) accepts any compatible
+numeric or numeric-string primitive, not just literals matching the element
+type exactly. A value that is out of range or cannot be converted to the
+element type is rejected immediately by `Set`/`NewArray` instead of surfacing
+later at append time. `Array.Get` always returns the canonical type,
+regardless of the type originally passed to `Set`.
+
 ## Append with varying positions
 
 Open the whole ARRAY column and pass a sparse value when positions vary by row:
@@ -52,6 +61,10 @@ err = appender.Append(int64(1), value)
 
 The client chooses the smaller dense or sparse input representation. The
 database always stores the canonical fixed-cardinality ARRAY representation.
+
+`Append`'s per-column encoding already tolerates plain untyped literals (`int`)
+for scalar and projected ARRAY element columns, and treats a `nil` argument as
+NULL for that column, so `int64(1)` and `int32(...)` casts are not required.
 
 ## Append with fixed positions
 
@@ -69,6 +82,8 @@ err := appender.Connect(
     "VALUES_ARRAY[1023]",
 )
 err = appender.Append(int64(1), int32(10), int32(40))
+// equivalent without casts; a nil argument marks that element position NULL
+err = appender.Append(1, 10, nil)
 ```
 
 Omitting an ARRAY column produces a whole-ARRAY NULL. Opening at least one

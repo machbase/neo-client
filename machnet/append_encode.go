@@ -308,7 +308,7 @@ func encodeAppendColumnValue(col ColumnMeta, value any, serverEndian uint32) ([]
 			array = typed.Clone()
 		case []any:
 			var err error
-			array, err = api.NewArray(spinerTypeToSqlType(arrayBaseSpinerType(col.spinerType)), typed)
+			array, err = api.NewArray(spinerTypeToSqlType(arrayBaseSpinerType(col.spinerType)), typed...)
 			if err != nil {
 				return nil, err
 			}

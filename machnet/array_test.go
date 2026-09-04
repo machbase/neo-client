@@ -109,7 +109,7 @@ func TestArrayMetadataAndBind(t *testing.T) {
 
 func TestArrayDecodeRejectsMalformedCanonicalPayload(t *testing.T) {
 	value, err := api.NewArray(api.SqlTypeInt32,
-		[]any{int32(10), nil, int32(30)})
+		int32(10), nil, int32(30))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestDenseArrayRoundTripAllElementTypes(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			value, err := api.NewArray(test.elementType, test.values)
+			value, err := api.NewArray(test.elementType, test.values...)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -322,7 +322,7 @@ func TestDecimalArrayBindFallbackPreservesValueScale(t *testing.T) {
 
 func TestArrayEncodeRejectsInvalidMetadataWithoutPanic(t *testing.T) {
 	value, err := api.NewArray(api.SqlTypeDecimal,
-		[]any{"1.0", nil, "3.0"})
+		"1.0", nil, "3.0")
 	if err != nil {
 		t.Fatal(err)
 	}
