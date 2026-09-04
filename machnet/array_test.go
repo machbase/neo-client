@@ -389,3 +389,86 @@ func TestScalarAppendSentinelCompatibility(t *testing.T) {
 		})
 	}
 }
+
+func newArrayBindStmt(paramDesc []ParamDesc) *StmtHandle {
+	return &StmtHandle{
+		conn:      &ConnHandle{native: &NativeConn{serverVersion: cmiArrayVersion}},
+		paramDesc: paramDesc,
+		bound:     map[int]BoundParam{},
+	}
+}
+
+func TestBindParamConvertsDenseArrayLiteralString(t *testing.T) {
+	stmt := newArrayBindStmt([]ParamDesc{{Type: api.SqlTypeInt32Array, Precision: 4}})
+	if err := stmt.BindParam(0, api.SqlTypeInt32Array, "[1,2,3,4]"); err != nil {
+		t.Fatal(err)
+	}
+	array, ok := stmt.bound[0].value.(*api.Array)
+	if !ok {
+		t.Fatalf("value not converted to *api.Array: %T", stmt.bound[0].value)
+	}
+	if array.Cardinality() != 4 {
+		t.Fatalf("cardinality=%d, want 4", array.Cardinality())
+	}
+	if got := array.String(); got != "[1,2,3,4]" {
+		t.Fatalf("String()=%s", got)
+	}
+}
+
+func TestBindParamConvertsSparseArrayLiteralString(t *testing.T) {
+	stmt := newArrayBindStmt([]ParamDesc{{Type: api.SqlTypeDoubleArray, Precision: 12}})
+	if err := stmt.BindParam(0, api.SqlTypeDoubleArray, "[1=>1.0, 2=>2.1, 11=>3.14]"); err != nil {
+		t.Fatal(err)
+	}
+	array, ok := stmt.bound[0].value.(*api.Array)
+	if !ok {
+		t.Fatalf("value not converted to *api.Array: %T", stmt.bound[0].value)
+	}
+	if got, err := array.Get(1); err != nil || got != 1.0 {
+		t.Fatalf("Get(1)=(%v,%v)", got, err)
+	}
+	if got, err := array.Get(11); err != nil || got != 3.14 {
+		t.Fatalf("Get(11)=(%v,%v)", got, err)
+	}
+}
+
+func TestBindParamRejectsMixedArrayLiteralString(t *testing.T) {
+	stmt := newArrayBindStmt([]ParamDesc{{Type: api.SqlTypeInt32Array, Precision: 11}})
+	if err := stmt.BindParam(0, api.SqlTypeInt32Array, "[1,2,3,10=>4]"); err == nil {
+		t.Fatal("expected mixed dense/sparse ARRAY literal to be rejected")
+	}
+}
+
+func TestBindParamRejectsOutOfRangeArrayLiteral(t *testing.T) {
+	stmt := newArrayBindStmt([]ParamDesc{{Type: api.SqlTypeInt32Array, Precision: 4}})
+	if err := stmt.BindParam(0, api.SqlTypeInt32Array, "[1,2,3,4,5]"); err == nil {
+		t.Fatal("expected out-of-range ARRAY literal to be rejected")
+	}
+}
+
+func TestBindParamWithoutParamDescLeavesStringUnconverted(t *testing.T) {
+	// No paramDesc entry for paramNo 0: cardinality is unknown, so the raw
+	// string is preserved and only fails later at encode time, unchanged
+	// from prior behavior.
+	stmt := newArrayBindStmt(nil)
+	if err := stmt.BindParam(0, api.SqlTypeInt32Array, "[1,2,3,4]"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := stmt.bound[0].value.(string); !ok {
+		t.Fatalf("value unexpectedly converted: %T", stmt.bound[0].value)
+	}
+}
+
+func TestBindParamPreservesTypedArrayValue(t *testing.T) {
+	stmt := newArrayBindStmt([]ParamDesc{{Type: api.SqlTypeInt32Array, Precision: 4}})
+	value, err := api.NewArray(api.SqlTypeInt32, 1, 2, 3, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stmt.BindParam(0, api.SqlTypeInt32Array, value); err != nil {
+		t.Fatal(err)
+	}
+	if stmt.bound[0].value != any(value) {
+		t.Fatalf("typed *api.Array value was replaced: %#v", stmt.bound[0].value)
+	}
+}

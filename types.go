@@ -113,6 +113,26 @@ func NewColumnWithType(colType *sql.ColumnType) *Column {
 		dataType = api.DataTypeIPv4
 	case "IPV6":
 		dataType = api.DataTypeIPv6
+	case "DECIMAL":
+		dataType = api.DataTypeDecimal
+	case "INT16_ARRAY":
+		dataType = api.DataTypeInt16Array
+	case "UINT16_ARRAY":
+		dataType = api.DataTypeUInt16Array
+	case "INT32_ARRAY":
+		dataType = api.DataTypeInt32Array
+	case "UINT32_ARRAY":
+		dataType = api.DataTypeUInt32Array
+	case "INT64_ARRAY":
+		dataType = api.DataTypeInt64Array
+	case "UINT64_ARRAY":
+		dataType = api.DataTypeUInt64Array
+	case "FLOAT_ARRAY":
+		dataType = api.DataTypeFloatArray
+	case "DOUBLE_ARRAY":
+		dataType = api.DataTypeDoubleArray
+	case "DECIMAL_ARRAY":
+		dataType = api.DataTypeDecimalArray
 	default:
 		switch colType.ScanType().String() {
 		case "bool", "sql.NullBool":

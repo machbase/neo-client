@@ -68,6 +68,108 @@ func NewArray(elementType SqlType, values ...any) (*Array, error) {
 	return ret, nil
 }
 
+// ParseArray parses the sparse-aware ARRAY literal convenience syntax into an
+// *Array. This is distinct from the canonical DB string format produced by
+// Array.String/Scan: it additionally supports "idx=>value" entries to set an
+// arbitrary position. Matching machbase's own literal syntax, a single
+// literal must be either all-dense or all-sparse; mixing plain values and
+// "idx=>value" entries in the same literal is rejected.
+//
+//	[1,2,3,4]                    -> dense: positions 0,1,2,3
+//	[1=>1.0, 2=>2.1, 11=>3.14]   -> sparse: only positions 1, 2 and 11 are set
+//
+// Dense values are assigned to sequential positions starting at 0. "null"
+// (case-insensitive) leaves the referenced position as NULL.
+//
+// cardinality <= 0 means "infer from the highest referenced position + 1".
+func ParseArray(text string, elementType SqlType, cardinality, precision, scale int) (*Array, error) {
+	tokens, err := splitArrayLiteralTokens(text)
+	if err != nil {
+		return nil, err
+	}
+	type pendingElement struct {
+		position int
+		value    string
+		isNull   bool
+	}
+	pending := make([]pendingElement, 0, len(tokens))
+	cursor := 0
+	maxPosition := -1
+	hasDense := false
+	hasSparse := false
+	for _, token := range tokens {
+		position := cursor
+		value := token
+		if idx := strings.Index(token, "=>"); idx >= 0 {
+			idxText := strings.TrimSpace(token[:idx])
+			value = strings.TrimSpace(token[idx+2:])
+			pos, err := strconv.Atoi(idxText)
+			if err != nil || pos < 0 {
+				return nil, fmt.Errorf("invalid ARRAY literal position %q", idxText)
+			}
+			position = pos
+			hasSparse = true
+		} else {
+			hasDense = true
+		}
+		cursor = position + 1
+		if position > maxPosition {
+			maxPosition = position
+		}
+		pending = append(pending, pendingElement{
+			position: position,
+			value:    value,
+			isNull:   strings.EqualFold(value, "null"),
+		})
+	}
+	if hasDense && hasSparse {
+		return nil, fmt.Errorf("ARRAY literal cannot mix dense and idx=>value (sparse) elements")
+	}
+	if cardinality <= 0 {
+		cardinality = maxPosition + 1
+	}
+	ret, err := NewSparseArrayWithMeta(elementType, cardinality, precision, scale)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range pending {
+		if p.position >= cardinality {
+			return nil, fmt.Errorf("ARRAY literal position %d out of range for cardinality %d", p.position, cardinality)
+		}
+		if p.isNull {
+			continue
+		}
+		if err := ret.Set(p.position, p.value); err != nil {
+			return nil, fmt.Errorf("ARRAY literal position %d: %w", p.position, err)
+		}
+	}
+	return ret, nil
+}
+
+// splitArrayLiteralTokens splits the "[...]" body of an ARRAY literal into
+// its top-level comma-separated tokens, without interpreting "=>" or "null".
+func splitArrayLiteralTokens(text string) ([]string, error) {
+	text = strings.TrimSpace(text)
+	if len(text) < 2 || text[0] != '[' || text[len(text)-1] != ']' {
+		return nil, fmt.Errorf("invalid ARRAY literal %q", text)
+	}
+	body := strings.TrimSpace(text[1 : len(text)-1])
+	if body == "" {
+		return nil, fmt.Errorf("ARRAY literal must have at least one element")
+	}
+	parts := strings.Split(body, ",")
+	if len(parts) > ArrayMaxCardinality {
+		return nil, fmt.Errorf("ARRAY literal has too many elements: %d", len(parts))
+	}
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+		if parts[i] == "" {
+			return nil, fmt.Errorf("empty ARRAY literal element at position %d", i)
+		}
+	}
+	return parts, nil
+}
+
 func (a *Array) ElementType() SqlType {
 	if a == nil {
 		return 0

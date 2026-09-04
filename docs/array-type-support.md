@@ -89,6 +89,49 @@ err = appender.Append(1, 10, nil)
 Omitting an ARRAY column produces a whole-ARRAY NULL. Opening at least one
 element target produces a non-NULL ARRAY; unlisted positions are element NULLs.
 
+## String ARRAY literals bound through `named()`/`SQL()`
+
+`api.ParseArray` parses the sparse-aware ARRAY literal convenience syntax used
+when a query parameter is a plain string, e.g. tql's `named("arr", "[1,2,3,4]")`:
+
+```
+[1,2,3,4]              // dense: position 0..3
+[1=>1.0, 2=>2.1]        // sparse: idx=>value pairs, other positions are NULL
+[1,2,null,4]            // dense with an explicit NULL element
+```
+
+Dense and sparse elements cannot be mixed in one literal; `ParseArray` rejects
+that input. Cardinality is inferred from the highest referenced position when
+the caller does not supply an explicit cardinality (e.g. from prepared
+statement parameter metadata). This convenience syntax is only used for
+string-typed bind parameters; it is unrelated to the canonical text format
+produced/consumed by `Array.String()`/`Array.Scan()`.
+
+## Column type and value representation of a `SELECT` result
+
+`sql.ColumnType.DatabaseTypeName()` for an ARRAY column is one of
+`INT16_ARRAY`, `UINT16_ARRAY`, `INT32_ARRAY`, `UINT32_ARRAY`, `INT64_ARRAY`,
+`UINT64_ARRAY`, `FLOAT_ARRAY`, `DOUBLE_ARRAY`, `DECIMAL_ARRAY`; the
+corresponding `api.DataType` (used by `neo-client.NewColumnWithType` and
+`neo-server/spi.ColumnTypesToDataTypes`) is one of `int16_array`,
+`uint16_array`, `int32_array`, `uint32_array`, `int64_array`, `uint64_array`,
+`float_array`, `double_array`, `decimal_array`. A DECIMAL scalar column reports
+`DECIMAL`/`decimal`.
+
+When scanning a `SELECT` result row (e.g. `spi.MakeBuffer` + `client.Unbox`,
+which is what tql's `SQL()` source uses), an ARRAY column value is unboxed into
+a plain `[]any` of per-position values (`nil` for an element NULL), so a codec
+like `JSON()` renders it as a real JSON array, e.g. `[1,2,3,4]` or
+`[null,2,null,4]`. A whole-ARRAY NULL is reported as JSON `null`, not `[]`.
+`DECIMAL` elements inside an ARRAY, and scalar DECIMAL column values, are kept
+as their exact string representation (e.g. `"12.34"`) since `api.Decimal` has
+unexported fields and would otherwise marshal to `{}`.
+
+`SELECT` of a bare ARRAY literal constant without `FROM` (e.g.
+`SELECT [1,2,3]`, `SELECT [1.1,2.2,3.3]`) is also supported by the engine and
+reports the inferred element array type (`int32_array`, `double_array`, ...)
+the same way as an ARRAY column.
+
 ## Compatibility
 
 - ARRAY positions changed from 1-based to 0-based. Update `Set`, `Get`,

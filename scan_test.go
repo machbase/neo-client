@@ -264,6 +264,42 @@ func TestUnboxGenericNullWrappers(t *testing.T) {
 	}
 }
 
+func TestUnboxArrayFlattensToSliceAndKeepsDecimalAsText(t *testing.T) {
+	if got := Unbox((*api.Array)(nil)); got != nil {
+		t.Fatalf("Unbox(nil *api.Array) = %#v", got)
+	}
+
+	value, err := api.NewSparseArray(api.SqlTypeInt32, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = value.Set(0, int32(1))
+	_ = value.Set(2, int32(3))
+	got, ok := Unbox(value).([]any)
+	if !ok {
+		t.Fatalf("Unbox(*api.Array) type = %T", got)
+	}
+	if got[0] != int32(1) || got[1] != nil || got[2] != int32(3) {
+		t.Fatalf("Unbox(*api.Array) = %#v", got)
+	}
+
+	decimalArray, err := api.NewSparseArrayWithMeta(api.SqlTypeDecimal, 2, 10, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = decimalArray.Set(0, "12.34")
+	decimalValues, ok := Unbox(decimalArray).([]any)
+	if !ok {
+		t.Fatalf("Unbox(*api.Array decimal) type = %T", decimalValues)
+	}
+	if decimalValues[0] != "12.34" {
+		t.Fatalf("Unbox(*api.Array decimal)[0] = %#v, want string 12.34", decimalValues[0])
+	}
+	if decimalValues[1] != nil {
+		t.Fatalf("Unbox(*api.Array decimal)[1] = %#v, want nil", decimalValues[1])
+	}
+}
+
 func TestScanNull(t *testing.T) {
 	t.Run("unsigned and generic sql null wrappers", func(t *testing.T) {
 		nBool := sql.Null[bool]{V: true, Valid: true}

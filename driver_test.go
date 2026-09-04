@@ -6,10 +6,34 @@ import (
 	"database/sql/driver"
 	"errors"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/machbase/neo-client/v2/api"
 )
+
+func TestRowsColumnTypeScanTypeArrayVsDecimal(t *testing.T) {
+	stmt := &Stmt{columnDesc: []ColumnDesc{
+		{Name: "dd", Type: api.SqlTypeDoubleArray},
+		{Name: "amt", Type: api.SqlTypeDecimal},
+	}}
+	rows := &Rows{stmt: stmt}
+
+	if got := rows.ColumnTypeScanType(0); got != reflect.TypeOf(api.Array{}) {
+		t.Fatalf("ARRAY ScanType = %v, want api.Array", got)
+	}
+	if got := rows.ColumnTypeScanType(1); got != reflect.TypeOf("") {
+		t.Fatalf("DECIMAL ScanType = %v, want string", got)
+	}
+	if got := rows.ColumnTypeDatabaseTypeName(0); got != "DOUBLE_ARRAY" {
+		t.Fatalf("ARRAY DatabaseTypeName = %q, want DOUBLE_ARRAY", got)
+	}
+	if got := rows.ColumnTypeDatabaseTypeName(1); got != "DECIMAL" {
+		t.Fatalf("DECIMAL DatabaseTypeName = %q, want DECIMAL", got)
+	}
+}
 
 func TestResetSessionRestoresConfiguredDatabase(t *testing.T) {
 	native := &resetTestConn{}

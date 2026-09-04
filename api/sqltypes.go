@@ -229,10 +229,24 @@ func (st SqlType) DataType() DataType {
 		return DataTypeJSON
 	case SqlTypeDecimal:
 		return DataTypeDecimal
-	case SqlTypeInt16Array, SqlTypeUInt16Array, SqlTypeInt32Array,
-		SqlTypeUInt32Array, SqlTypeInt64Array, SqlTypeUInt64Array,
-		SqlTypeFloatArray, SqlTypeDoubleArray, SqlTypeDecimalArray:
-		return DataTypeArray
+	case SqlTypeInt16Array:
+		return DataTypeInt16Array
+	case SqlTypeUInt16Array:
+		return DataTypeUInt16Array
+	case SqlTypeInt32Array:
+		return DataTypeInt32Array
+	case SqlTypeUInt32Array:
+		return DataTypeUInt32Array
+	case SqlTypeInt64Array:
+		return DataTypeInt64Array
+	case SqlTypeUInt64Array:
+		return DataTypeUInt64Array
+	case SqlTypeFloatArray:
+		return DataTypeFloatArray
+	case SqlTypeDoubleArray:
+		return DataTypeDoubleArray
+	case SqlTypeDecimalArray:
+		return DataTypeDecimalArray
 	}
 }
 

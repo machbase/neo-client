@@ -3,6 +3,7 @@ package machnet
 import (
 	"context"
 	"crypto"
+	"fmt"
 	"sync"
 	"time"
 
@@ -513,6 +514,25 @@ func (stmt *StmtHandle) BindParam(paramNo int, sqlType api.SqlType, value any) e
 		bp.cardinality = stmt.paramDesc[paramNo].Precision
 		bp.elementPrecision = stmt.paramDesc[paramNo].ElementPrecision
 		bp.scale = stmt.paramDesc[paramNo].Scale
+	}
+	// A text ARRAY literal (e.g. "[1,2,3]" or "[1=>1,2=>2]") is only
+	// convertible here, where the target column's cardinality/precision/scale
+	// from Describe are available. Without paramDesc metadata this falls
+	// through unchanged and fails later at encode time as before.
+	if sqlType.IsArray() && !bp.isNull && bp.cardinality > 0 {
+		text, isText := value.(string)
+		if raw, ok := value.([]byte); ok {
+			text, isText = string(raw), true
+		}
+		if isText {
+			array, err := api.ParseArray(text, sqlType.ElementType(), bp.cardinality, bp.elementPrecision, bp.scale)
+			if err != nil {
+				wrapped := makeClientErr(fmt.Sprintf("bind parameter %d: %v", paramNo+1, err))
+				stmt.lastErr.setErr(wrapped)
+				return wrapped
+			}
+			bp.value = array
+		}
 	}
 	stmt.bound[paramNo] = bp
 	stmt.lastErr.setErr(nil)

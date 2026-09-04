@@ -1734,7 +1734,7 @@ func (r *Rows) ColumnTypeScanType(index int) reflect.Type {
 	case api.ColumnTypeInt16Array, api.ColumnTypeUInt16Array, api.ColumnTypeInt32Array,
 		api.ColumnTypeUInt32Array, api.ColumnTypeInt64Array, api.ColumnTypeUInt64Array,
 		api.ColumnTypeFloatArray, api.ColumnTypeDoubleArray, api.ColumnTypeDecimalArray:
-		return reflect.TypeOf("")
+		return reflect.TypeOf(api.Array{})
 	case api.ColumnTypeBinary, api.ColumnTypeBlob, api.ColumnTypeClob:
 		return reflect.TypeOf([]byte(nil))
 	case api.ColumnTypeIPv4, api.ColumnTypeIPv6:

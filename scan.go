@@ -1034,6 +1034,22 @@ func Unbox(val any) any {
 		} else {
 			return nil
 		}
+	case *api.Array:
+		if v == nil || v.Cardinality() == 0 {
+			// Cardinality() == 0 only happens after Array.Scan(nil), which is
+			// how a whole-ARRAY NULL surfaces through database/sql; report it
+			// as NULL rather than an empty slice.
+			return nil
+		}
+		values := v.Values()
+		for i, e := range values {
+			// DECIMAL elements have unexported fields; keep the exact text
+			// representation instead of letting encoding/json see an empty struct.
+			if d, ok := e.(api.Decimal); ok {
+				values[i] = d.String()
+			}
+		}
+		return values
 	default:
 		return val
 	}
