@@ -29,7 +29,7 @@ func TestArrayColumnBufferPreservesWholeNull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := value.Set(2, int32(20)); err != nil {
+	if err := value.Set(1, int32(20)); err != nil {
 		t.Fatal(err)
 	}
 	row.values[0] = value

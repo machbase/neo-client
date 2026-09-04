@@ -7,20 +7,20 @@ func TestSparseArraySemantics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := value.Set(1, int32(10)); err != nil {
+	if err := value.Set(0, int32(10)); err != nil {
 		t.Fatal(err)
 	}
-	if err := value.Set(6, int32(60)); err != nil {
+	if err := value.Set(5, int32(60)); err != nil {
 		t.Fatal(err)
 	}
 	if got := value.String(); got != "[10,null,null,null,null,60,null,null]" {
 		t.Fatalf("String()=%s", got)
 	}
-	if got, err := value.Get(6); err != nil || got != int32(60) {
-		t.Fatalf("Get(6)=(%v,%v)", got, err)
+	if got, err := value.Get(5); err != nil || got != int32(60) {
+		t.Fatalf("Get(5)=(%v,%v)", got, err)
 	}
-	if got, err := value.Get(2); err != nil || got != nil {
-		t.Fatalf("Get(2)=(%v,%v)", got, err)
+	if got, err := value.Get(1); err != nil || got != nil {
+		t.Fatalf("Get(1)=(%v,%v)", got, err)
 	}
 	value.Clear()
 	if got := value.String(); got != "[null,null,null,null,null,null,null,null]" {
@@ -34,7 +34,7 @@ func TestSparseArrayTypedNilElementIsNull(t *testing.T) {
 		t.Fatal(err)
 	}
 	var decimal *Decimal
-	if err := value.Set(2, decimal); err != nil {
+	if err := value.Set(1, decimal); err != nil {
 		t.Fatal(err)
 	}
 	if len(value.Entries()) != 0 || value.String() != "[null,null,null]" {
@@ -53,11 +53,11 @@ func TestArrayValidationAndScan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := value.Set(0, 1); err == nil {
-		t.Fatal("position zero accepted")
+	if err := value.Set(-1, 1); err == nil {
+		t.Fatal("negative position accepted")
 	}
-	if err := value.Set(4, 1); err == nil {
-		t.Fatal("position N+1 accepted")
+	if err := value.Set(3, 1); err == nil {
+		t.Fatal("position N accepted")
 	}
 	var scanned Array
 	if err := scanned.Scan("[1,null,3]"); err != nil {

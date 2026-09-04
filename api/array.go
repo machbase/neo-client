@@ -14,7 +14,7 @@ const (
 	ArrayMaxCardinality = 1024
 )
 
-// Array is a fixed-cardinality numeric ARRAY. Public positions are 1-based.
+// Array is a fixed-cardinality numeric ARRAY. Public positions are 0-based.
 // A nil *Array represents a whole-ARRAY NULL; nil elements represent element NULLs.
 type Array struct {
 	elementType SqlType
@@ -61,7 +61,7 @@ func NewArray(elementType SqlType, values []any) (*Array, error) {
 		return nil, err
 	}
 	for i, value := range values {
-		if err := ret.Set(i+1, value); err != nil {
+		if err := ret.Set(i, value); err != nil {
 			return nil, err
 		}
 	}
@@ -110,7 +110,7 @@ func (a *Array) Set(position int, value any) error {
 	if a == nil {
 		return fmt.Errorf("cannot set nil ARRAY")
 	}
-	if position < 1 || position > a.cardinality {
+	if position < 0 || position >= a.cardinality {
 		return fmt.Errorf("ARRAY position out of range: %d", position)
 	}
 	if value == nil || isNilArrayElement(value) {
@@ -132,7 +132,7 @@ func (a *Array) Get(position int) (any, error) {
 	if a == nil {
 		return nil, fmt.Errorf("cannot get nil ARRAY")
 	}
-	if position < 1 || position > a.cardinality {
+	if position < 0 || position >= a.cardinality {
 		return nil, fmt.Errorf("ARRAY position out of range: %d", position)
 	}
 	return a.entries[position], nil
@@ -144,7 +144,7 @@ func (a *Array) Values() []any {
 	}
 	ret := make([]any, a.cardinality)
 	for position, value := range a.entries {
-		ret[position-1] = value
+		ret[position] = value
 	}
 	return ret
 }
@@ -165,23 +165,23 @@ func (a *Array) String() string {
 		return "NULL"
 	}
 	parts := make([]string, a.cardinality)
-	for i := 1; i <= a.cardinality; i++ {
+	for i := 0; i < a.cardinality; i++ {
 		value, ok := a.entries[i]
 		if !ok || value == nil {
-			parts[i-1] = "null"
+			parts[i] = "null"
 			continue
 		}
 		switch v := value.(type) {
 		case Decimal:
-			parts[i-1] = v.String()
+			parts[i] = v.String()
 		case *Decimal:
 			if v == nil {
-				parts[i-1] = "null"
+				parts[i] = "null"
 			} else {
-				parts[i-1] = v.String()
+				parts[i] = v.String()
 			}
 		default:
-			parts[i-1] = fmt.Sprint(value)
+			parts[i] = fmt.Sprint(value)
 		}
 	}
 	return "[" + strings.Join(parts, ",") + "]"
@@ -244,7 +244,7 @@ func (a *Array) Scan(src any) error {
 		if err != nil {
 			return err
 		}
-		ret.entries[i+1] = value
+		ret.entries[i] = value
 	}
 	*a = *ret
 	return nil
@@ -266,7 +266,7 @@ func parseCanonicalArrayTokens(text string) ([]string, error) {
 	for i := range parts {
 		parts[i] = strings.TrimSpace(parts[i])
 		if parts[i] == "" {
-			return nil, fmt.Errorf("empty ARRAY element at position %d", i+1)
+			return nil, fmt.Errorf("empty ARRAY element at position %d", i)
 		}
 	}
 	return parts, nil

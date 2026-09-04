@@ -34,14 +34,14 @@ func parseAppendTarget(target string) (string, int, error) {
 		return "", 0, fmt.Errorf("invalid append ARRAY target %q", target)
 	}
 	position, err := strconv.Atoi(strings.TrimSpace(trimmed[open+1 : len(trimmed)-1]))
-	if err != nil || position < 1 || position > api.ArrayMaxCardinality {
+	if err != nil || position < 0 || position >= api.ArrayMaxCardinality {
 		return "", 0, fmt.Errorf("invalid append ARRAY position in %q", target)
 	}
 	name := normalizeIdentifier(trimmed[:open])
 	if name == "" {
 		return "", 0, fmt.Errorf("append column name is empty")
 	}
-	return name, position, nil
+	return name, position + 1, nil
 }
 
 func encodeAppendTargets(targets []string) ([]byte, error) {
