@@ -168,7 +168,7 @@ func main() {
 
 ### Transactions
 
-Machbase supports `BEGIN` / `COMMIT` / `ROLLBACK` on regular tables created with `CREATE TABLE` (transaction tables). TAG tables do not support transactions; DML on a TAG table inside a transaction fails with `MACHCLI-ERR-2362`.
+Machbase supports `BEGIN` / `COMMIT` / `ROLLBACK` on regular tables created with `CREATE TABLE` (transaction tables). TAG/LOG tables do not support transactions; DML on a TAG/LOG table inside a transaction fails with `MACHCLI-ERR-2362`.
 
 The standard `database/sql` transaction API works as expected:
 
@@ -211,7 +211,42 @@ The error returned by the closure is returned as-is, so `errors.Is` / `errors.As
 
 ### Append Rows with Appender API
 
-For high-throughput time-series ingestion, you can use the dedicated appender API shown in `_example/append.go`.
+For high-throughput time-series ingestion, use the appender API instead of row-by-row `INSERT`. The appender buffers records on the client and streams them to the server over a dedicated channel, which is orders of magnitude faster than individual INSERT statements for bulk loads.
+
+```go
+import client "github.com/machbase/neo-client/v2"
+
+appender := &client.Appender{}
+// Connect to a subset of columns: Append() below sends only these three
+// values per row, and every other column of the table is written as NULL.
+if err := appender.Connect(ctx, dsn, "EXAMPLE", "NAME", "TIME", "VALUE"); err != nil {
+	panic(err)
+}
+defer func() {
+	successCount, failCount, err := appender.Close() // flushes remaining buffered rows
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("Append finished. Success:", successCount, "Fail:", failCount)
+}()
+
+for _, rec := range records {
+	// Exactly one value per column passed to Connect, in the same order.
+	if err := appender.Append(rec.Name, rec.Time, rec.Value); err != nil {
+		panic(err)
+	}
+}
+```
+
+Key points:
+
+- **Column selection**: the column list passed to `Connect` (or `WithInputColumns`) defines exactly which columns each `Append` call provides, in order. Columns of the table that are not listed are written as NULL. If the table above had additional columns beyond `NAME`, `TIME`, `VALUE`, they would all receive NULL.
+- **Omitting the column list** (e.g. `appender.Connect(ctx, dsn, "EXAMPLE")`) means the appender targets **every** column of the table: each `Append` call must then supply a value for every column — `nil` included — or it fails with a value-count error.
+- `Append` buffers rows; call `Flush()` to force a send, or rely on `Close()` to flush and report per-session success/fail counts.
+- Buffering behavior can be tuned with `WithBatchMaxRows`, `WithBatchMaxBytes`, and `WithBatchMaxDelay`.
+- The appender works with tag, log, and transaction tables, but it bypasses SQL — appends are not part of any transaction.
+
+See [append.go](_example/append.go) for a complete runnable example and [ARRAY type and sparse append](docs/array-type-support.md) for appending ARRAY columns.
 
 ### Scan Rows into Structs
 
