@@ -166,6 +166,49 @@ func main() {
 }
 ```
 
+### Transactions
+
+Machbase supports `BEGIN` / `COMMIT` / `ROLLBACK` on regular tables created with `CREATE TABLE` (transaction tables). TAG tables do not support transactions; DML on a TAG table inside a transaction fails with `MACHCLI-ERR-2362`.
+
+The standard `database/sql` transaction API works as expected:
+
+```go
+tx, err := db.BeginTx(ctx, nil)
+if err != nil {
+	panic(err)
+}
+if _, err := tx.ExecContext(ctx, `INSERT INTO EXAMPLE_TX VALUES (?, ?, ?)`, name, ts, value); err != nil {
+	tx.Rollback()
+	panic(err)
+}
+if err := tx.Commit(); err != nil {
+	panic(err)
+}
+```
+
+For less boilerplate, the package provides closure helpers that commit when the function returns nil, roll back when it returns an error, and roll back then re-panic when it panics:
+
+```go
+import client "github.com/machbase/neo-client/v2"
+
+err := client.Tx(ctx, db, func(tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO EXAMPLE_TX VALUES (?, ?, ?)`, name, ts, value); err != nil {
+		return err // automatic ROLLBACK
+	}
+	return nil // automatic COMMIT
+})
+
+// TxConn runs the transaction on a specific connection acquired via db.Conn(ctx).
+conn, _ := db.Conn(ctx)
+defer conn.Close()
+err = client.TxConn(ctx, conn, func(tx *sql.Tx) error {
+	// ...
+	return nil
+})
+```
+
+The error returned by the closure is returned as-is, so `errors.Is` / `errors.As` keep working; returning a sentinel error is the idiomatic way to force a rollback. Transaction options (isolation level, read-only) are not supported by machbase and are rejected by the driver. See [transaction.go](_example/transaction.go) for a complete runnable example and [docs/transaction-helper.md](docs/transaction-helper.md) for details.
+
 ### Append Rows with Appender API
 
 For high-throughput time-series ingestion, you can use the dedicated appender API shown in `_example/append.go`.

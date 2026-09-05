@@ -531,18 +531,18 @@ func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 	if _, err := c.ExecContext(ctx, "BEGIN", nil); err != nil {
 		return nil, err
 	}
-	return &Tx{conn: c}, nil
+	return &transaction{conn: c}, nil
 }
 
-type Tx struct {
+type transaction struct {
 	mu   sync.Mutex
 	conn *Conn
 	done bool
 }
 
-var _ driver.Tx = (*Tx)(nil)
+var _ driver.Tx = (*transaction)(nil)
 
-func (tx *Tx) finish(sqlText string) error {
+func (tx *transaction) finish(sqlText string) error {
 	if tx == nil {
 		return sql.ErrTxDone
 	}
@@ -558,9 +558,9 @@ func (tx *Tx) finish(sqlText string) error {
 	return err
 }
 
-func (tx *Tx) Commit() error { return tx.finish("COMMIT") }
+func (tx *transaction) Commit() error { return tx.finish("COMMIT") }
 
-func (tx *Tx) Rollback() error { return tx.finish("ROLLBACK") }
+func (tx *transaction) Rollback() error { return tx.finish("ROLLBACK") }
 
 func (c *Conn) Ping(ctx context.Context) error {
 	if c == nil || c.handle == nil {
