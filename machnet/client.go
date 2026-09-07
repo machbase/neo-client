@@ -332,6 +332,25 @@ func (c *NativeConn) watchContext(ctx context.Context) (stop func()) {
 	}
 }
 
+// retireOnTimeout marks the connection broken when err is a socket deadline
+// expiry. Such a timeout leaves the request/response framing desynchronized
+// just like a context abort does, so the connection must not go back into the
+// database/sql pool. The error is returned unchanged on purpose: promoting it
+// to driver.ErrBadConn would make database/sql replay a statement the server
+// may already have executed.
+//
+// The caller must hold c.mu.
+func (c *NativeConn) retireOnTimeout(err error) error {
+	if err == nil {
+		return nil
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		c.markBrokenLocked()
+	}
+	return err
+}
+
 // ctxAbortErr reports whether err was caused by ctx being canceled or its
 // deadline being exceeded (via watchContext forcing the deadline). When it
 // was, the connection is marked broken: a forced-deadline abort can leave the
@@ -339,11 +358,7 @@ func (c *NativeConn) watchContext(ctx context.Context) (stop func()) {
 // not safe to reuse. The returned error contains "connection closed" so that
 // normalizeError() (package client) promotes it to driver.ErrBadConn.
 //
-// A plain socket deadline expiry (the fixed queryTimeout, which is not tied to
-// ctx) leaves the stream just as desynchronized, so the connection is marked
-// broken there too. That error is returned unchanged on purpose: promoting it
-// to driver.ErrBadConn would make database/sql replay a statement the server
-// may already have executed.
+// Any other failure is handed to retireOnTimeout.
 //
 // The caller must hold c.mu.
 func (c *NativeConn) ctxAbortErr(ctx context.Context, err error) error {
@@ -354,11 +369,7 @@ func (c *NativeConn) ctxAbortErr(ctx context.Context, err error) error {
 		c.markBrokenLocked()
 		return fmt.Errorf("connection closed: %w", ctx.Err())
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		c.markBrokenLocked()
-	}
-	return err
+	return c.retireOnTimeout(err)
 }
 
 func (c *NativeConn) sendPackets(ctx context.Context, packets [][]byte, expected byte, timeout time.Duration) ([]byte, error) {
@@ -1019,11 +1030,11 @@ func (c *NativeConn) appendClose(stmtID uint32) (int64, int64, error) {
 	}
 	for _, p := range packets {
 		if err := writePacket(c.bw, p); err != nil {
-			return 0, 0, c.ctxAbortErr(nil, err)
+			return 0, 0, c.retireOnTimeout(err)
 		}
 	}
 	if err := c.bw.Flush(); err != nil {
-		return 0, 0, c.ctxAbortErr(nil, err)
+		return 0, 0, c.retireOnTimeout(err)
 	}
 
 	for {
@@ -1036,7 +1047,7 @@ func (c *NativeConn) appendClose(stmtID uint32) (int64, int64, error) {
 		}
 
 		if err != nil {
-			return 0, 0, c.ctxAbortErr(nil, err)
+			return 0, 0, c.retireOnTimeout(err)
 		}
 		switch c.packet.protocol {
 		case cmiAppendDataProtocol:
