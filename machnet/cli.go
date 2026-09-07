@@ -46,13 +46,16 @@ func (conn *ConnHandle) Error() (int, string) {
 }
 
 // IsOpen reports whether the connection has not been closed/disconnected yet.
+// It also reports false once the underlying socket has been marked broken (see
+// NativeConn.markBrokenLocked), which is how a desynchronized connection gets
+// discarded by the database/sql pool instead of being handed out again.
 func (conn *ConnHandle) IsOpen() bool {
 	if conn == nil {
 		return false
 	}
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	return !conn.closed && conn.native != nil
+	return !conn.closed && conn.native != nil && !conn.native.isClosed()
 }
 
 type AppendState struct {

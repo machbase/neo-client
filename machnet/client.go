@@ -11,6 +11,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/machbase/neo-client/v2/api"
@@ -41,7 +42,9 @@ type NativeConn struct {
 	sessionID     uint64
 	serverEndian  uint32
 	serverVersion uint64
-	closed        bool
+	// closed is atomic so ConnHandle.IsOpen can observe it without taking mu,
+	// which sendPackets holds for the whole request/response round trip.
+	closed atomic.Bool
 
 	// stmtMu guards statement-id allocation only (nextStmtID/releaseStmtID)
 	// and is always acquired and released independently of mu; it is never
@@ -200,14 +203,32 @@ func (c *NativeConn) resetIOByteMetrics() {
 func (c *NativeConn) close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
+	if c.closed.Swap(true) {
 		return nil
 	}
-	c.closed = true
 	if c.netConn != nil {
 		return c.netConn.Close()
 	}
 	return nil
+}
+
+func (c *NativeConn) isClosed() bool {
+	return c == nil || c.closed.Load()
+}
+
+// markBrokenLocked permanently invalidates the connection. The caller must
+// hold c.mu. It is used when the request/response framing can no longer be
+// trusted (protocol mismatch, aborted or timed out read/write): the byte
+// stream cannot be resynchronized, so the connection must never go back into
+// the database/sql pool. ConnHandle.IsOpen reports false afterwards, which is
+// what makes database/sql discard it.
+func (c *NativeConn) markBrokenLocked() {
+	if c.closed.Swap(true) {
+		return
+	}
+	if c.netConn != nil {
+		_ = c.netConn.Close()
+	}
 }
 
 func (c *NativeConn) nextStmtID() (uint32, error) {
@@ -313,25 +334,37 @@ func (c *NativeConn) watchContext(ctx context.Context) (stop func()) {
 
 // ctxAbortErr reports whether err was caused by ctx being canceled or its
 // deadline being exceeded (via watchContext forcing the deadline). When it
-// was, the connection is marked closed: a forced-deadline abort can leave the
+// was, the connection is marked broken: a forced-deadline abort can leave the
 // protocol byte stream desynchronized mid read/write, so the connection is
 // not safe to reuse. The returned error contains "connection closed" so that
 // normalizeError() (package client) promotes it to driver.ErrBadConn.
+//
+// A plain socket deadline expiry (the fixed queryTimeout, which is not tied to
+// ctx) leaves the stream just as desynchronized, so the connection is marked
+// broken there too. That error is returned unchanged on purpose: promoting it
+// to driver.ErrBadConn would make database/sql replay a statement the server
+// may already have executed.
+//
+// The caller must hold c.mu.
 func (c *NativeConn) ctxAbortErr(ctx context.Context, err error) error {
-	if err == nil || ctx == nil || ctx.Err() == nil {
-		return err
+	if err == nil {
+		return nil
 	}
-	c.closed = true
-	if c.netConn != nil {
-		_ = c.netConn.Close()
+	if ctx != nil && ctx.Err() != nil {
+		c.markBrokenLocked()
+		return fmt.Errorf("connection closed: %w", ctx.Err())
 	}
-	return fmt.Errorf("connection closed: %w", ctx.Err())
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		c.markBrokenLocked()
+	}
+	return err
 }
 
 func (c *NativeConn) sendPackets(ctx context.Context, packets [][]byte, expected byte, timeout time.Duration) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
+	if c.closed.Load() {
 		return nil, errors.New("connection closed")
 	}
 	if timeout > 0 {
@@ -360,6 +393,7 @@ func (c *NativeConn) sendPackets(ctx context.Context, packets [][]byte, expected
 		return nil, c.ctxAbortErr(ctx, err)
 	}
 	if c.packet.protocol != expected {
+		c.markBrokenLocked()
 		return nil, fmt.Errorf("unexpected protocol %d expected %d", c.packet.protocol, expected)
 	}
 	return c.packet.body, nil
@@ -368,7 +402,7 @@ func (c *NativeConn) sendPackets(ctx context.Context, packets [][]byte, expected
 func (c *NativeConn) sendPacketsNoResponse(ctx context.Context, packets [][]byte, timeout time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
+	if c.closed.Load() {
 		return errors.New("connection closed")
 	}
 	if deadline := ctxDeadline(ctx, timeout); !deadline.IsZero() {
@@ -393,7 +427,7 @@ func (c *NativeConn) sendPacketsNoResponse(ctx context.Context, packets [][]byte
 func (c *NativeConn) sendPacketsOptional(ctx context.Context, packets [][]byte, expected byte, writeTimeout, readTimeout time.Duration) ([]byte, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
+	if c.closed.Load() {
 		return nil, false, errors.New("connection closed")
 	}
 	if deadline := ctxDeadline(ctx, writeTimeout); !deadline.IsZero() {
@@ -422,6 +456,7 @@ func (c *NativeConn) sendPacketsOptional(ctx context.Context, packets [][]byte, 
 		return nil, false, c.ctxAbortErr(ctx, err)
 	}
 	if c.packet.protocol != expected {
+		c.markBrokenLocked()
 		return nil, false, fmt.Errorf("unexpected protocol %d expected %d", c.packet.protocol, expected)
 	}
 	return c.packet.body, true, nil
@@ -808,6 +843,9 @@ func (c *NativeConn) free(stmtID uint32) error {
 	body, err := c.sendPackets(context.Background(), w.finalize(), cmiFreeProtocol, c.queryTimeout)
 	if err != nil {
 		if strings.Contains(err.Error(), "unexpected protocol") {
+			// Freeing is a cleanup step, so the caller has nothing useful to do
+			// with this error. sendPackets has already marked the connection
+			// broken, so it will not be reused.
 			return nil
 		}
 		return err
@@ -971,7 +1009,7 @@ func (c *NativeConn) appendClose(stmtID uint32) (int64, int64, error) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
+	if c.closed.Load() {
 		return 0, 0, errors.New("connection closed")
 	}
 
@@ -981,11 +1019,11 @@ func (c *NativeConn) appendClose(stmtID uint32) (int64, int64, error) {
 	}
 	for _, p := range packets {
 		if err := writePacket(c.bw, p); err != nil {
-			return 0, 0, err
+			return 0, 0, c.ctxAbortErr(nil, err)
 		}
 	}
 	if err := c.bw.Flush(); err != nil {
-		return 0, 0, err
+		return 0, 0, c.ctxAbortErr(nil, err)
 	}
 
 	for {
@@ -998,7 +1036,7 @@ func (c *NativeConn) appendClose(stmtID uint32) (int64, int64, error) {
 		}
 
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, c.ctxAbortErr(nil, err)
 		}
 		switch c.packet.protocol {
 		case cmiAppendDataProtocol:
@@ -1008,6 +1046,7 @@ func (c *NativeConn) appendClose(stmtID uint32) (int64, int64, error) {
 		case cmiAppendCloseProtocol:
 			return parseAppendCloseResponse(c.packet.body)
 		default:
+			c.markBrokenLocked()
 			return 0, 0, fmt.Errorf("unexpected protocol %d expected %d", c.packet.protocol, cmiAppendCloseProtocol)
 		}
 	}

@@ -223,7 +223,7 @@ func TestSendPacketsContextCancellationAbortsBlockedRead(t *testing.T) {
 	if elapsed > 500*time.Millisecond {
 		t.Fatalf("sendPackets() took %v, want a prompt return after ctx cancellation", elapsed)
 	}
-	if !conn.closed {
+	if !conn.closed.Load() {
 		t.Fatal("connection should be marked closed after a context-aborted I/O")
 	}
 }
@@ -239,5 +239,182 @@ func TestConnHandleSupportsDatabaseMetadata(t *testing.T) {
 	current := &ConnHandle{native: &NativeConn{serverVersion: cmiV403MetadataVersion}}
 	if !current.SupportsDatabaseMetadata() {
 		t.Fatal("CMI 4.0.3 server does not report database metadata support")
+	}
+}
+
+// newPipeConn returns a NativeConn wired to one end of a net.Pipe, plus the
+// peer end standing in for the machbase server.
+func newPipeConn(t *testing.T) (*NativeConn, net.Conn) {
+	t.Helper()
+	client, server := net.Pipe()
+	t.Cleanup(func() {
+		client.Close()
+		server.Close()
+	})
+	conn := &NativeConn{
+		netConn: client,
+		br:      bufio.NewReader(client),
+		bw:      bufio.NewWriter(client),
+	}
+	return conn, server
+}
+
+// replyWithProtocol drains one whole request from the peer end and answers with
+// a packet carrying the given protocol id, which is how a desynchronized stream
+// looks to the client. The request body must be drained too: net.Pipe is
+// unbuffered, so a peer that stops reading mid-packet would deadlock the writer.
+func replyWithProtocol(t *testing.T, server net.Conn, protocol byte) chan error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		var header [packetHeaderSize]byte
+		_, _, _, _, bodyLen, err := readPacketHeader(server, &header)
+		if err != nil {
+			done <- err
+			return
+		}
+		if bodyLen > 0 {
+			if _, err := io.CopyN(io.Discard, server, int64(bodyLen)); err != nil {
+				done <- err
+				return
+			}
+		}
+		_, err = server.Write(buildPacket(protocol, 1, 0, 0, nil))
+		done <- err
+	}()
+	return done
+}
+
+func requireBroken(t *testing.T, conn *NativeConn, what string) {
+	t.Helper()
+	if !conn.closed.Load() {
+		t.Fatalf("%s: connection was not marked broken", what)
+	}
+	if (&ConnHandle{native: conn}).IsOpen() {
+		t.Fatalf("%s: ConnHandle.IsOpen() = true, want false so database/sql discards it", what)
+	}
+}
+
+func TestSendPacketsProtocolMismatchMarksConnectionBroken(t *testing.T) {
+	conn, server := newPipeConn(t)
+	served := replyWithProtocol(t, server, cmiFreeProtocol)
+
+	req := buildPacket(cmiExecDirectProtocol, 1, 0, 0, nil)
+	_, err := conn.sendPackets(context.Background(), [][]byte{req}, cmiExecDirectProtocol, 0)
+	if err == nil {
+		t.Fatal("sendPackets() error = nil, want an unexpected protocol error")
+	}
+	if !strings.Contains(err.Error(), "unexpected protocol") {
+		t.Fatalf("sendPackets() error = %v, want it to mention unexpected protocol", err)
+	}
+	if serveErr := <-served; serveErr != nil {
+		t.Fatalf("peer: %v", serveErr)
+	}
+	requireBroken(t, conn, "sendPackets protocol mismatch")
+}
+
+func TestSendPacketsOptionalProtocolMismatchMarksConnectionBroken(t *testing.T) {
+	conn, server := newPipeConn(t)
+	served := replyWithProtocol(t, server, cmiFreeProtocol)
+
+	req := buildPacket(cmiAppendDataProtocol, 1, 0, 0, nil)
+	_, ok, err := conn.sendPacketsOptional(context.Background(), [][]byte{req}, cmiAppendDataProtocol, time.Second, time.Second)
+	if err == nil {
+		t.Fatal("sendPacketsOptional() error = nil, want an unexpected protocol error")
+	}
+	if ok {
+		t.Fatal("sendPacketsOptional() reported a usable response for a mismatched protocol")
+	}
+	if serveErr := <-served; serveErr != nil {
+		t.Fatalf("peer: %v", serveErr)
+	}
+	requireBroken(t, conn, "sendPacketsOptional protocol mismatch")
+}
+
+// free() intentionally reports success on a protocol mismatch because its
+// caller (statement cleanup) has nothing to do with the error. The connection
+// must still be taken out of service, otherwise the desynchronized stream is
+// handed to the next borrower of the pooled connection.
+func TestFreeSwallowsProtocolMismatchButMarksConnectionBroken(t *testing.T) {
+	conn, server := newPipeConn(t)
+	served := replyWithProtocol(t, server, cmiExecDirectProtocol)
+
+	if err := conn.free(1); err != nil {
+		t.Fatalf("free() error = %v, want nil", err)
+	}
+	if serveErr := <-served; serveErr != nil {
+		t.Fatalf("peer: %v", serveErr)
+	}
+	requireBroken(t, conn, "free protocol mismatch")
+}
+
+// The fixed queryTimeout deadline is not derived from ctx, so ctx.Err() is nil
+// when it fires; the connection must be retired all the same because the
+// request was only partially written.
+func TestSendPacketsWriteTimeoutMarksConnectionBroken(t *testing.T) {
+	conn, _ := newPipeConn(t)
+
+	req := buildPacket(cmiExecDirectProtocol, 1, 0, 0, make([]byte, 64*1024))
+	_, err := conn.sendPackets(context.Background(), [][]byte{req}, cmiExecDirectProtocol, 20*time.Millisecond)
+	if err == nil {
+		t.Fatal("sendPackets() error = nil, want a write timeout")
+	}
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("sendPackets() error = %v, want a timeout error", err)
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "connection closed") {
+		t.Fatalf("sendPackets() error = %v, want the original error so it is not promoted to driver.ErrBadConn", err)
+	}
+	requireBroken(t, conn, "sendPackets write timeout")
+}
+
+// The append fast path deliberately treats a read timeout as "no response yet"
+// rather than a failure, so it must not retire the connection.
+func TestSendPacketsOptionalReadTimeoutKeepsConnectionUsable(t *testing.T) {
+	conn, server := newPipeConn(t)
+	drained := make(chan error, 1)
+	go func() {
+		header := make([]byte, packetHeaderSize)
+		_, err := io.ReadFull(server, header)
+		drained <- err
+	}()
+
+	req := buildPacket(cmiAppendDataProtocol, 1, 0, 0, nil)
+	body, ok, err := conn.sendPacketsOptional(context.Background(), [][]byte{req}, cmiAppendDataProtocol, time.Second, 20*time.Millisecond)
+	if err != nil {
+		t.Fatalf("sendPacketsOptional() error = %v, want nil", err)
+	}
+	if ok || body != nil {
+		t.Fatalf("sendPacketsOptional() = (%v, %v), want no optional response", body, ok)
+	}
+	if drainErr := <-drained; drainErr != nil {
+		t.Fatalf("peer: %v", drainErr)
+	}
+	if conn.closed.Load() {
+		t.Fatal("append read timeout must not retire the connection")
+	}
+	if !(&ConnHandle{native: conn}).IsOpen() {
+		t.Fatal("ConnHandle.IsOpen() = false after a benign append read timeout")
+	}
+}
+
+func TestConnHandleIsOpenTracksNativeConn(t *testing.T) {
+	if (*ConnHandle)(nil).IsOpen() {
+		t.Fatal("nil connection reports open")
+	}
+	if (&ConnHandle{}).IsOpen() {
+		t.Fatal("connection without a native socket reports open")
+	}
+	conn, _ := newPipeConn(t)
+	handle := &ConnHandle{native: conn}
+	if !handle.IsOpen() {
+		t.Fatal("fresh connection reports closed")
+	}
+	conn.mu.Lock()
+	conn.markBrokenLocked()
+	conn.mu.Unlock()
+	if handle.IsOpen() {
+		t.Fatal("broken connection still reports open")
 	}
 }
