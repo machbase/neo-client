@@ -158,6 +158,15 @@ func TestNormalizeErrorBadConn(t *testing.T) {
 	if !errors.Is(normalizeError(errors.New("connection closed")), driver.ErrBadConn) {
 		t.Fatalf("expected ErrBadConn for connection closed")
 	}
+	if !errors.Is(normalizeError(errors.New("eof")), driver.ErrBadConn) {
+		t.Fatalf("expected ErrBadConn for standalone eof")
+	}
+	if !errors.Is(normalizeError(errors.New("read failed: eof while reading")), driver.ErrBadConn) {
+		t.Fatalf("expected ErrBadConn for whitespace-delimited eof")
+	}
+	if errors.Is(normalizeError(errors.New("MACHCLI-ERR-2036, Function [JSON_TYPEOF] has an invalid argument.")), driver.ErrBadConn) {
+		t.Fatalf("did not expect ErrBadConn for server error containing JSON_TYPEOF")
+	}
 	if errors.Is(normalizeError(errors.New("other error")), driver.ErrBadConn) {
 		t.Fatalf("did not expect ErrBadConn for generic error")
 	}

@@ -154,7 +154,7 @@ func normalizeError(err error) error {
 		strings.Contains(msg, "broken pipe") ||
 		strings.Contains(msg, "connection reset") ||
 		strings.Contains(msg, "unexpected eof") ||
-		strings.Contains(msg, "eof") {
+		strings.Contains(" "+msg+" ", " eof ") {
 		return driver.ErrBadConn
 	}
 	return err
