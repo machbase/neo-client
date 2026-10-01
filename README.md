@@ -423,8 +423,9 @@ Supported DSN keys include:
 
 - `server`: server address such as `tcp://sys:manager@127.0.0.1:5656`
 - `host`, `port`: explicit server fields (default `port=5656`)
-- `user`, : login user and password
+- `user`, `password` : login user and password
 - `database`: database name
+- `timezone`: timezone for datetime values; accepts an IANA location such as `America/New_York` or an offset such as `+09:00` or `-0530` (default: UTC)
 - `auth_mode`: authentication mode (`password` or `challenge`)
 - `fetch_rows`, `fetchrows`: fetch batch size (default: `1000`)
 - `statement_cache`, `statementcache`: `auto`, `on`, or `off` (default: `auto`)
@@ -506,6 +507,7 @@ go run ./_example/scanbytag.go -s 127.0.0.1:5656 -u sys -p manager
 
 - `server=tcp://user:password@host:port`: full server URL
 - `database=DB_NAME` (or URL path): initial database for each physical connection
+- `timezone=America/New_York` (or `tz=+09:00`): timezone for datetime values; defaults to UTC
 - `fetch_rows=777`: override fetch batch size
 - `statement_cache=auto|on|off`: control statement reuse; defaults to `auto`
 - `io_metrics=true|false`: enable or disable I/O metrics
@@ -523,5 +525,5 @@ go run ./_example/scanbytag.go -s 127.0.0.1:5656 -u sys -p manager
 - [_example/insert.go](./_example/insert.go)
 - [_example/append.go](./_example/append.go)
 - [_example/scanbytag.go struct tag scan and named parameters](./_example/scanbytag.go)
-- [_example/v860.go v8.6.x example](./_example/v860.go)
-- [Machbase 8.6.0 Changes](./docs/machbase-860-upgrade.md)
+- [_example/v870.go v8.7.x example](./_example/v870.go)
+- [Machbase 8.7.0 Changes](./docs/machbase-870-upgrade.md)

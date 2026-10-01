@@ -13,7 +13,7 @@ import (
 	client "github.com/machbase/neo-client/v2"
 )
 
-const tableName = "GO860_SQL_SAMPLE"
+const tableName = "GO870_SQL_SAMPLE"
 
 func main() {
 	if err := run(context.Background()); err != nil {
@@ -33,7 +33,7 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("ping: %w", err)
 	}
 
-	if _, err := db.ExecContext(ctx, "CREATE TRANSACTION TABLE "+tableName+
+	if _, err := db.ExecContext(ctx, "CREATE TABLE "+tableName+
 		" (ID INTEGER PRIMARY KEY, AMOUNT DECIMAL(30,12), NOTE VARCHAR(80))"); err != nil {
 		return fmt.Errorf("create table: %w", err)
 	}

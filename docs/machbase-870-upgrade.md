@@ -1,12 +1,12 @@
-# Machbase 8.6.0 Go 클라이언트 사용 안내서
+# Machbase 8.7.0 Go 클라이언트 사용 안내서
 
-이 문서는 Go 애플리케이션에서 Machbase 8.6.0의 Transaction table, DECIMAL, named parameter, NULL 처리와 transaction 기능을 사용하는 방법을 설명한다.
+이 문서는 Go 애플리케이션에서 Machbase 8.7.0의 Transaction table, DECIMAL, named parameter, NULL 처리와 transaction 기능을 사용하는 방법을 설명한다.
 
-> **Edition 주의:** Transaction table은 Machbase 8.6.0 standard(single-node) edition에서 사용할 수 있다. cluster edition에서는 Transaction table을 생성할 수 없다.
+> **Edition 주의:** Transaction table은 Machbase 8.7.0 standard(single-node) edition에서 사용할 수 있다. cluster edition에서는 Transaction table을 생성할 수 없다.
 
 ## 1. 시작하기 전에
 
-Go 1.22 이상과 Machbase 8.6.0을 지원하는 neo-client 배포본을 사용한다. 사용하는 client 버전을 확인하려면 애플리케이션 module 디렉터리에서 다음 명령을 실행한다.
+Go 1.22 이상과 Machbase 8.7.0을 지원하는 neo-client 배포본을 사용한다. 사용하는 client 버전을 확인하려면 애플리케이션 module 디렉터리에서 다음 명령을 실행한다.
 
 ```bash
 go list -m github.com/machbase/neo-client
@@ -235,7 +235,7 @@ if err := rows.Err(); err != nil {
 
 ## 6. named parameter
 
-Machbase 8.6.0에서는 SQL parameter에 이름을 지정할 수 있다.
+Machbase 8.7.0에서는 SQL parameter에 이름을 지정할 수 있다.
 
 ### 6.1 native API
 
@@ -404,7 +404,7 @@ Appender 사용 시 다음 사항에 주의한다.
 
 ## 10. prepared statement 재사용
 
-Machbase 8.6.0에서는 table을 다시 생성하여 result column type이 변경된 경우에도 기존 prepared statement를 재사용할 수 있다.
+Machbase 8.7.0에서는 table을 다시 생성하여 result column type이 변경된 경우에도 기존 prepared statement를 재사용할 수 있다.
 
 ```go
 stmt, err := db.PrepareContext(ctx,
@@ -433,7 +433,7 @@ err := db.QueryRowContext(ctx,
     "SELECT NAME FROM T WHERE ID=?", int32(1)).Scan(&name)
 ```
 
-| 기능 | Machbase 8.6.0 | Machbase 8.5.x |
+| 기능 | Machbase 8.7.0 | Machbase 8.5.x |
 |---|---|---|
 | 기존 table과 data type의 positional query | 지원 | 지원 |
 | Transaction table | standard edition에서 지원 | 지원하지 않음 |
@@ -450,7 +450,7 @@ Machbase 8.5.x에서는 `:id` 형식 대신 `?`를 사용하고 값을 SQL에 �
 
 ### 신규 API가 정의되지 않았다고 나옴
 
-`api.Decimal`, `api.Named` 또는 `TableTypeTransaction`을 찾을 수 없다면 Machbase 8.6.0을 지원하는 neo-client 배포본을 사용하고 있는지 확인한다.
+`api.Decimal`, `api.Named` 또는 `TableTypeTransaction`을 찾을 수 없다면 Machbase 8.7.0을 지원하는 neo-client 배포본을 사용하고 있는지 확인한다.
 
 ```bash
 go list -m github.com/machbase/neo-client

@@ -216,6 +216,22 @@ func applyDSNOption(cfg *Config, key string, value string) (bool, error) {
 		cfg.Password = value
 	case "database", "db":
 		cfg.Database = value
+	case "timezone", "tz":
+		if strings.HasPrefix(value, "+") || strings.HasPrefix(value, "-") {
+			if offsetSeconds, err := offsetToSeconds(value); err != nil {
+				return true, fmt.Errorf("invalid timezone offset %q: %w", value, err)
+			} else {
+				cfg.TimeLocation = time.FixedZone("UTC", offsetSeconds)
+			}
+		} else {
+			if strings.EqualFold(value, "local") {
+				cfg.TimeLocation = time.Local
+			} else if tz, err := time.LoadLocation(value); err != nil {
+				return true, fmt.Errorf("invalid timezone %q: %w", value, err)
+			} else {
+				cfg.TimeLocation = tz
+			}
+		}
 	case "auth_mode":
 		cfg.AuthMode = value
 	case "auth_key_file":
@@ -248,6 +264,40 @@ func applyDSNOption(cfg *Config, key string, value string) (bool, error) {
 		return false, nil
 	}
 	return true, nil
+}
+
+func offsetToSeconds(offset string) (int, error) {
+	if len(offset) < 3 {
+		return 0, fmt.Errorf("invalid offset %q", offset)
+	}
+	sign := 1
+	switch offset[0] {
+	case '+':
+		sign = 1
+	case '-':
+		sign = -1
+	default:
+		return 0, fmt.Errorf("invalid offset %q", offset)
+	}
+	hours, err := strconv.Atoi(offset[1:3])
+	if err != nil {
+		return 0, fmt.Errorf("invalid offset %q", offset)
+	}
+	minutes := 0
+	if len(offset) >= 6 && offset[3] == ':' {
+		// Handle offsets with colon, e.g., +hh:mm
+		minutes, err = strconv.Atoi(offset[4:6])
+		if err != nil {
+			return 0, fmt.Errorf("invalid offset %q", offset)
+		}
+	} else if len(offset) >= 5 && offset[2] != ':' {
+		// Handle offsets without colon, e.g., +hhmm
+		minutes, err = strconv.Atoi(offset[3:5])
+		if err != nil {
+			return 0, fmt.Errorf("invalid offset %q", offset)
+		}
+	}
+	return sign * (hours*3600 + minutes*60), nil
 }
 
 func splitDSNSegments(dsn string) ([]string, error) {

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeValidTestAuthKeyPEMFile(t *testing.T) string {
@@ -152,6 +153,49 @@ func TestParseDSNDefaultsDatabase(t *testing.T) {
 	}
 	if cfg.Database != defaultDatabase {
 		t.Fatalf("database=%q, want %q", cfg.Database, defaultDatabase)
+	}
+}
+
+func TestParseDSNTimezone(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		dsn        string
+		zone       string
+		offsetSecs int
+	}{
+		{name: "timezone positive offset", dsn: "timezone=+09:30", zone: "UTC", offsetSecs: 9*60*60 + 30*60},
+		{name: "tz negative compact offset", dsn: "tz=-0530", zone: "UTC", offsetSecs: -(5*60*60 + 30*60)},
+		{name: "timezone location", dsn: "timezone=America/New_York", zone: "EST", offsetSecs: -5 * 60 * 60},
+		{name: "tz location", dsn: "tz=Asia/Seoul", zone: "KST", offsetSecs: 9 * 60 * 60},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := ParseDSN(tc.dsn)
+			if err != nil {
+				t.Fatalf("ParseDSN() error = %v", err)
+			}
+			zone, offset := time.Date(2024, time.January, 15, 0, 0, 0, 0, time.UTC).In(cfg.TimeLocation).Zone()
+			if zone != tc.zone || offset != tc.offsetSecs {
+				t.Fatalf("timezone = %s (%d), want %s (%d)", zone, offset, tc.zone, tc.offsetSecs)
+			}
+		})
+	}
+}
+
+func TestParseDSNInvalidTimezone(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		dsn        string
+		errMessage string
+	}{
+		{name: "invalid offset", dsn: "tz=+bad", errMessage: "invalid timezone offset"},
+		{name: "unknown location", dsn: "timezone=Invalid/Timezone", errMessage: "invalid timezone"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseDSN(tc.dsn)
+			if err == nil || !strings.Contains(err.Error(), tc.errMessage) {
+				t.Fatalf("ParseDSN() error = %v, want error containing %q", err, tc.errMessage)
+			}
+		})
 	}
 }
 
