@@ -31,6 +31,7 @@ const (
 	SqlTypeFloatArray   SqlType = 22
 	SqlTypeDoubleArray  SqlType = 23
 	SqlTypeDecimalArray SqlType = 24
+	SqlTypeVector       SqlType = 25
 )
 
 func (st SqlType) String() string {
@@ -83,6 +84,8 @@ func (st SqlType) String() string {
 		return "DOUBLE_ARRAY"
 	case SqlTypeDecimalArray:
 		return "DECIMAL_ARRAY"
+	case SqlTypeVector:
+		return "VECTOR"
 	default:
 		return fmt.Sprintf("UNKNOWN(%d)", st)
 	}
@@ -192,6 +195,8 @@ func (st SqlType) ColumnType() ColumnType {
 		return ColumnTypeDoubleArray
 	case SqlTypeDecimalArray:
 		return ColumnTypeDecimalArray
+	case SqlTypeVector:
+		return ColumnTypeVector
 	}
 }
 
@@ -247,6 +252,8 @@ func (st SqlType) DataType() DataType {
 		return DataTypeDoubleArray
 	case SqlTypeDecimalArray:
 		return DataTypeDecimalArray
+	case SqlTypeVector:
+		return DataTypeVector
 	}
 }
 

@@ -326,6 +326,26 @@ func Scan(src any, dst any, loc *time.Location) error {
 		if sv != nil {
 			return Scan(*sv, dst, loc)
 		}
+	case api.Vector:
+		switch d := dst.(type) {
+		case *api.Vector:
+			*d = append(api.Vector(nil), sv...)
+			return nil
+		case **api.Vector:
+			value := append(api.Vector(nil), sv...)
+			*d = &value
+			return nil
+		case *[]float32:
+			*d = append([]float32(nil), sv...)
+			return nil
+		case *driver.Value:
+			*d = append(api.Vector(nil), sv...)
+			return nil
+		}
+	case *api.Vector:
+		if sv != nil {
+			return Scan(*sv, dst, loc)
+		}
 	}
 	return fmt.Errorf("cannot convert value from %T to %T", src, dst)
 }
@@ -430,6 +450,10 @@ func ScanNull(dst any) bool {
 	case *api.Array:
 		*d = api.Array{}
 	case **api.Array:
+		*d = nil
+	case *api.Vector:
+		*d = nil
+	case **api.Vector:
 		*d = nil
 	case *sql.Null[any]:
 		d.V = nil
@@ -1050,6 +1074,11 @@ func Unbox(val any) any {
 			}
 		}
 		return values
+	case *api.Vector:
+		if v == nil {
+			return nil
+		}
+		return append([]float32(nil), (*v)...)
 	default:
 		return val
 	}

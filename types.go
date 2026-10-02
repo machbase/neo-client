@@ -115,6 +115,8 @@ func NewColumnWithType(colType *sql.ColumnType) *Column {
 		dataType = api.DataTypeIPv6
 	case "DECIMAL":
 		dataType = api.DataTypeDecimal
+	case "VECTOR":
+		dataType = api.DataTypeVector
 	case "INT16_ARRAY":
 		dataType = api.DataTypeInt16Array
 	case "UINT16_ARRAY":

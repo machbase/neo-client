@@ -70,8 +70,8 @@ func TestParseGeneratedRowIDVersionGateAndBits(t *testing.T) {
 }
 
 func TestGeneratedRowIDVersionGate(t *testing.T) {
-	if got := protocolVersion(); got != cmiArrayVersion {
-		t.Fatalf("client protocol version = %#x, want %#x", got, cmiArrayVersion)
+	if got := protocolVersion(); got != cmiVectorVersion {
+		t.Fatalf("client protocol version = %#x, want %#x", got, cmiVectorVersion)
 	}
 
 	legacy := &NativeConn{serverVersion: (4 << 48) | 2}
@@ -96,6 +96,17 @@ func TestArrayVersionGate(t *testing.T) {
 	current := &NativeConn{serverVersion: cmiArrayVersion}
 	if !current.supportsArray() {
 		t.Fatal("CMI 4.0.4 server must advertise ARRAY")
+	}
+}
+
+func TestVectorVersionGate(t *testing.T) {
+	legacy := &NativeConn{serverVersion: cmiArrayVersion}
+	if legacy.supportsVector() {
+		t.Fatal("CMI 4.0.4 server must not advertise VECTOR")
+	}
+	current := &NativeConn{serverVersion: cmiVectorVersion}
+	if !current.supportsVector() {
+		t.Fatal("CMI 4.0.5 server must advertise VECTOR")
 	}
 }
 

@@ -246,6 +246,14 @@ func isNilAppendValue(value any) bool {
 	if value == nil {
 		return true
 	}
+	switch v := value.(type) {
+	case api.Vector:
+		return v == nil
+	case []float32:
+		return v == nil
+	case []float64:
+		return v == nil
+	}
 	ref := reflect.ValueOf(value)
 	return (ref.Kind() == reflect.Pointer || ref.Kind() == reflect.Interface) &&
 		ref.IsNil()
@@ -297,6 +305,12 @@ func encodeAppendVarField(data []byte, serverEndian uint32) []byte {
 func encodeAppendColumnValue(col ColumnMeta, value any, serverEndian uint32) ([]byte, error) {
 	isArrayElement := isProjectedAppendArrayElement(col.name)
 	switch col.spinerType {
+	case cmdVectorType:
+		payload, err := encodeVectorPayload(value, col.precision)
+		if err != nil {
+			return nil, err
+		}
+		return encodeAppendVarField(payload, serverEndian), nil
 	case cmdInt16ArrayType, cmdUInt16ArrayType, cmdInt32ArrayType, cmdUInt32ArrayType,
 		cmdInt64ArrayType, cmdUInt64ArrayType, cmdFlt32ArrayType, cmdFlt64ArrayType,
 		cmdDecimalArrayType:
