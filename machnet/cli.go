@@ -512,7 +512,30 @@ func (stmt *StmtHandle) BindParam(paramNo int, sqlType api.SqlType, value any) e
 		stmt.lastErr.setErr(err)
 		return err
 	}
+	if sqlType == api.SqlTypeVector && !stmt.conn.native.supportsVector() {
+		err := makeClientErr("VECTOR requires CMI 4.0.5 or later")
+		stmt.lastErr.setErr(err)
+		return err
+	}
 	bp := BoundParam{sqlType: sqlType, value: value, isNull: value == nil}
+	if sqlType == api.SqlTypeVector {
+		switch v := value.(type) {
+		case api.Vector:
+			bp.isNull = v == nil
+		case []float32:
+			bp.isNull = v == nil
+		case []float64:
+			bp.isNull = v == nil
+		case *api.Vector:
+			bp.isNull = v == nil
+		}
+		if bp.isNull {
+			bp.value = nil
+		}
+	}
+	if sqlType == api.SqlTypeVector && paramNo < len(stmt.paramDesc) && stmt.paramDesc[paramNo].Type == api.SqlTypeVector {
+		bp.cardinality = stmt.paramDesc[paramNo].Precision
+	}
 	if paramNo < len(stmt.paramDesc) && stmt.paramDesc[paramNo].Type.IsArray() {
 		bp.cardinality = stmt.paramDesc[paramNo].Precision
 		bp.elementPrecision = stmt.paramDesc[paramNo].ElementPrecision
@@ -607,6 +630,8 @@ func (stmt *StmtHandle) DescribeColEx(columnNo int, pName *string, pType *api.Sq
 	if pSize != nil {
 		sz := col.length
 		if isArraySpinerType(col.spinerType) {
+			sz = col.precision
+		} else if col.spinerType == cmdVectorType {
 			sz = col.precision
 		} else if col.spinerType == cmdDecimalType {
 			sz = col.precision

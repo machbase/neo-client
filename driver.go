@@ -1349,6 +1349,20 @@ func (s *Stmt) bindParams(args ...any) error {
 		case []byte:
 			sqlType = api.SqlTypeBinary
 			value = val
+		case api.Vector:
+			sqlType = api.SqlTypeVector
+			value = val
+		case *api.Vector:
+			sqlType = api.SqlTypeVector
+			if val != nil {
+				value = val
+			}
+		case []float32:
+			sqlType = api.SqlTypeVector
+			value = val
+		case []float64:
+			sqlType = api.SqlTypeVector
+			value = val
 		case api.Decimal:
 			sqlType = api.SqlTypeDecimal
 			value = val
@@ -1731,6 +1745,8 @@ func (r *Rows) ColumnTypeScanType(index int) reflect.Type {
 		return reflect.TypeOf(time.Time{})
 	case api.ColumnTypeDecimal:
 		return reflect.TypeOf("")
+	case api.ColumnTypeVector:
+		return reflect.TypeOf(api.Vector{})
 	case api.ColumnTypeInt16Array, api.ColumnTypeUInt16Array, api.ColumnTypeInt32Array,
 		api.ColumnTypeUInt32Array, api.ColumnTypeInt64Array, api.ColumnTypeUInt64Array,
 		api.ColumnTypeFloatArray, api.ColumnTypeDoubleArray, api.ColumnTypeDecimalArray:

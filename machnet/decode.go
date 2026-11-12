@@ -218,6 +218,8 @@ func decodeRowInto(ret []any, data []byte, columns []ColumnMeta) error {
 
 func decodeVariableField(col ColumnMeta, field []byte) (any, error) {
 	switch col.spinerType {
+	case cmdVectorType:
+		return decodeVectorPayload(col, field)
 	case cmdInt16ArrayType, cmdUInt16ArrayType, cmdInt32ArrayType, cmdUInt32ArrayType,
 		cmdInt64ArrayType, cmdUInt64ArrayType, cmdFlt32ArrayType, cmdFlt64ArrayType,
 		cmdDecimalArrayType:

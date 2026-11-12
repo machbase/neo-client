@@ -27,6 +27,9 @@ The examples in this module show how to connect to a Machbase Neo server, execut
 For fixed-cardinality numeric ARRAY values, sparse values, and append element
 projection, see [ARRAY type and sparse append](docs/array-type-support.md).
 
+For Machbase VECTOR columns on CMI 4.0.5 or later, see
+[VECTOR values, prepared binds, and APPEND](docs/vector-type-support.md).
+
 The script builds all packages and test packages outside the workspace (`GOWORK=off`) with the Go toolchain declared in `go.mod`, which catches newer language features and standard library APIs that a downstream user on the declared Go version could not build.
 
 The examples in this repository use the native TCP endpoint, usually `127.0.0.1:5656`.

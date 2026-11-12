@@ -29,6 +29,7 @@ const (
 	DataTypeUInt64       DataType = "uint64"
 	DataTypeJSON         DataType = "json"
 	DataTypeDecimal      DataType = "decimal"
+	DataTypeVector       DataType = "vector"
 	DataTypeArray        DataType = "array"
 	DataTypeInt16Array   DataType = "int16_array"
 	DataTypeUInt16Array  DataType = "uint16_array"
@@ -77,6 +78,8 @@ func DataTypeOf(v any) DataType {
 		return DataTypeDecimal
 	case *Array, Array:
 		return DataTypeArray
+	case Vector, *Vector, []float32:
+		return DataTypeVector
 	}
 }
 
@@ -218,6 +221,12 @@ func (typ DataType) Apply(value any, timeformat string, tz *time.Location) (any,
 		default:
 			return nil, fmt.Errorf("%T is not convertible to decimal", value)
 		}
+	case DataTypeVector:
+		var vector Vector
+		if err := vector.Scan(value); err != nil {
+			return nil, err
+		}
+		return vector, nil
 	// case DB_COLUMN_TYPE_CLOB:
 	// 	return util.ParseString(v)
 	// case DB_COLUMN_TYPE_BLOB:
@@ -275,6 +284,8 @@ func (typ DataType) ColumnType() ColumnType {
 		return ColumnTypeInteger
 	case DataTypeDecimal:
 		return ColumnTypeDecimal
+	case DataTypeVector:
+		return ColumnTypeVector
 	case DataTypeByte:
 		return ColumnTypeInteger
 	default:
@@ -313,6 +324,8 @@ func (typ DataType) ColumnType() ColumnType {
 			return ColumnTypeIPv6
 		case COLUMN_TYPE_JSON:
 			return ColumnTypeJSON
+		case "vector":
+			return ColumnTypeVector
 		default:
 			return ColumnTypeVarchar
 		}
@@ -395,6 +408,8 @@ func (typ DataType) MakeBuffer(nullable bool) (any, error) {
 		return new(Decimal), nil
 	case DataTypeArray:
 		return new(*Array), nil
+	case DataTypeVector:
+		return new(*Vector), nil
 	case DataTypeBoolean:
 		if nullable {
 			return new(sql.NullBool), nil

@@ -142,6 +142,10 @@ func encodeBoundParam(p BoundParam) (int, []byte, error) {
 		data, err := encodeArrayPayload(value, col, true)
 		return cmdType, data, err
 	}
+	if p.sqlType == api.SqlTypeVector {
+		data, err := encodeVectorPayload(p.value, p.cardinality)
+		return cmdType, data, err
+	}
 
 	switch p.sqlType {
 	case api.SqlTypeInt16:
