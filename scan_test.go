@@ -3,6 +3,7 @@ package client
 import (
 	"database/sql"
 	"net"
+	"strconv"
 	"testing"
 	"time"
 
@@ -11,6 +12,46 @@ import (
 
 type unsupportedValue struct {
 	A int
+}
+
+func TestScanWideUnsignedIntegers(t *testing.T) {
+	const high32 = uint32(4294967294)
+	const high64 = uint64(18446744073709551614)
+	var v32 sql.Null[uint32]
+	var v64 sql.Null[uint64]
+	var text string
+	if err := Scan(high32, &v32, time.UTC); err != nil || !v32.Valid || v32.V != high32 {
+		t.Fatalf("Scan uint32: got %+v, %v", v32, err)
+	}
+	if err := Scan(high64, &v64, time.UTC); err != nil || !v64.Valid || v64.V != high64 {
+		t.Fatalf("Scan uint64: got %+v, %v", v64, err)
+	}
+	if err := Scan(high64, &text, time.UTC); err != nil || text != "18446744073709551614" {
+		t.Fatalf("Scan ULONG as text: got %q, %v", text, err)
+	}
+}
+
+func TestScanUint64IntoUint(t *testing.T) {
+	for _, value := range []uint64{1 << 32, 18446744073709551614} {
+		t.Run(strconv.FormatUint(value, 10), func(t *testing.T) {
+			direct := uint(1)
+			var indirect *uint
+			directErr := Scan(value, &direct, time.UTC)
+			indirectErr := Scan(value, &indirect, time.UTC)
+			if strconv.IntSize == 32 {
+				if directErr == nil || indirectErr == nil || direct != 1 || indirect != nil {
+					t.Fatalf("overflow should leave both destinations unchanged: direct=%d (%v), indirect=%v (%v)", direct, directErr, indirect, indirectErr)
+				}
+				return
+			}
+			if directErr != nil || uint64(direct) != value {
+				t.Fatalf("direct scan: got %d, %v; want %d", direct, directErr, value)
+			}
+			if indirectErr != nil || indirect == nil || uint64(*indirect) != value {
+				t.Fatalf("indirect scan: got %v, %v; want pointer to %d", indirect, indirectErr, value)
+			}
+		})
+	}
 }
 
 func TestScanToGenericNullTargets(t *testing.T) {

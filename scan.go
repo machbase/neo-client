@@ -76,7 +76,8 @@ This document summarizes the type-handling matrix in scan.go for:
 | bool, *bool                                  | Routed to scanBool             |
 | int16, *int16, uint16, *uint16               | Routed to scanInt16            |
 | int32, *int32, uint32, *uint32               | Routed to scanInt32            |
-| int64, *int64, uint64, *uint64               | Routed to scanInt64            |
+| int64, *int64                               | Routed to scanInt64            |
+| uint64, *uint64                             | Routed to scanUint64           |
 | float32, *float32, float64, *float64         | Routed to scanFloat32/scanFloat64 |
 | string, *string, JSONString, *JSONString     | Routed to scanString           |
 | time.Time, *time.Time                        | Routed to scanDatetime         |
@@ -178,12 +179,12 @@ func Scan(src any, dst any, loc *time.Location) error {
 			return scanInt32(sv.V, dst)
 		}
 	case uint32:
-		return scanInt32(int32(sv), dst)
+		return scanUint32(sv, dst)
 	case *uint32:
-		return scanInt32(int32(*sv), dst)
+		return scanUint32(*sv, dst)
 	case *sql.Null[uint32]:
 		if sv.Valid {
-			return scanInt32(int32(sv.V), dst)
+			return scanUint32(sv.V, dst)
 		}
 	case int64:
 		return scanInt64(sv, dst)
@@ -198,12 +199,12 @@ func Scan(src any, dst any, loc *time.Location) error {
 			return scanInt64(sv.V, dst)
 		}
 	case uint64:
-		return scanInt64(int64(sv), dst)
+		return scanUint64(sv, dst)
 	case *uint64:
-		return scanInt64(int64(*sv), dst)
+		return scanUint64(*sv, dst)
 	case *sql.Null[uint64]:
 		if sv.Valid {
-			return scanInt64(int64(sv.V), dst)
+			return scanUint64(sv.V, dst)
 		}
 	case float64:
 		return scanFloat64(sv, dst)
@@ -617,6 +618,11 @@ func scanInt64(src int64, pDst any) error {
 	case *sql.Null[int64]:
 		dst.Valid = true
 		dst.V = src
+	case *sql.Null[uint32]:
+		if src < 0 || src > math.MaxUint32 {
+			return fmt.Errorf("scan value %d overflows uint32", src)
+		}
+		dst.V, dst.Valid = uint32(src), true
 	case *sql.Null[uint64]:
 		dst.Valid = true
 		dst.V = uint64(src)
@@ -720,6 +726,38 @@ func scanFloat64(src float64, pDst any) error {
 			return err
 		}
 		return fmt.Errorf("scan convert from FLOAT64 to %T not supported", pDst)
+	}
+	return nil
+}
+
+func scanUint32(src uint32, pDst any) error {
+	if src <= math.MaxInt32 {
+		return scanInt32(int32(src), pDst)
+	}
+	return scanInt64(int64(src), pDst)
+}
+
+func scanUint64(src uint64, pDst any) error {
+	if dst, ok := pDst.(*uint); ok {
+		if src > uint64(^uint(0)) {
+			return fmt.Errorf("scan value %d overflows uint", src)
+		}
+		*dst = uint(src)
+		return nil
+	}
+	if ok, err := scanIndirect(pDst, func(d any) error { return scanUint64(src, d) }); ok {
+		return err
+	}
+	if src <= math.MaxInt64 {
+		return scanInt64(int64(src), pDst)
+	}
+	switch dst := pDst.(type) {
+	case *uint64:
+		*dst = src
+	case *sql.Null[uint64]:
+		dst.V, dst.Valid = src, true
+	default:
+		return scanString(strconv.FormatUint(src, 10), pDst)
 	}
 	return nil
 }

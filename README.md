@@ -447,6 +447,14 @@ The URL path also selects the initial database, for example `tcp://sys:manager@1
 
 The standard driver follows `database/sql` pooling through `sql.DB`. On servers that support transaction tables, `Begin`, `BeginTx`, `Commit`, and `Rollback` execute explicit transactions. Only the default isolation level is accepted; read-only and custom isolation options return an error. `LastInsertId` is not supported.
 
+`uint32` and `uint64` SQL arguments bind as `UINTEGER` and `ULONG`, respectively.
+The all-ones value of either type is reserved for Machbase `NULL`; pass `nil` for SQL `NULL`.
+When an `ULONG` result exceeds `math.MaxInt64`, `database/sql` receives its exact decimal
+string instead of an overflowing `int64`. Use `Scan(&value)` with a `uint64` destination
+to read either representation as an unsigned integer.
+The client-native scanner also accepts `uint` destinations when the result fits
+the platform's `uint` width.
+
 ### Machbase 8.6.0 DECIMAL and Named Parameters
 
 Machbase 8.6.0 provides exact DECIMAL values, nullable column information, and named parameters:
