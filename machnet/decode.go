@@ -293,6 +293,9 @@ func decodeFixedField(col ColumnMeta, field []byte) any {
 		if v == ulongNull {
 			return nil
 		}
+		if v > math.MaxInt64 {
+			return v
+		}
 		return int64(v)
 	case cmdFlt32Type:
 		if len(field) < 4 {

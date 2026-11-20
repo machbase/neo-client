@@ -93,6 +93,10 @@ func encodeBoundParam(p BoundParam) (int, []byte, error) {
 			b := make([]byte, 8)
 			binary.BigEndian.PutUint64(b, 0x8000000000000000)
 			return cmdType, b, nil
+		case api.SqlTypeUInt32:
+			return cmdType, binary.BigEndian.AppendUint32(nil, uintNull), nil
+		case api.SqlTypeUInt64:
+			return cmdType, binary.BigEndian.AppendUint64(nil, ulongNull), nil
 		case api.SqlTypeDatetime:
 			b := make([]byte, 8)
 			binary.BigEndian.PutUint64(b, datetimeNull)

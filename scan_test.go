@@ -13,6 +13,23 @@ type unsupportedValue struct {
 	A int
 }
 
+func TestScanWideUnsignedIntegers(t *testing.T) {
+	const high32 = uint32(4294967294)
+	const high64 = uint64(18446744073709551614)
+	var v32 sql.Null[uint32]
+	var v64 sql.Null[uint64]
+	var text string
+	if err := Scan(high32, &v32, time.UTC); err != nil || !v32.Valid || v32.V != high32 {
+		t.Fatalf("Scan uint32: got %+v, %v", v32, err)
+	}
+	if err := Scan(high64, &v64, time.UTC); err != nil || !v64.Valid || v64.V != high64 {
+		t.Fatalf("Scan uint64: got %+v, %v", v64, err)
+	}
+	if err := Scan(high64, &text, time.UTC); err != nil || text != "18446744073709551614" {
+		t.Fatalf("Scan ULONG as text: got %q, %v", text, err)
+	}
+}
+
 func TestScanToGenericNullTargets(t *testing.T) {
 	loc := time.UTC
 

@@ -84,21 +84,21 @@ func normalizeNamedValue(value any) (any, error) {
 	case bool:
 		return nil, fmt.Errorf("machbase does not support bool parameter type")
 	case uint:
-		if uint64(v) > math.MaxInt64 {
-			return nil, fmt.Errorf("uint value %d overflows int64", v)
-		}
-		return int64(v), nil
+		return normalizeNamedValue(uint64(v))
 	case uint8:
 		return int64(v), nil
 	case uint16:
 		return int64(v), nil
 	case uint32:
-		return int64(v), nil
-	case uint64:
-		if v > math.MaxInt64 {
-			return nil, fmt.Errorf("uint64 value %d overflows int64", v)
+		if v == math.MaxUint32 {
+			return nil, fmt.Errorf("uint32 value %d is reserved for Machbase NULL; use nil", v)
 		}
-		return int64(v), nil
+		return v, nil
+	case uint64:
+		if v == math.MaxUint64 {
+			return nil, fmt.Errorf("uint64 value %d is reserved for Machbase NULL; use nil", v)
+		}
+		return v, nil
 	case *uint:
 		if v == nil {
 			return nil, nil
@@ -118,7 +118,7 @@ func normalizeNamedValue(value any) (any, error) {
 		if v == nil {
 			return nil, nil
 		}
-		return int64(*v), nil
+		return normalizeNamedValue(*v)
 	case *uint64:
 		if v == nil {
 			return nil, nil
@@ -258,7 +258,7 @@ func toDriverValue(value any) (driver.Value, error) {
 		if v == nil {
 			return nil, nil
 		}
-		return int64(*v), nil
+		return toDriverValue(*v)
 	case *float32:
 		if v == nil {
 			return nil, nil
@@ -317,6 +317,11 @@ func toDriverValue(value any) (driver.Value, error) {
 		return int64(v), nil
 	case int64:
 		return v, nil
+	case uint64:
+		if v > math.MaxInt64 {
+			return strconv.FormatUint(v, 10), nil
+		}
+		return int64(v), nil
 	case float32:
 		return float64(v), nil
 	case float64:

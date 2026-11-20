@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"math"
 	"net"
 	"reflect"
 	"strings"
@@ -113,6 +114,20 @@ func TestCheckNamedValue(t *testing.T) {
 	}
 	if err := checkNamedValue(&driver.NamedValue{Ordinal: 1, Value: true}); err == nil {
 		t.Fatalf("expected unsupported bool error")
+	}
+}
+
+func TestCheckNamedValuePreservesUnsignedTypes(t *testing.T) {
+	u32 := uint32(math.MaxUint32 - 1)
+	u64 := uint64(math.MaxUint64 - 1)
+	for _, tc := range []struct{ input, want any }{
+		{u32, u32}, {&u32, u32}, {u64, u64}, {&u64, u64},
+		{uint(7), uint64(7)}, {(*uint32)(nil), nil}, {(*uint64)(nil), nil},
+	} {
+		nv := driver.NamedValue{Value: tc.input}
+		if err := checkNamedValue(&nv); err != nil || nv.Value != tc.want {
+			t.Errorf("checkNamedValue(%v): got %v (%T), %v; want %v (%T)", tc.input, nv.Value, nv.Value, err, tc.want, tc.want)
+		}
 	}
 }
 
