@@ -27,7 +27,8 @@ func encodeVectorPayload(value any, dimension int) ([]byte, error) {
 
 func decodeVectorPayload(col ColumnMeta, payload []byte) (api.Vector, error) {
 	if col.precision < 1 || col.precision > api.VectorMaxDimension ||
-		len(payload) == 0 || len(payload)%4 != 0 || len(payload) > col.precision*4 {
+		len(payload) == 0 || len(payload)%4 != 0 || len(payload) > col.precision*4 ||
+		(col.precision != api.VectorMaxDimension && len(payload) != col.precision*4) {
 		return nil, fmt.Errorf("invalid VECTOR payload length")
 	}
 	ret := make(api.Vector, len(payload)/4)

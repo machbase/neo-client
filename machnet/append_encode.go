@@ -247,6 +247,8 @@ func isNilAppendValue(value any) bool {
 		return true
 	}
 	switch v := value.(type) {
+	case *api.Vector:
+		return v == nil || *v == nil
 	case api.Vector:
 		return v == nil
 	case []float32:

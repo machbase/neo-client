@@ -527,7 +527,7 @@ func (stmt *StmtHandle) BindParam(paramNo int, sqlType api.SqlType, value any) e
 		case []float64:
 			bp.isNull = v == nil
 		case *api.Vector:
-			bp.isNull = v == nil
+			bp.isNull = v == nil || *v == nil
 		}
 		if bp.isNull {
 			bp.value = nil

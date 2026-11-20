@@ -453,6 +453,8 @@ func ScanNull(dst any) bool {
 		*d = nil
 	case *api.Vector:
 		*d = nil
+	case *[]float32:
+		*d = nil
 	case **api.Vector:
 		*d = nil
 	case *sql.Null[any]:
