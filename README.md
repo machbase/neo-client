@@ -452,6 +452,8 @@ The all-ones value of either type is reserved for Machbase `NULL`; pass `nil` fo
 When an `ULONG` result exceeds `math.MaxInt64`, `database/sql` receives its exact decimal
 string instead of an overflowing `int64`. Use `Scan(&value)` with a `uint64` destination
 to read either representation as an unsigned integer.
+The client-native scanner also accepts `uint` destinations when the result fits
+the platform's `uint` width.
 
 ### Machbase 8.6.0 DECIMAL and Named Parameters
 

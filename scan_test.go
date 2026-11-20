@@ -3,6 +3,7 @@ package client
 import (
 	"database/sql"
 	"net"
+	"strconv"
 	"testing"
 	"time"
 
@@ -27,6 +28,29 @@ func TestScanWideUnsignedIntegers(t *testing.T) {
 	}
 	if err := Scan(high64, &text, time.UTC); err != nil || text != "18446744073709551614" {
 		t.Fatalf("Scan ULONG as text: got %q, %v", text, err)
+	}
+}
+
+func TestScanUint64IntoUint(t *testing.T) {
+	for _, value := range []uint64{1 << 32, 18446744073709551614} {
+		t.Run(strconv.FormatUint(value, 10), func(t *testing.T) {
+			direct := uint(1)
+			var indirect *uint
+			directErr := Scan(value, &direct, time.UTC)
+			indirectErr := Scan(value, &indirect, time.UTC)
+			if strconv.IntSize == 32 {
+				if directErr == nil || indirectErr == nil || direct != 1 || indirect != nil {
+					t.Fatalf("overflow should leave both destinations unchanged: direct=%d (%v), indirect=%v (%v)", direct, directErr, indirect, indirectErr)
+				}
+				return
+			}
+			if directErr != nil || uint64(direct) != value {
+				t.Fatalf("direct scan: got %d, %v; want %d", direct, directErr, value)
+			}
+			if indirectErr != nil || indirect == nil || uint64(*indirect) != value {
+				t.Fatalf("indirect scan: got %v, %v; want pointer to %d", indirect, indirectErr, value)
+			}
+		})
 	}
 }
 

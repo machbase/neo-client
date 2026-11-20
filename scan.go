@@ -738,6 +738,16 @@ func scanUint32(src uint32, pDst any) error {
 }
 
 func scanUint64(src uint64, pDst any) error {
+	if dst, ok := pDst.(*uint); ok {
+		if src > uint64(^uint(0)) {
+			return fmt.Errorf("scan value %d overflows uint", src)
+		}
+		*dst = uint(src)
+		return nil
+	}
+	if ok, err := scanIndirect(pDst, func(d any) error { return scanUint64(src, d) }); ok {
+		return err
+	}
 	if src <= math.MaxInt64 {
 		return scanInt64(int64(src), pDst)
 	}
@@ -747,9 +757,6 @@ func scanUint64(src uint64, pDst any) error {
 	case *sql.Null[uint64]:
 		dst.V, dst.Valid = src, true
 	default:
-		if ok, err := scanIndirect(pDst, func(d any) error { return scanUint64(src, d) }); ok {
-			return err
-		}
 		return scanString(strconv.FormatUint(src, 10), pDst)
 	}
 	return nil
