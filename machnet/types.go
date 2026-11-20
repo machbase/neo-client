@@ -9,16 +9,17 @@ import (
 	"github.com/machbase/neo-client/v2/api"
 )
 
-// cmi protocol version: 4.0.4
+// cmi protocol version: 4.0.5
 const (
 	cmiProtocolMajor = 4
 	cmiProtocolMinor = 0
-	cmiProtocolFix   = 4
+	cmiProtocolFix   = 5
 )
 
 const cmiV403MetadataVersion uint64 = (4 << 48) | 3
 const cmiGeneratedRowIDVersion uint64 = (4 << 48) | 3
 const cmiArrayVersion uint64 = (4 << 48) | 4
+const cmiVectorVersion uint64 = (4 << 48) | 5
 
 const (
 	cmiPacketMaxBody = 64 * 1024
@@ -150,6 +151,7 @@ const (
 	cmdFlt32ArrayType   = (0x0028 << 2) | cmdVarFlag
 	cmdFlt64ArrayType   = (0x0029 << 2) | cmdVarFlag
 	cmdDecimalArrayType = (0x002a << 2) | cmdVarFlag
+	cmdVectorType       = (0x002b << 2) | cmdVarFlag
 )
 
 const (
@@ -448,6 +450,8 @@ func sqlTypeToCmdType(sqlType api.SqlType) int {
 		return cmdFlt64ArrayType
 	case api.SqlTypeDecimalArray:
 		return cmdDecimalArrayType
+	case api.SqlTypeVector:
+		return cmdVectorType
 	default:
 		return cmdVarcharType
 	}
@@ -501,6 +505,8 @@ func spinerTypeToSqlType(spinerType int) api.SqlType {
 		return api.SqlTypeDoubleArray
 	case cmdDecimalArrayType:
 		return api.SqlTypeDecimalArray
+	case cmdVectorType:
+		return api.SqlTypeVector
 	default:
 		return api.SqlTypeString
 	}
@@ -604,6 +610,11 @@ func arrayBaseSpinerType(spinerType int) int {
 
 func computeColumnLength(spinerType int, precision int) int {
 	switch spinerType {
+	case cmdVectorType:
+		if precision < 1 || precision > api.VectorMaxDimension {
+			return 0
+		}
+		return precision * 4
 	case cmdInt16Type, cmdUInt16Type:
 		return 2
 	case cmdInt32Type, cmdUInt32Type:

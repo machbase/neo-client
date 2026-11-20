@@ -602,6 +602,10 @@ func (c *NativeConn) supportsArray() bool {
 	return protocolVersion() >= cmiArrayVersion && c.serverVersion >= cmiArrayVersion
 }
 
+func (c *NativeConn) supportsVector() bool {
+	return protocolVersion() >= cmiVectorVersion && c.serverVersion >= cmiVectorVersion
+}
+
 func parseStmtResponse(body []byte, sql string, fallbackCols []ColumnMeta) (*StmtExecResult, error) {
 	return parseStmtResponseVersion(body, sql, fallbackCols, true, false, false)
 }
@@ -908,6 +912,13 @@ func (c *NativeConn) appendOpen(stmtID uint32, table string, targets []string, e
 	ret, err := parseStmtResponseVersion(body, "APPEND "+table, nil, true, c.supportsV403(), false)
 	if err != nil {
 		return nil, err
+	}
+	if !c.supportsVector() {
+		for _, col := range ret.columns {
+			if col.spinerType == cmdVectorType {
+				return nil, makeClientErr("VECTOR requires CMI 4.0.5 or later")
+			}
+		}
 	}
 	return ret, nil
 }

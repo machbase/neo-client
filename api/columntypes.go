@@ -40,6 +40,7 @@ const (
 	ColumnTypeFloatArray   ColumnType = 161
 	ColumnTypeDoubleArray  ColumnType = 165
 	ColumnTypeDecimalArray ColumnType = 169
+	ColumnTypeVector       ColumnType = 173
 	ColumnTypeChar         ColumnType = 45 // cmdCharType
 	ColumnTypeUnknown      ColumnType = 0
 )
@@ -121,6 +122,8 @@ func (typ ColumnType) String() string {
 		return "double_array"
 	case ColumnTypeDecimalArray:
 		return "decimal_array"
+	case ColumnTypeVector:
+		return "vector"
 	default:
 		return fmt.Sprintf("UndefinedColumnType-%d", typ)
 	}
@@ -182,6 +185,8 @@ func ParseColumnType(typeName string) ColumnType {
 		return ColumnTypeDoubleArray
 	case "decimal_array":
 		return ColumnTypeDecimalArray
+	case "vector":
+		return ColumnTypeVector
 	default:
 		return ColumnTypeUnknown
 	}
@@ -235,6 +240,8 @@ func (typ ColumnType) ToSqlType() SqlType {
 		return SqlTypeDoubleArray
 	case ColumnTypeDecimalArray:
 		return SqlTypeDecimalArray
+	case ColumnTypeVector:
+		return SqlTypeVector
 	default:
 		return SqlTypeString
 	}
@@ -292,6 +299,8 @@ func (typ ColumnType) MakeBuffer() (any, error) {
 		ColumnTypeUInt32Array, ColumnTypeInt64Array, ColumnTypeUInt64Array,
 		ColumnTypeFloatArray, ColumnTypeDoubleArray, ColumnTypeDecimalArray:
 		return new(*Array), nil
+	case ColumnTypeVector:
+		return new(*Vector), nil
 		//return new([]byte), nil
 	default:
 		return nil, fmt.Errorf("unsupported column type: %d", typ)
@@ -344,6 +353,8 @@ func (typ ColumnType) DataType() DataType {
 		ColumnTypeUInt32Array, ColumnTypeInt64Array, ColumnTypeUInt64Array,
 		ColumnTypeFloatArray, ColumnTypeDoubleArray, ColumnTypeDecimalArray:
 		return DataTypeArray
+	case ColumnTypeVector:
+		return DataTypeVector
 	default:
 		return DataType(fmt.Sprintf("UndefinedColumnType-%d", typ))
 	}
